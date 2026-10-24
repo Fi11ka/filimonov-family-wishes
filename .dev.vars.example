@@ -1,0 +1,2 @@
+# LOCAL ONLY: use a separate test bot, never commit .dev.vars.
+BOT_TOKEN=replace-with-test-bot-token
