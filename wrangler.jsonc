@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "filimonov-family-wishes-api",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-07-01",
+  "workers_dev": true,
+  "observability": {
+    "enabled": false
+  },
+  "triggers": {
+    "crons": [
+      "17 3 * * *"
+    ]
+  },
+  "vars": {
+    "APP_ORIGIN": "https://anastasiacopodevinho.github.io",
+    "APP_URL": "https://anastasiacopodevinho.github.io/filimonov-family-wishes/"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "family-wishes",
+      "database_id": "5c4dbdac-5e62-4c24-b1c5-ee328bb4e5f3",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
