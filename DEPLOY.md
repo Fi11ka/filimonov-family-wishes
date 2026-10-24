@@ -2,97 +2,80 @@
 
 Подготовлено для `anastasiacopodevinho/filimonov-family-wishes` и уже существующего бота `@FilimonovFamilyWishes_bot`. Если выберете другой репозиторий или аккаунт, измените URL в шаге 3. Секрет бота не передавайте в чат, GitHub, исходники или Vite-переменные.
 
-## 0. Что уже подготовлено и где остановлена публикация
+## 0. Текущее состояние
 
-Локально есть код интерфейса и Worker, схема D1, миграция, тесты и workflow GitHub Pages. Реальная удалённая D1 ещё не создана, в конфиге стоит нулевой `database_id`. Удалённый репозиторий, Pages, Worker и подключение к боту требуют действий владельца аккаунтов. Не считайте приложение опубликованным до выполнения приёмки в конце.
+Исходники опубликованы в [репозитории](https://github.com/anastasiacopodevinho/filimonov-family-wishes), автоматические проверки проходят. GitHub Pages настроен на GitHub Actions, переменная `VITE_API_URL` задана. Создана D1 `family-wishes`, её настоящий ID записан в `wrangler.jsonc`.
 
-## 1. Инструменты и бесплатные аккаунты
+Публикация Worker ещё не завершена: форма Cloudflare подготовлена, ожидается подтверждение прав служебного токена сборки. Миграция удалённой базы ещё не применена. `BOT_TOKEN` ещё не добавлен. `PUBLISH_READY` пока не включён, поэтому неподключённый интерфейс не публикуется. Telegram-приёмка ещё не выполнена.
 
-1. Используйте свой GitHub и бесплатный аккаунт [Cloudflare](https://dash.cloudflare.com/). Не включайте Workers Paid, не добавляйте платёжные реквизиты и платные дополнения. Не покупайте домен: будут `github.io` и `workers.dev`.
-2. Установите Node.js 24 LTS с [nodejs.org](https://nodejs.org/), затем `npm install --global pnpm@11.25.0`.
-3. В терминале перейдите в папку проекта:
+## 1. Установка Node.js на компьютер не нужна
 
-```sh
-cd '/Users/admin/Documents/Вишлисты'
-pnpm install --frozen-lockfile
-pnpm test
-pnpm build
-```
+Все действия для публикации выполняются в браузере. GitHub и Cloudflare запускают инструменты сборки у себя; приложение работает на Workers без постоянно запущенного Node.js-сервера. Команды в полях Cloudflare — настройки облачной сборки, их не нужно запускать на своём компьютере.
 
-## 2. Создать постоянную D1
+Используйте бесплатные планы GitHub и Cloudflare. Не включайте Workers Paid и платные дополнения. Домен покупать не нужно: используются `github.io` и `workers.dev`.
 
-Выполните:
+## 2. Постоянная D1
 
-```sh
-pnpm exec wrangler login
-pnpm exec wrangler d1 create family-wishes
-```
+Уже создана база **family-wishes**:
 
-Первой командой откроется авторизация Cloudflare: войдите самостоятельно и разрешите Wrangler работать с вашим аккаунтом. Если предлагается платный тариф — остановитесь: он не нужен. Если имя базы занято, используйте существующую базу только если она предназначена для этого приложения; не применяйте миграции к чужой базе.
+- Account ID: `0f6e10e992c100efce4a63588b8f0548`.
+- Database ID: `5c4dbdac-5e62-4c24-b1c5-ee328bb4e5f3`.
+- Binding в Worker: `DB`.
+- Миграции находятся в `migrations/`. Первый успешный Cloudflare build применит их автоматически командой публикации.
 
-Сохраните `database_id` из результата создания. Это публичный идентификатор, не секрет. Если Cloudflare просит создать `workers.dev` subdomain, выберите бесплатный поддомен в Workers & Pages. Планируемый API URL: `https://filimonov-family-wishes-api.<ваш-поддомен>.workers.dev`.
+Это публичные идентификаторы, не секреты. Не применяйте миграции к другой базе.
 
-## 3. Заполнить конфигурацию
+## 3. Адреса приложения
 
-```sh
-pnpm run setup
-```
+- Интерфейс: `https://anastasiacopodevinho.github.io/filimonov-family-wishes/`.
+- API: `https://filimonov-family-wishes-api.anastasia-filimonova-kokorina.workers.dev`.
+- `APP_ORIGIN`: `https://anastasiacopodevinho.github.io` без пути.
+- `APP_URL`: полный адрес интерфейса с завершающим `/`.
 
-Введите три **несекретных** значения:
+Первые два адреса считаются рабочими только после успешного развёртывания и проверки. Конфигурация Worker уже заполнена. Не добавляйте `BOT_TOKEN` в конфигурацию репозитория или `VITE_*`.
 
-- D1 `database_id` из предыдущего шага;
-- `https://anastasiacopodevinho.github.io/filimonov-family-wishes/`;
-- полный Worker URL на `workers.dev`.
+## 4. Публикация API через Cloudflare
 
-Скрипт обновит `wrangler.jsonc` и локальную игнорируемую `.env.local`. В конфиге `APP_ORIGIN` будет `https://anastasiacopodevinho.github.io` без пути; `APP_URL` — полный URL с именем репозитория. Не добавляйте `BOT_TOKEN` в эти файлы. При другом аккаунте GitHub введите соответствующий Pages URL.
+Cloudflare → Workers & Pages → Create application → Continue with GitHub → выберите только `anastasiacopodevinho/filimonov-family-wishes`.
 
-## 4. Миграция и первая публикация API
+Поля формы:
 
-```sh
-pnpm db:remote
-pnpm deploy:api
-pnpm exec wrangler secret put BOT_TOKEN
-```
+| Поле | Значение |
+| --- | --- |
+| Project name | `filimonov-family-wishes-api` |
+| Production branch | `main` |
+| Build command | `pnpm test && pnpm build` |
+| Deploy command | `pnpm run deploy` |
+| Path | `/` |
+| Build variable | `NODE_VERSION` = `24` |
+| Enable Preview builds | Выключено |
 
-Третья команда попросит секрет со скрытым вводом. Вставьте токен **существующего** бота из BotFather в этот запрос терминала. Альтернатива без терминала: Cloudflare → Workers & Pages → `filimonov-family-wishes-api` → Settings → Variables and Secrets → Add → тип **Secret**, имя `BOT_TOKEN`, значение токена → Deploy. Это runtime secret, не Build variable.
+Зависимости Cloudflare устанавливает автоматически. `pnpm run deploy` проверяет конфигурацию, применяет новые миграции D1 и публикует Worker. `WORKERS_CI` задаётся Cloudflare автоматически. В preview-сборках нельзя применять миграции к production-базе.
 
-Не меняйте webhook и не удаляйте существующие настройки бота: Mini App работает через WebApp SDK без нового webhook. На `/start` уже существующая логика бота продолжит работать.
+### Токен сборки
 
-Проверьте в браузере `https://filimonov-family-wishes-api.<ваш-поддомен>.workers.dev/api/health`: ответ должен содержать `"ok":true`. Затем проверьте, что запрос `/api/me` без входа возвращает 401, а не 500/503. Это подтверждает, что секрет настроен и случайный посетитель не получает профиль.
+В этом аккаунте форма предлагает только **Create new token**. Созданный вручную пользовательский токен не появляется в списке, поэтому одного его создания недостаточно. Стандартный токен сборки первоначально имеет более широкие права — их необходимо отдельно подтвердить перед созданием, а затем сократить в My Profile → API Tokens → Edit.
 
-## 5. Публичный GitHub-репозиторий
+Оставьте для аккаунта только **Workers Scripts: Edit**, **D1: Edit**, **Account Settings: Read**. Удалите разрешения Zone и User и остальные Account-разрешения. Токен хранится внутри Cloudflare, в GitHub его переносить не нужно. После сокращения прав повторите build и убедитесь, что миграции и публикация проходят. Не расширяйте права без конкретной ошибки, показывающей необходимость.
 
-Бесплатный GitHub Pages для такого проекта требует **public** репозиторий. Опубликуется исходный код; личные списки, реальные фото и брони хранятся в закрытой D1 и в Git не попадают.
+## 5. Секрет существующего Telegram-бота
 
-Откройте [создание репозитория](https://github.com/new), выберите владельца `anastasiacopodevinho`, имя `filimonov-family-wishes`, видимость **Public**. Не добавляйте README, .gitignore и license: файлы уже подготовлены локально. Нажмите Create repository.
+После создания Worker: Cloudflare → Workers & Pages → `filimonov-family-wishes-api` → Settings → Variables and Secrets → Add → тип **Secret** → имя `BOT_TOKEN` → значение токена существующего бота → Deploy.
 
-В локальной папке уже подготовлен Git-репозиторий. Проверьте его и отправьте:
+Токен вводит владелец аккаунта непосредственно в Cloudflare. Не отправляйте его в чат, GitHub, исходники или Build variables. Это runtime secret; он сохраняется при обновлении кода.
 
-```sh
-git status
-git add .
-git commit -m "Configure production Cloudflare D1 and URLs"
-git remote add origin https://github.com/anastasiacopodevinho/filimonov-family-wishes.git
-git push -u origin main
-```
+Не меняйте webhook и не удаляйте существующие настройки бота: Mini App использует WebApp SDK без нового webhook.
 
-Если коммитить нечего, пропустите `git commit`. Если remote уже есть, не добавляйте второй: проверьте `git remote -v`. При запросе авторизации GitHub войдите привычным способом через credential manager или GitHub CLI. Токен бота здесь никогда не нужен. Не используйте пароль аккаунта как Git-пароль. Альтернатива: GitHub Desktop → Add existing repository → Publish repository с public видимостью.
+Проверьте API:
 
-## 6. Автодеплой Worker с секретами только в Cloudflare
+1. `/api/health` должен вернуть `"ok":true`.
+2. `/api/me` без входа должен вернуть 401. Ответ 503 означает, что `BOT_TOKEN` ещё не настроен.
 
-Чтобы не хранить Cloudflare API token в GitHub Secrets, используйте [Cloudflare Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/):
+## 6. Автоматические обновления
 
-1. Cloudflare → Workers & Pages → `filimonov-family-wishes-api` → Settings → Builds → Connect Git repository.
-2. Подключите только репозиторий этого приложения. Если Cloudflare просит новое разрешение GitHub, предоставьте доступ к выбранному репозиторию, не ко всем.
-3. Production branch: `main`; Root directory: `/`.
-4. Build command: `pnpm install --frozen-lockfile && pnpm test && pnpm build`.
-5. Deploy command: `pnpm run deploy`.
-6. Node version: `24`. Если окружение требует явного выбора, задайте Build variable `NODE_VERSION=24`. `WORKERS_CI` Cloudflare задаёт автоматически.
-7. Автоматически создаваемому Cloudflare Builds API token дополнительно нужны права **Account → D1 → Edit** на ваш аккаунт для миграций. Откройте Cloudflare → My Profile → API Tokens → найдите token Workers Builds → Edit → добавьте это право. Если редактирование недоступно, создайте токен в Cloudflare с Workers Scripts Edit, D1 Edit, Account Settings Read и используйте его в настройке Builds API token. Значение не переносите в GitHub или исходники.
-8. Выключите автоматический production-деплой сторонних веток. Не применяйте миграции к production базе из preview-сборок. При необходимости preview-команды используйте `pnpm exec wrangler versions upload`, без миграций и продвижения в production; пользователям выдавайте только production URL.
-9. Запустите первый build и проверьте успешную миграцию и deploy. `pnpm run deploy` проверяет реальные параметры D1, применяет только новые миграции и публикует Worker.
+Cloudflare Workers Builds подключён только к репозиторию приложения после завершения шага 4. Push в `main` запускает тесты, сборку, миграции и публикацию API. GitHub Actions отдельно проверяет и публикует интерфейс.
 
-Cloudflare Free даёт ограниченный бюджет минут сборки, которого обычно достаточно для редких семейных обновлений. При исчерпании дождитесь сброса или запускайте `pnpm db:remote` и `pnpm deploy:api` со своего компьютера. Не включайте платный тариф. Runtime secret `BOT_TOKEN` сохраняется при обновлении кода.
+При несовместимых изменениях API сначала сохраняйте обратную совместимость, затем меняйте клиент: развёртывания двух провайдеров не атомарны. При исчерпании бесплатных минут сборки дождитесь сброса лимита. Платный план не требуется.
 
 ## 7. GitHub Pages и автопубликация интерфейса
 
