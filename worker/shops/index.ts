@@ -8,6 +8,7 @@ import { ozon } from "./ozon";
 import type { ProductInfo, Shop, ShopContext } from "./types";
 import { wildberries } from "./wildberries";
 import { yandexMarket } from "./yandex-market";
+import { productLink } from "./link";
 /** Order matters only for overlapping hosts; the generic parser is always last. */
 export const shops: Shop[] = [
   wildberries,
@@ -64,7 +65,7 @@ export async function lookupProduct(
   raw: unknown,
   ctx: ShopContext = liveContext(),
 ): Promise<LookupResult> {
-  const url = publicHttpsUrl(raw);
+  const url = productLink(publicHttpsUrl(raw));
   const shop = findShop(url);
   const attempt = async (s: Shop) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
