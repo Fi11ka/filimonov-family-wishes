@@ -2218,3 +2218,23 @@ footer svg {
     height: 48px;
   }
 }
+/* ---- Telegram full-screen mode (Bot API 8.0) ---- */
+/* Telegram draws its own controls over the app and reports the space they take. */
+.tg-fullscreen {
+  --tg-top-inset: calc(
+    var(--tg-safe-area-inset-top, 0px) +
+      var(--tg-content-safe-area-inset-top, 0px)
+  );
+}
+.tg-fullscreen .app-shell {
+  padding-top: var(--tg-top-inset);
+}
+.tg-fullscreen .sidebar {
+  top: var(--tg-top-inset);
+}
+.tg-fullscreen .toast {
+  bottom: calc(24px + var(--tg-safe-area-inset-bottom, 0px));
+}
+.fullscreen-toggle {
+  color: #a187b9;
+}
