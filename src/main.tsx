@@ -330,12 +330,12 @@ function App() {
     .filter((g) => g.title.toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) =>
       sort === "price"
-        ? a.currency.localeCompare(b.currency) ||
-          (a.price_minor ?? a.price_max_minor ?? Infinity) -
-            (b.price_minor ?? b.price_max_minor ?? Infinity)
-        : sort === "priority-asc"
-          ? a.priority - b.priority
-          : b.priority - a.priority,
+        ? byPrice(a, b, 1)
+        : sort === "price-desc"
+          ? byPrice(a, b, -1)
+          : sort === "priority-asc"
+            ? a.priority - b.priority
+            : b.priority - a.priority,
     );
   const locked = !demo && !user && !guestToken && !loading;
   const viewingFriend = tab === "friends" && !!owner && !own;
@@ -763,7 +763,8 @@ function App() {
                           <option value="priority-asc">
                             Сначала менее важные
                           </option>
-                          <option value="price">По валюте и цене</option>
+                          <option value="price">Сначала дешёвые</option>
+                          <option value="price-desc">Сначала дорогие</option>
                         </select>
                         <ChevronDown size={14} />
                       </label>
@@ -1004,6 +1005,21 @@ function App() {
       )}
     </div>
   );
+}
+/**
+ * Prices in different currencies cannot be compared, so wishes are grouped by
+ * currency; wishes without a price always go last. A range counts by its lower
+ * bound when sorting cheap first and by its upper bound when sorting expensive first.
+ */
+function byPrice(a: Wish, b: Wish, dir: 1 | -1) {
+  const key = (g: Wish) =>
+    dir === 1
+      ? (g.price_minor ?? g.price_max_minor ?? null)
+      : (g.price_max_minor ?? g.price_minor ?? null);
+  const ka = key(a),
+    kb = key(b);
+  if (ka === null || kb === null) return ka === kb ? 0 : ka === null ? 1 : -1;
+  return a.currency.localeCompare(b.currency) || dir * (ka - kb);
 }
 function GiftCard({
   wish: g,
