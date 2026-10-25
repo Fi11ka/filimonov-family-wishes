@@ -1,5 +1,12 @@
 import { formatPrice } from "../shared/price";
-export type User = { id: string; name: string; username?: string | null };
+export type User = {
+  id: string;
+  name: string;
+  username?: string | null;
+  birthday?: string | null;
+  allow_resharing?: number;
+  wishlist_updated_at?: number | null;
+};
 export type Friend = User & { gift_count: number };
 export type Wish = {
   id: string;

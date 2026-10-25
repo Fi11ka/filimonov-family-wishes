@@ -1,3 +1,4 @@
+import { validBirthday } from "../shared/birthday";
 import React, { useEffect, useState } from "react";
 import {
   AtSign,
@@ -321,13 +322,35 @@ export function Profile({
   webSession,
   onAddFriend,
   onLogout,
+  onUpdated,
 }: {
   user: User | null;
   friends: number;
   webSession: boolean;
   onAddFriend: () => void;
   onLogout: (everywhere: boolean) => void;
+  onUpdated: (user: User) => void;
 }) {
+  const [month, setMonth] = useState(user?.birthday?.slice(0, 2) || "");
+  const [day, setDay] = useState(user?.birthday?.slice(3) || "");
+  const [allow, setAllow] = useState(user?.allow_resharing !== 0);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  const months = [
+    "Январь",
+    "Февраль",
+    "Март",
+    "Апрель",
+    "Май",
+    "Июнь",
+    "Июль",
+    "Август",
+    "Сентябрь",
+    "Октябрь",
+    "Ноябрь",
+    "Декабрь",
+  ];
   return (
     <div className="share-result">
       <span className="avatar large">{initials(user?.name || "Гость")}</span>
@@ -342,6 +365,95 @@ export function Profile({
         )}
       </p>
       <p className="small-text">Друзей: {friends}</p>
+      <form
+        className="profile-settings"
+        onChange={() => setSaved(false)}
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setError("");
+          setSaved(false);
+          if (!!day !== !!month) {
+            setError("Укажите день и месяц рождения.");
+            return;
+          }
+          if (day && month && !validBirthday(`${month}-${day}`)) {
+            setError("Укажите существующую дату рождения.");
+            return;
+          }
+          setSaving(true);
+          try {
+            const values = {
+              birthday: day && month ? `${month}-${day}` : null,
+              allow_resharing: allow,
+            };
+            if (demo) {
+              onUpdated({
+                ...user!,
+                ...values,
+                allow_resharing: allow ? 1 : 0,
+              });
+            } else {
+              const result = await api("/api/me", "PATCH", values);
+              onUpdated(result.user);
+            }
+            setSaved(true);
+          } catch (e) {
+            setError((e as Error).message);
+          } finally {
+            setSaving(false);
+          }
+        }}
+      >
+        <fieldset>
+          <legend>Дата рождения</legend>
+          <div className="birthday-inputs">
+            <select
+              aria-label="День рождения"
+              value={day}
+              onChange={(e) => setDay(e.target.value)}
+            >
+              <option value="">День</option>
+              {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                <option key={d} value={String(d).padStart(2, "0")}>
+                  {d}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Месяц рождения"
+              value={month}
+              onChange={(e) => setMonth(e.target.value)}
+            >
+              <option value="">Месяц</option>
+              {months.map((m, i) => (
+                <option key={m} value={String(i + 1).padStart(2, "0")}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </div>
+        </fieldset>
+        <label className="setting-toggle">
+          <input
+            type="checkbox"
+            checked={allow}
+            onChange={(e) => setAllow(e.target.checked)}
+          />
+          Разрешить другим делиться моим вишлистом
+        </label>
+        <p className="small-text">
+          Отключает ссылки, созданные другими. Ваши ссылки остаются рабочими.
+        </p>
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+        {saved && <p role="status">Настройки сохранены</p>}
+        <button className="button secondary full-width" disabled={saving}>
+          {saving ? "Сохраняем…" : "Сохранить настройки"}
+        </button>
+      </form>
       <button className="button primary full-width" onClick={onAddFriend}>
         <UserPlus size={17} /> Добавить друга
       </button>
