@@ -115,65 +115,6 @@ export async function validateInitData(
     username: usernameOf(user.username),
   };
 }
-/**
- * "Log in with Telegram" widget on the website. Unlike Mini App initData, the
- * key is SHA-256(bot token) and the fields arrive as a flat object.
- * https://core.telegram.org/widgets/login#checking-authorization
- */
-export async function validateLoginWidget(
-  b: Record<string, unknown>,
-  botToken: string,
-  now = Math.floor(Date.now() / 1000),
-): Promise<Identity> {
-  const received = typeof b.hash === "string" ? b.hash : "";
-  if (!/^[a-f0-9]{64}$/i.test(received))
-    fail(401, "AUTH_INVALID", "Не удалось подтвердить вход.");
-  const fields = Object.entries(b).filter(([k]) => k !== "hash");
-  if (
-    fields.length > 12 ||
-    fields.some(
-      ([k, v]) =>
-        !/^[a-z_]{1,32}$/.test(k) ||
-        !["string", "number"].includes(typeof v) ||
-        String(v).length > 512,
-    )
-  )
-    fail(401, "AUTH_INVALID", "Некорректные данные входа.");
-  const data = fields
-    .map(([k, v]) => [k, String(v)])
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([k, v]) => `${k}=${v}`)
-    .join("\n");
-  const secret = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", encoder.encode(botToken)),
-  );
-  const expected = hex(await hmac(secret, data));
-  let diff = 0;
-  for (let i = 0; i < 64; i++)
-    diff |= expected.charCodeAt(i) ^ received.toLowerCase().charCodeAt(i);
-  if (diff) fail(401, "AUTH_INVALID", "Не удалось подтвердить вход.");
-  const date = Number(b.auth_date);
-  // The widget answer is a one-time proof; a day is enough to finish signing in.
-  if (
-    !Number.isSafeInteger(date) ||
-    date <= 0 ||
-    date > now + 30 ||
-    now - date > 86400
-  )
-    fail(401, "AUTH_EXPIRED", "Время входа истекло. Войдите ещё раз.");
-  const id = Number(b.id);
-  if (!Number.isSafeInteger(id) || id <= 0 || typeof b.first_name !== "string")
-    fail(401, "AUTH_INVALID", "Некорректный пользователь.");
-  return {
-    id: String(id),
-    name:
-      [b.first_name, typeof b.last_name === "string" ? b.last_name : ""]
-        .filter(Boolean)
-        .join(" ")
-        .slice(0, 160) || "Участник",
-    username: usernameOf(b.username),
-  };
-}
 /** Telegram usernames: 4–32 latin letters, digits and underscores. */
 export function usernameOf(value: unknown) {
   const v = typeof value === "string" ? value.trim().replace(/^@/, "") : "";
