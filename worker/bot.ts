@@ -43,6 +43,16 @@ const ADD = "➕ Добавить в вишлист",
   LIST = "📋 Мои желания",
   OPEN = "🎁 Открыть вишлист";
 const PAGE = 8;
+// Telegram limits: 512 and 120 characters.
+export const BOT_DESCRIPTION =
+  "🎁 Семейный вишлист Филимоновых\n\n" +
+  "• Собирайте свои желания: пришлите ссылку на товар — название, цену и фото бот подтянет сам\n" +
+  "• Смотрите вишлисты друзей и тайно бронируйте подарки — владелец не узнает, кто выбрал\n" +
+  "• Скидывайтесь на подарок вместе с друзьями\n" +
+  "• Получайте напоминания о днях рождения и новых желаниях друзей\n\n" +
+  "Нажмите «Запустить», чтобы начать.";
+export const BOT_SHORT_DESCRIPTION =
+  "Семейный вишлист: желания, тайные брони, совместные подарки и напоминания о днях рождения.";
 const priorities = ["", "Будет приятно", "Очень хочется", "Мечта"];
 export async function botRoute(
   req: Request,
@@ -73,7 +83,17 @@ export async function botRoute(
         { command: "cancel", description: "Отменить ввод" },
       ],
     });
-    return { ok: webhook.ok && commands.ok, webhook: url };
+    // Shown in an empty chat before «Запустить» and in the bot's profile.
+    const description = await telegramCall(env, "setMyDescription", {
+      description: BOT_DESCRIPTION,
+    });
+    const short = await telegramCall(env, "setMyShortDescription", {
+      short_description: BOT_SHORT_DESCRIPTION,
+    });
+    return {
+      ok: webhook.ok && commands.ok && description.ok && short.ok,
+      webhook: url,
+    };
   }
   if (path === "/api/telegram/webhook" && req.method === "POST") {
     const secret = req.headers.get("x-telegram-bot-api-secret-token") || "";

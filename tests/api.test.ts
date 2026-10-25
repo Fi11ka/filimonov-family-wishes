@@ -1769,3 +1769,29 @@ test("birthday reminders reach friends a week and a day before, once, with a wis
     0,
   );
 });
+
+test("bot setup sets the webhook, commands and the welcome text shown before Start", async () => {
+  const r = await call(
+    "/telegram/setup",
+    undefined,
+    "GET",
+    undefined,
+    undefined,
+    {
+      Origin: "",
+    },
+  );
+  assert.equal(r.status, 200, r.raw);
+  assert.equal(r.body.ok, true);
+  assert.equal(r.body.webhook, "https://api.example/api/telegram/webhook");
+  const last = (method: string) =>
+    telegram.filter((c) => c.method === method).at(-1)!.body;
+  assert.equal(
+    last("setWebhook").secret_token,
+    createHash("sha256").update(`webhook:${BOT}`).digest("hex"),
+  );
+  const description = last("setMyDescription").description;
+  assert.match(description, /Нажмите «Запустить»/);
+  assert.ok(description.length <= 512);
+  assert.ok(last("setMyShortDescription").short_description.length <= 120);
+});
