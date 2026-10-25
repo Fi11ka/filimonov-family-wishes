@@ -1,0 +1,18 @@
+{
+  "name": "filimonov-family-wishes-helper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Домашний помощник: открывает страницы Ozon, DNS, Яндекс Маркета и AliExpress.ru в обычном Chrome",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node helper.mjs",
+    "show": "node helper.mjs --show",
+    "setup": "node helper.mjs --setup"
+  },
+  "dependencies": {
+    "playwright-core": "1.49.1"
+  }
+}

@@ -13,3 +13,6 @@ dist/
 backups/
 .preview-qa.html
 .pnpm-store/
+helper/helper.config.json
+helper/chrome-profile/
+helper/helper.log
