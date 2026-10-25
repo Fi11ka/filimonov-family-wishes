@@ -99,7 +99,16 @@ Cloudflare Workers Builds подключён только к репозитор�
 5. Настройте меню: `/setmenubutton` → выберите того же бота → укажите URL Pages → текст кнопки `Наши желания`. В некоторых версиях BotFather это Bot Settings → Menu Button → Configure menu button.
 6. При желании задайте название `Filimonov Family Wishes`, описание и аватар бота. Новый бот не нужен. `/setdomain` не нужен ни мини-приложению, ни входу на сайте.
 7. Откройте профиль бота и нажмите **Open App / Открыть приложение** или кнопку меню **Наши желания**.
-8. Вход на сайте в обычном браузере (Telegram Login, OpenID Connect): откройте мини-приложение [@BotFather](https://t.me/BotFather) → `@FilimonovFamilyWishes_bot` → **Bot Settings → Login Widget** и укажите адрес сайта `https://anastasiacopodevinho.github.io` — только домен, без `/filimonov-family-wishes/`: Telegram сверяет источник страницы, путь не нужен. Если в настройках есть выбор алгоритма подписи, оставьте RS256 (или ES256): с EdDSA Telegram не передаёт данные профиля, и вход не сработает. Client Secret не нужен — сервер проверяет подпись открытыми ключами Telegram, Client ID берётся из `BOT_TOKEN`. Новые секреты не нужны. Миграция `0004_oidc_login.sql` применяется при `pnpm run deploy`.
+8. Вход на сайте в обычном браузере (Telegram Login, OpenID Connect): новый вход нужно включить в BotFather — он не включается сам и не равен старой настройке домена.
+   1. Откройте [@BotFather](https://t.me/BotFather) **как мини-приложение** (кнопка «Открыть»), выберите `@FilimonovFamilyWishes_bot` → **Bot Settings → Web Login** (в некоторых версиях **Login Widget**).
+   2. Если на экране только одно поле с адресом и нет Client ID и Client Secret — это старый виджет. Удалите адрес, закройте экран и откройте его снова: появится **Switch to OpenID Connect Login** (или **OpenID Connect Login**). Нажмите и пройдите настройку. Переключение необратимо; мини-приложение на него не влияет, перестаёт работать только старый виджет, который сайт уже не использует.
+   3. **Redirect URIs** → **Add a Redirect URI**: `https://anastasiacopodevinho.github.io/filimonov-family-wishes/` — точно так, со слешем в конце: это адрес страницы, который сайт передаёт как `redirect_uri`, Telegram требует точного совпадения.
+      **Trusted Origins** → **Add a Trusted Origin**: `https://anastasiacopodevinho.github.io` — без пути и слеша.
+      **Native Login** не нужен. В старых версиях экрана вместо этих разделов был один список **Allowed URLs** — туда добавьте оба адреса.
+   4. На экране появятся Client ID и Client Secret. Client ID должен совпадать с ID бота (`8687118994`, число до двоеточия в токене): сервер проверяет, что вход выдан именно для него. Client Secret никуда вносить не нужно и никому не показывайте.
+   5. Если в настройках есть выбор алгоритма подписи, оставьте RS256 (или ES256): с EdDSA Telegram не передаёт данные профиля, и вход не сработает.
+
+   Пока новый вход не включён, окно Telegram показывает «origin required». Client Secret не нужен — сервер проверяет подпись открытыми ключами Telegram, Client ID берётся из `BOT_TOKEN`. Новые секреты не нужны. Миграция `0004_oidc_login.sql` применяется при `pnpm run deploy`.
 
 Пример официального формата ссылки: [Telegram Mini Apps](https://core.telegram.org/bots/webapps#direct-link-mini-apps). Передача `initData` и проверка подписи реализованы по [официальному алгоритму Telegram](https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app).
 
@@ -157,7 +166,8 @@ pnpm exec wrangler d1 export family-wishes --remote --output=backups/family-wish
 - `INTERNAL` сразу после настройки: проверьте ID D1, binding `DB` и применение миграций.
 - Pages 404: Pages source должен быть GitHub Actions, URL включает имя репозитория и завершающий `/`.
 - В браузере нет имени Telegram: нажмите «Войти через Telegram» на сайте или откройте приложение через бота.
-- Окно Telegram пишет, что адрес не разрешён: адрес сайта не добавлен в Allowed URLs Login Widget в BotFather. Укажите `https://anastasiacopodevinho.github.io`.
+- Окно Telegram пишет «origin required»: у бота не включён OpenID Connect Login (пункт 8). Не добавляйте в ссылку параметр `origin` — он переключает на старый виджет с вводом телефона.
+- Окно Telegram пишет «redirect_uri required»: адреса страницы нет в **Redirect URIs** (или он записан не точно). Добавьте `https://anastasiacopodevinho.github.io/filimonov-family-wishes/`, а в **Trusted Origins** — `https://anastasiacopodevinho.github.io`.
 - Окно входа не открывается: браузер заблокировал всплывающее окно. Разрешите всплывающие окна для сайта.
 - Гостевая ссылка открывает чат, а не приложение: включите **Main Mini App** в BotFather.
 - Невозможно прочитать HEIC: экспортируйте фото как JPEG/PNG.
@@ -167,6 +177,6 @@ pnpm exec wrangler d1 export family-wishes --remote --output=backups/family-wish
 
 Основная ссылка для семьи: https://t.me/FilimonovFamilyWishes_bot?startapp — открывает Main Mini App. Ссылка без `?startapp` открывает чат бота, а адрес GitHub Pages открывает обычный сайт. Вне Telegram сайт предлагает Mini App главным действием; вход в браузере находится в пункте «Остаться в браузере». Гостевой список (`g_…`) и приглашение друга (`f_…`) сохраняются при переходе в Telegram.
 
-Браузерный вход отдельно требует Allowed URLs в настройках Login Widget бота (пункт 8). После настройки закройте старое окно с ошибкой и заново нажмите «Войти через Telegram». Main Mini App авторизуется подписанными `initData`, веб-вход — подписанным `id_token` Telegram и сессией.
+Браузерный вход отдельно требует Redirect URIs и Trusted Origins в настройках Login Widget бота (пункт 8). После настройки закройте старое окно с ошибкой и заново нажмите «Войти через Telegram». Main Mini App авторизуется подписанными `initData`, веб-вход — подписанным `id_token` Telegram и сессией.
 
 У запуска GitHub Pages №9 после PR #5 в журнале было `Multiple artifacts named "github-pages" ... count is 2`. Последние публикации №10 и №11 прошли; повторный запуск старой публикации может вернуть старую версию сайта. Новая схема именует артефакт по ID запуска и попытке, передаёт имя из job `build` в `deploy`. Это также сохраняет корректное имя при повторе только неудачного `deploy`. Исторический красный запуск остаётся историей; ориентируйтесь на публикацию актуальной main.

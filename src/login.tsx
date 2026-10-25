@@ -2,11 +2,12 @@ import React, { useEffect, useRef, useState } from "react";
 import { Send } from "lucide-react";
 import { api, setSessionToken } from "./api";
 // Website sign-in with Telegram Login (OpenID Connect). The popup is opened
-// the same way telegram-login.js does it (response_type=post_message), but
-// with the origin parameter: oauth.telegram.org answers "origin required"
-// without it, and the library (?6) does not send it. No third-party script
-// runs on the page. The popup must open inside the click handler, so the
-// Client ID and a one-time nonce are prepared in advance.
+// exactly the way telegram-login.js does it (response_type=post_message), so
+// no third-party script runs on the page. Do not add origin or bot_id: they
+// switch oauth.telegram.org to the legacy Login Widget. "origin required"
+// means OpenID Connect Login is not enabled for the bot in @BotFather (see
+// DEPLOY.md). The popup must open inside the click handler, so the Client ID
+// and a one-time nonce are prepared in advance.
 const AUTH_ORIGIN = "https://oauth.telegram.org";
 const NONCE_REFRESH_MS = 8 * 60_000; // server nonces live 10 minutes
 type LoginResult = { id_token?: string; error?: string };
@@ -19,7 +20,6 @@ function openTelegramLogin(
     response_type: "post_message",
     client_id: String(clientId),
     redirect_uri: location.origin + location.pathname,
-    origin: location.origin,
     scope: "openid profile",
     nonce,
     lang: "ru",
