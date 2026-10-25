@@ -134,6 +134,7 @@ before(async () => {
   await migrate("migrations/0004_oidc_login.sql");
   await migrate("migrations/0005_permanent_sharing.sql");
   await migrate("migrations/0006_home_helper.sql");
+  await migrate("migrations/0007_archive_reasons.sql");
   for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9])
     assert.equal((await call("/me", id)).status, 200);
 });
@@ -261,14 +262,15 @@ test("owner response remains byte-identical before/after reservation; no identit
       .reservation,
     "mine",
   );
-  // Archiving and restoring a reserved gift answers exactly like an unreserved one.
+  // The main list hides reservations; explicit archive actions now block booked gifts.
   const free = await gift();
   const a = await call(`/gifts/${g}/archive`, 1, "POST"),
     b = await call(`/gifts/${free}/archive`, 1, "POST");
-  assert.equal(a.raw, b.raw);
+  assert.equal(a.status, 409);
+  assert.equal(b.status, 200);
   const archive = await call("/archive", 1);
   assert.ok(!archive.raw.includes("reservation"));
-  assert.equal((await call(`/gifts/${g}/restore`, 1, "POST")).raw, a.raw);
+  assert.equal((await call(`/gifts/${g}/restore`, 1, "POST")).status, 200);
   await call(`/gifts/${free}/restore`, 1, "POST");
 });
 test("atomic concurrent reservations: exactly one succeeds", async () => {
@@ -1047,6 +1049,131 @@ test("guest booking editing is allowed by browser CORS preflight", async () => {
   assert.equal(result.status, 204);
   assert.ok(
     result.headers.get("Access-Control-Allow-Methods")?.includes("PATCH"),
+  );
+});
+
+test("archive blocks booked gifts except a confirmed received gift and keeps donor private otherwise", async () => {
+  const g = await gift(31);
+  const link = (await call("/guest-links", 31, "POST")).body.token;
+  await call(`/gifts/${g}/reservation`, 32, "POST", undefined, link);
+  assert.deepEqual((await call(`/gifts/${g}/archive-status`, 31)).body, {
+    reserved: true,
+  });
+  for (const reason of ["changed_mind", "bought_self"]) {
+    const response = await call(`/gifts/${g}/archive`, 31, "POST", { reason });
+    assert.equal(response.status, 409);
+    assert.equal(response.body.error.code, "ARCHIVE_RESERVED");
+  }
+  assert.equal((await call(`/gifts/${g}/archive-donor`, 32)).status, 404);
+  assert.equal(
+    (await call(`/gifts/${g}/archive-donor`, undefined, "GET", undefined, link))
+      .status,
+    401,
+  );
+  assert.equal(
+    (await call(`/gifts/${g}/archive`, 31, "POST", { reason: "gifted" }))
+      .status,
+    409,
+  );
+  const preview = await call(`/gifts/${g}/archive-donor`, 31);
+  assert.deepEqual(preview.body.donor, {
+    name: "User 32",
+    username: "user_32",
+    is_guest: false,
+  });
+  assert.ok(!(await call("/lists/31", 31)).raw.includes("User 32"));
+  assert.equal(
+    (
+      await call(`/gifts/${g}/archive`, 31, "POST", {
+        reason: "gifted",
+        confirmation: preview.body.confirmation,
+      })
+    ).status,
+    200,
+  );
+  const archived = (await call("/archive", 31)).body.gifts.find(
+    (x: any) => x.id === g,
+  );
+  assert.equal(archived.archive_reason, "gifted");
+  assert.equal(archived.gifted_by_name, "User 32");
+  assert.equal(archived.gifted_by_username, "user_32");
+  await call(`/gifts/${g}/restore`, 31, "POST");
+  assert.ok(!(await call("/lists/31", 31)).raw.includes("User 32"));
+});
+
+test("archive confirms the current buyer without Telegram and rejects stale confirmation", async () => {
+  const g = await gift(33);
+  const raw = (await call("/guest-links", 33, "POST")).body.token;
+  await call(
+    `/guest-reservations/${g}`,
+    undefined,
+    "POST",
+    { name: "Бабушка" },
+    raw,
+  );
+  const first = (await call(`/gifts/${g}/archive-donor`, 33)).body;
+  assert.deepEqual(first.donor, {
+    name: "Бабушка",
+    username: null,
+    is_guest: true,
+  });
+  await call(`/guest-bookings/${g}`, 33, "PATCH", { name: "Дедушка" });
+  assert.equal(
+    (
+      await call(`/gifts/${g}/archive`, 33, "POST", {
+        reason: "gifted",
+        confirmation: first.confirmation,
+      })
+    ).status,
+    409,
+  );
+  const current = (await call(`/gifts/${g}/archive-donor`, 33)).body;
+  assert.equal(
+    (
+      await call(`/gifts/${g}/archive`, 33, "POST", {
+        reason: "gifted",
+        confirmation: current.confirmation,
+      })
+    ).status,
+    200,
+  );
+});
+
+test("unbooked archive stores each reason and a booking made after preview blocks archiving", async () => {
+  for (const reason of ["changed_mind", "bought_self", "gifted"]) {
+    const g = await gift(34);
+    assert.equal(
+      (await call(`/gifts/${g}/archive`, 34, "POST", { reason })).status,
+      200,
+    );
+    assert.equal(
+      (await call("/archive", 34)).body.gifts.find((x: any) => x.id === g)
+        .archive_reason,
+      reason,
+    );
+  }
+  const g = await gift(34);
+  assert.equal(
+    (await call(`/gifts/${g}/archive`, 34, "POST", { reason: "unknown" }))
+      .status,
+    400,
+  );
+  assert.equal(
+    (await call(`/gifts/${g}/archive-status`, 34)).body.reserved,
+    false,
+  );
+  const raw = (await call("/guest-links", 34, "POST")).body.token;
+  await call(
+    `/guest-reservations/${g}`,
+    undefined,
+    "POST",
+    { name: "Бабушка" },
+    raw,
+  );
+  assert.equal(
+    (await call(`/gifts/${g}/archive`, 34, "POST", { reason: "bought_self" }))
+      .status,
+    409,
   );
 });
 

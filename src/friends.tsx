@@ -75,8 +75,7 @@ export function AddFriend({ onDone }: { onDone: (message: string) => void }) {
           }}
         >
           <p className="muted">
-            Введите ник из Telegram. Человек должен хотя бы раз открыть
-            приложение и подтвердить заявку.
+            Друг должен сначала войти в приложение, затем принять вашу заявку.
           </p>
           <label>
             Ник в Telegram
@@ -101,8 +100,8 @@ export function AddFriend({ onDone }: { onDone: (message: string) => void }) {
       ) : (
         <div className="share-result">
           <p className="muted">
-            Отправьте ссылку тому, кого хотите добавить. Открыв её в Telegram,
-            он подтвердит дружбу — и вы увидите вишлисты друг друга.
+            Отправьте ссылку другу. После подтверждения вы увидите вишлисты друг
+            друга.
           </p>
           {invite && <CopyValue value={invite.telegram_url} />}
           {error && (
@@ -131,11 +130,10 @@ export function AddFriend({ onDone }: { onDone: (message: string) => void }) {
             }}
           >
             <LinkIcon size={17} />
-            {invite ? "Заменить ссылку" : "Создать ссылку-приглашение"}
+            {invite ? "Заменить ссылку" : "Создать приглашение"}
           </button>
           <p className="small-text">
-            Ссылка действует 30 дней, новая заменяет прежнюю. Делитесь ею только
-            с теми, кого хотите видеть в друзьях.
+            Срок — 30 дней. Новое приглашение заменит старое.
           </p>
           {active.map((l) => (
             <div className="active-link" key={l.id}>
@@ -293,7 +291,7 @@ export function AcceptInvite({
       <p>
         {already
           ? "Вы уже друзья — вишлисты друг друга доступны в разделе «Друзья»."
-          : "приглашает вас в друзья. Вы будете видеть вишлисты друг друга и сможете тайно бронировать подарки."}
+          : "приглашает вас в друзья. Вы сможете видеть вишлисты друг друга."}
       </p>
       {!already && (
         <button
@@ -337,19 +335,13 @@ export function Profile({
       <p className="muted">
         {user?.username ? (
           <>
-            Ваш ник: <strong>@{user.username}</strong>. По нему вас можно
-            добавить в друзья.
+            <strong>@{user.username}</strong>
           </>
         ) : (
-          <>
-            У вас нет ника в Telegram. Друзья смогут добавить вас по
-            ссылке-приглашению, или задайте ник в настройках Telegram.
-          </>
+          <>Нет ника Telegram. Чтобы добавить друга, отправьте приглашение.</>
         )}
       </p>
-      <p className="small-text">
-        Друзей: {friends}. Имя и ник берутся из Telegram.
-      </p>
+      <p className="small-text">Друзей: {friends}</p>
       <button className="button primary full-width" onClick={onAddFriend}>
         <UserPlus size={17} /> Добавить друга
       </button>

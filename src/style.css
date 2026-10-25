@@ -2306,3 +2306,102 @@ footer svg {
 .share-result > section + section {
   margin-top: 28px;
 }
+
+.archive-reasons {
+  display: grid;
+  gap: 12px;
+  margin: 20px 0;
+}
+.modal form .archive-reasons label,
+.modal form .donor-confirmation label {
+  flex-direction: row;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+.archive-reasons input,
+.donor-confirmation input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  margin: 0;
+  accent-color: var(--purple, #8d71b5);
+}
+.archive-reasons label:has(input:disabled) {
+  opacity: 0.55;
+}
+.donor-confirmation {
+  padding: 16px;
+  margin: 16px 0;
+  border: 1px solid #e5dcec;
+  border-radius: 14px;
+}
+
+.sidebar nav {
+  margin-top: 32px;
+}
+.topbar-right {
+  margin-left: auto;
+}
+.wishlist-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 24px;
+}
+.remove-friend,
+.list-help {
+  margin-bottom: 20px;
+}
+.list-help {
+  color: var(--muted);
+  font-size: 13px;
+}
+@media (max-width: 760px) {
+  .wishlist-actions {
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+}
+.list-count {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+@media (max-width: 740px) {
+  .list-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+  }
+  .list-count {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .list-controls {
+    display: contents;
+  }
+  .list-controls .sort {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .list-controls .search {
+    display: flex;
+    grid-column: 1;
+    grid-row: 2;
+    min-width: 0;
+  }
+  .search input {
+    width: 100%;
+    min-width: 0;
+  }
+  .list-controls > .icon-button {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
+  }
+}

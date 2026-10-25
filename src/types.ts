@@ -14,6 +14,9 @@ export type Wish = {
   shop_url: string;
   has_photo: number;
   photo?: string;
+  archive_reason?: "changed_mind" | "gifted" | "bought_self" | null;
+  gifted_by_name?: string | null;
+  gifted_by_username?: string | null;
   archived_at?: number | null;
   reservation?: "available" | "mine" | "reserved";
 };
