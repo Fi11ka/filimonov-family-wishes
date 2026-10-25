@@ -1,3 +1,4 @@
+import { validBirthday } from "../shared/birthday";
 import {
   ApiError,
   fail,
@@ -123,7 +124,7 @@ async function canView(
   if (guest && /^[A-Za-z0-9_-]{43}$/.test(guest))
     return !!(await stmt(
       db,
-      "SELECT 1 AS ok FROM guest_links WHERE owner_id=? AND token_hash=? AND revoked_at IS NULL AND expires_at>? AND (kind='guest' OR ? IS NOT NULL)",
+      "SELECT 1 AS ok FROM guest_links WHERE owner_id=? AND token_hash=? AND revoked_at IS NULL AND expires_at>? AND (kind='guest' OR ? IS NOT NULL) AND (created_by=owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=owner_id AND share_owner.allow_resharing=1))",
       owner,
       await hash(guest),
       now(),
@@ -241,10 +242,17 @@ async function saveUser(db: D1Database, user: Identity) {
   ]);
 }
 function profile(db: D1Database, id: string) {
-  return stmt(db, "SELECT id,name,username FROM users WHERE id=?", id).first<{
+  return stmt(
+    db,
+    "SELECT id,name,username,birthday,allow_resharing,wishlist_updated_at FROM users WHERE id=?",
+    id,
+  ).first<{
     id: string;
     name: string;
     username: string | null;
+    birthday: string | null;
+    allow_resharing: number;
+    wishlist_updated_at: number | null;
   }>();
 }
 async function activeCount(db: D1Database, uid: string, archived: boolean) {
@@ -351,7 +359,7 @@ async function route(req: Request, env: Env): Promise<unknown> {
     if (!guest || !/^[A-Za-z0-9_-]{43}$/.test(guest)) missing();
     const link = await stmt(
       db,
-      "SELECT owner_id,kind FROM guest_links WHERE token_hash=? AND revoked_at IS NULL AND expires_at>? AND (kind='guest' OR ? IS NOT NULL)",
+      "SELECT owner_id,kind FROM guest_links WHERE token_hash=? AND revoked_at IS NULL AND expires_at>? AND (kind='guest' OR ? IS NOT NULL) AND (created_by=owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=owner_id AND share_owner.allow_resharing=1))",
       await hash(guest),
       now(),
       user?.id || null,
@@ -379,7 +387,7 @@ async function route(req: Request, env: Env): Promise<unknown> {
       `INSERT INTO reservations(gift_id,guest_name)
       SELECT g.id,? FROM gifts g JOIN guest_links l ON l.owner_id=g.owner_id
       WHERE g.id=? AND g.archived_at IS NULL AND l.token_hash=? AND l.kind='guest'
-      AND l.revoked_at IS NULL AND l.expires_at>? ON CONFLICT(gift_id) DO NOTHING RETURNING gift_id`,
+      AND l.revoked_at IS NULL AND (l.created_by=l.owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=l.owner_id AND share_owner.allow_resharing=1)) AND l.expires_at>? ON CONFLICT(gift_id) DO NOTHING RETURNING gift_id`,
       name,
       guestReservation[1],
       await hash(guest),
@@ -409,9 +417,49 @@ async function route(req: Request, env: Env): Promise<unknown> {
   const uid = user.id;
   if (path === "/api/me" && method === "GET")
     return {
-      user: { id: uid, name: user.name, username: user.username },
+      user: await profile(db, uid),
       web_session: !!session,
     };
+  if (path === "/api/me" && method === "PATCH") {
+    const b = await body(req);
+    if (
+      b.birthday !== undefined &&
+      b.birthday !== null &&
+      !validBirthday(b.birthday)
+    )
+      fail(400, "VALIDATION", "Укажите существующую дату рождения.");
+    if (
+      b.allow_resharing !== undefined &&
+      typeof b.allow_resharing !== "boolean"
+    )
+      fail(400, "VALIDATION", "Проверьте настройку доступа.");
+    const updates = [];
+    if (b.birthday !== undefined)
+      updates.push(
+        stmt(db, "UPDATE users SET birthday=? WHERE id=?", b.birthday, uid),
+      );
+    if (b.allow_resharing !== undefined) {
+      updates.push(
+        stmt(
+          db,
+          "UPDATE users SET allow_resharing=? WHERE id=?",
+          b.allow_resharing ? 1 : 0,
+          uid,
+        ),
+      );
+      if (!b.allow_resharing)
+        updates.push(
+          stmt(
+            db,
+            "UPDATE guest_links SET revoked_at=? WHERE owner_id=? AND created_by<>owner_id AND revoked_at IS NULL",
+            now(),
+            uid,
+          ),
+        );
+    }
+    if (updates.length) await db.batch(updates);
+    return { user: await profile(db, uid) };
+  }
   if (path === "/api/auth/logout" && method === "POST") {
     if (session)
       await stmt(
@@ -643,6 +691,7 @@ async function route(req: Request, env: Env): Promise<unknown> {
   }
   if (path === "/api/archive" && method === "GET")
     return {
+      owner: await profile(db, uid),
       gifts: (
         await stmt(
           db,
@@ -872,7 +921,7 @@ async function route(req: Request, env: Env): Promise<unknown> {
         `INSERT INTO reservations(gift_id,user_id)
         SELECT id,?1 FROM gifts WHERE id=?2 AND owner_id<>?1 AND archived_at IS NULL AND (
           ${FRIEND_OF("gifts.owner_id")}
-          OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=gifts.owner_id AND l.token_hash=?3 AND l.revoked_at IS NULL AND l.expires_at>?4)
+          OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=gifts.owner_id AND l.token_hash=?3 AND l.revoked_at IS NULL AND (l.created_by=l.owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=l.owner_id AND share_owner.allow_resharing=1)) AND l.expires_at>?4)
         ) ON CONFLICT(gift_id) DO NOTHING RETURNING gift_id`,
         uid,
         id,
@@ -893,7 +942,7 @@ async function route(req: Request, env: Env): Promise<unknown> {
     const r = await stmt(
       db,
       `SELECT r.gift_id,
-        CASE WHEN ${FRIEND_OF("g.owner_id")} OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=g.owner_id AND l.revoked_at IS NULL AND l.expires_at>?2) THEN g.title ELSE 'Подарок из закрытого списка' END AS title,
+        CASE WHEN ${FRIEND_OF("g.owner_id")} OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=g.owner_id AND l.revoked_at IS NULL AND (l.created_by=l.owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=l.owner_id AND share_owner.allow_resharing=1)) AND l.expires_at>?2) THEN g.title ELSE 'Подарок из закрытого списка' END AS title,
         CASE WHEN g.archived_at IS NULL THEN 0 ELSE 1 END AS archived
       FROM reservations r JOIN gifts g ON g.id=r.gift_id WHERE r.user_id=?1 AND g.owner_id<>?1`,
       uid,
@@ -936,13 +985,26 @@ async function route(req: Request, env: Env): Promise<unknown> {
     }
     return { ok: true };
   }
-  if (path === "/api/guest-links" && (method === "GET" || method === "POST")) {
+  const shareList = path.match(/^\/api\/lists\/(\d+)\/share-links$/);
+  if (
+    (path === "/api/guest-links" || shareList) &&
+    (method === "GET" || method === "POST")
+  ) {
+    const ownerId = shareList ? shareList[1] : uid;
+    if (!(await canView(db, ownerId, user, guest))) missing();
+    if (ownerId !== uid && !(await profile(db, ownerId))?.allow_resharing)
+      fail(
+        403,
+        "SHARING_DISABLED",
+        "Владелец запретил делиться этим вишлистом.",
+      );
     if (method === "POST") await rate(db, `links:${uid}`, 5);
     const links = [];
     for (const kind of ["telegram", "guest"]) {
       let link = await stmt(
         db,
-        "SELECT id,token_value FROM guest_links WHERE owner_id=? AND kind=? AND revoked_at IS NULL AND token_value IS NOT NULL LIMIT 1",
+        "SELECT id,token_value FROM guest_links WHERE owner_id=? AND created_by=? AND kind=? AND revoked_at IS NULL AND token_value IS NOT NULL LIMIT 1",
+        ownerId,
         uid,
         kind,
       ).first<{ id: string; token_value: string }>();
@@ -952,20 +1014,30 @@ async function route(req: Request, env: Env): Promise<unknown> {
           id = crypto.randomUUID();
         await stmt(
           db,
-          "INSERT OR IGNORE INTO guest_links(id,owner_id,token_hash,expires_at,kind,token_value) VALUES(?,?,?,253402300799,?,?)",
+          `INSERT OR IGNORE INTO guest_links(id,owner_id,created_by,token_hash,expires_at,kind,token_value)
+          SELECT ?,?,?,?,253402300799,?,? FROM users WHERE id=? AND (id=? OR allow_resharing=1)`,
           id,
+          ownerId,
           uid,
           await hash(raw),
           kind,
           raw,
+          ownerId,
+          uid,
         ).run();
         link = await stmt(
           db,
-          "SELECT id,token_value FROM guest_links WHERE owner_id=? AND kind=? AND revoked_at IS NULL AND token_value IS NOT NULL",
+          "SELECT id,token_value FROM guest_links WHERE owner_id=? AND created_by=? AND kind=? AND revoked_at IS NULL AND token_value IS NOT NULL",
+          ownerId,
           uid,
           kind,
         ).first<{ id: string; token_value: string }>();
-        if (!link) missing();
+        if (!link)
+          fail(
+            403,
+            "SHARING_DISABLED",
+            "Владелец запретил делиться этим вишлистом.",
+          );
       }
       links.push({
         id: link.id,
@@ -976,17 +1048,20 @@ async function route(req: Request, env: Env): Promise<unknown> {
             : `${BOT_LINK}?startapp=s_${link.token_value}`,
       });
     }
-    const guestLink = links.find((l) => l.kind === "guest")!;
+    const guestLink = links.find((l) => l.kind === "guest");
     return {
       links,
-      legacy_links: (
-        await stmt(
-          db,
-          "SELECT id FROM guest_links WHERE owner_id=? AND token_value IS NULL AND revoked_at IS NULL AND expires_at>?",
-          uid,
-          now(),
-        ).all()
-      ).results,
+      legacy_links:
+        ownerId === uid
+          ? (
+              await stmt(
+                db,
+                "SELECT id FROM guest_links WHERE owner_id=? AND token_value IS NULL AND revoked_at IS NULL AND expires_at>?",
+                uid,
+                now(),
+              ).all()
+            ).results
+          : [],
       id: guestLink?.id,
       token: guestLink?.web_url.split("#guest=")[1],
     };
@@ -995,9 +1070,10 @@ async function route(req: Request, env: Env): Promise<unknown> {
   if (linkMatch && method === "DELETE") {
     await stmt(
       db,
-      "UPDATE guest_links SET revoked_at=? WHERE id=? AND owner_id=?",
+      "UPDATE guest_links SET revoked_at=? WHERE id=? AND (owner_id=? OR created_by=?)",
       now(),
       linkMatch[1],
+      uid,
       uid,
     ).run();
     return { ok: true };

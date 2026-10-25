@@ -1,3 +1,4 @@
+import { nextBirthday } from "../shared/birthday";
 import { GuestBookings, ArchiveWish } from "./forms";
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -101,6 +102,11 @@ function App() {
     [busy, setBusy] = useState(false),
     [menu, setMenu] = useState(false),
     [webSession, setWebSession] = useState(false);
+  const [today, setToday] = useState(() => new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setToday(new Date()), 60000);
+    return () => clearInterval(timer);
+  }, []);
   const [archiveGift, setArchiveGift] = useState<Wish | null>(null);
   const [giftDirty, setGiftDirty] = useState(false);
   const [giftSaving, setGiftSaving] = useState(false);
@@ -163,7 +169,9 @@ function App() {
     if (demo) return;
     setLoading(true);
     try {
-      setArchive((await api("/api/archive")).gifts);
+      const d = await api("/api/archive");
+      setArchive(d.gifts);
+      setOwner(d.owner);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -243,9 +251,10 @@ function App() {
     setError("");
     if (demo) {
       if (next === "mine") {
-        setOwner(demoUser);
+        setOwner(user || demoUser);
         setGifts(demoGifts);
       }
+      if (next === "archive") setOwner(user || demoUser);
       if (next === "friends") {
         setOwner(null);
         setGifts([]);
@@ -449,18 +458,18 @@ function App() {
                 )}
               </button>
             )}
+            <span className="profile-name">
+              {user ? handle(user) || user.name.split(" ")[0] : "Гость"}
+            </span>
             <button
-              className="family-chip"
+              className="avatar small profile-button"
               onClick={() => setModal("profile")}
               disabled={!user}
+              aria-label="Мой профиль"
+              title="Мой профиль"
             >
-              <span className="family-dot" />
-              {user ? handle(user) || user.name.split(" ")[0] : "Гость"}
-              <ChevronDown size={14} />
-            </button>
-            <span className="avatar small">
               {initials(user?.name || "Гость")}
-            </span>
+            </button>
           </div>
         </header>
         <main>
@@ -537,6 +546,48 @@ function App() {
                             ? "Мой вишлист"
                             : `Вишлист: ${owner?.name || ownerFirst}`}
                   </h1>
+                  {owner && showList && tab !== "bookings" && (
+                    <div className="wishlist-meta">
+                      {owner.birthday ? (
+                        <span>
+                          День рождения:{" "}
+                          {new Intl.DateTimeFormat("ru-RU", {
+                            day: "numeric",
+                            month: "long",
+                            timeZone: "UTC",
+                          }).format(
+                            new Date(`2000-${owner.birthday}T00:00:00Z`),
+                          )}{" "}
+                          · {birthdayCountdown(owner.birthday, today)}
+                        </span>
+                      ) : own ? (
+                        <button
+                          className="text-link"
+                          onClick={() => setModal("profile")}
+                        >
+                          Указать дату рождения
+                        </button>
+                      ) : null}
+                      {owner.wishlist_updated_at ? (
+                        <time
+                          dateTime={new Date(
+                            owner.wishlist_updated_at * 1000,
+                          ).toISOString()}
+                        >
+                          Обновлён{" "}
+                          {new Date(
+                            owner.wishlist_updated_at * 1000,
+                          ).toLocaleString("ru-RU", {
+                            day: "numeric",
+                            month: "long",
+                            year: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </time>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
                 {tab === "mine" && user && (
                   <div className="title-actions">
@@ -657,6 +708,28 @@ function App() {
                       </button>
                     </div>
                   )}
+                  {user &&
+                    !own &&
+                    owner &&
+                    showList &&
+                    tab !== "archive" &&
+                    owner.allow_resharing !== 0 && (
+                      <div className="wishlist-actions">
+                        <button
+                          className="button secondary"
+                          onClick={() => {
+                            if (demo) {
+                              notice("В демо ссылки не создаются.");
+                              return;
+                            }
+                            setModal("share");
+                          }}
+                        >
+                          <LinkIcon size={16} />
+                          Поделиться
+                        </button>
+                      </div>
+                    )}
                   {viewingFriend &&
                     owner &&
                     friends.some((f) => f.id === owner.id) && (
@@ -945,7 +1018,7 @@ function App() {
           ) : modal === "guest-bookings" ? (
             <GuestBookings />
           ) : modal === "share" ? (
-            <Share />
+            <Share ownerId={owner?.id} own={own} />
           ) : modal === "add-friend" ? (
             <AddFriend
               onDone={async (message) => {
@@ -957,6 +1030,14 @@ function App() {
           ) : modal === "profile" ? (
             <Profile
               user={user}
+              onUpdated={(updated) => {
+                setUser(updated);
+                setOwner((current) =>
+                  current?.id === updated.id
+                    ? { ...current, ...updated }
+                    : current,
+                );
+              }}
               friends={friends.length}
               webSession={webSession}
               onAddFriend={() => setModal("add-friend")}
@@ -1190,3 +1271,17 @@ function Photo({ wish }: { wish: Wish }) {
   );
 }
 createRoot(document.getElementById("root")!).render(<App />);
+
+function birthdayCountdown(birthday: string, today: Date) {
+  const info = nextBirthday(birthday, today);
+  if (!info) return "";
+  const n = info.days;
+  if (n === 0) return "сегодня";
+  const word =
+    n % 10 === 1 && n % 100 !== 11
+      ? "день"
+      : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14)
+        ? "дня"
+        : "дней";
+  return `через ${n} ${word}`;
+}

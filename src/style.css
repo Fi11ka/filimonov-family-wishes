@@ -2405,3 +2405,61 @@ footer svg {
     justify-self: end;
   }
 }
+
+.profile-name {
+  font-size: 13px;
+  color: var(--muted);
+}
+.profile-button {
+  flex-shrink: 0;
+}
+.wishlist-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.wishlist-meta .text-link {
+  align-self: flex-start;
+}
+.profile-settings {
+  margin: 24px 0;
+  text-align: left;
+}
+.profile-settings fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0 0 18px;
+}
+.profile-settings legend {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.birthday-inputs {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  gap: 8px;
+}
+.birthday-inputs select {
+  min-width: 0;
+}
+.modal form .setting-toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+}
+.modal form .setting-toggle input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  padding: 0;
+  margin: 2px 0 0;
+  accent-color: var(--purple);
+}
+.profile-settings p {
+  margin: 10px 0 16px;
+}

@@ -135,6 +135,34 @@ before(async () => {
   await migrate("migrations/0005_permanent_sharing.sql");
   await migrate("migrations/0006_home_helper.sql");
   await migrate("migrations/0007_archive_reasons.sql");
+  await db.batch([
+    db.prepare(
+      "INSERT INTO users(id,name) VALUES('999100','Migration fixture')",
+    ),
+    db.prepare(
+      "INSERT INTO gifts(id,owner_id,title,currency,priority,created_at,updated_at,archived_at) VALUES('00000000-0000-4000-8000-000000999100','999100','Existing wish','EUR',2,100,200,150)",
+    ),
+    db.prepare(
+      "INSERT INTO guest_links(id,owner_id,token_hash,expires_at) VALUES('migration-link','999100','migration-hash',253402300799)",
+    ),
+  ]);
+  await migrate("migrations/0008_profile_and_sharing.sql");
+  assert.equal(
+    (
+      await db
+        .prepare("SELECT wishlist_updated_at FROM users WHERE id='999100'")
+        .first()
+    )?.wishlist_updated_at,
+    200,
+  );
+  assert.equal(
+    (
+      await db
+        .prepare("SELECT created_by FROM guest_links WHERE id='migration-link'")
+        .first()
+    )?.created_by,
+    "999100",
+  );
   for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9])
     assert.equal((await call("/me", id)).status, 200);
 });
@@ -666,7 +694,12 @@ test("website sign-in: Telegram id_token issues a revocable session for the same
   assert.ok(!stored.results.some((r: any) => r.token_hash === t));
   const profile = await me(t);
   assert.equal(profile.status, 200);
-  assert.deepEqual(profile.body.user, {
+  const { birthday, allow_resharing, wishlist_updated_at, ...identity } =
+    profile.body.user;
+  assert.equal(birthday, null);
+  assert.equal(allow_resharing, 1);
+  assert.equal(typeof wishlist_updated_at, "number");
+  assert.deepEqual(identity, {
     id: "1",
     name: "User 1",
     username: "user_1",
@@ -1188,4 +1221,236 @@ test("home helper endpoints stay hidden until HELPER_TOKEN is configured", async
   });
   assert.equal(r.status, 404);
   await r.text();
+});
+
+test("profile birthday and resharing settings are validated and survive Telegram sign-in", async () => {
+  await call("/me", 41);
+  assert.equal(
+    (
+      await call("/me", 41, "PATCH", {
+        birthday: "02-29",
+        allow_resharing: false,
+      })
+    ).status,
+    200,
+  );
+  let me = (await call("/me", 41)).body.user;
+  assert.equal(me.birthday, "02-29");
+  assert.equal(me.allow_resharing, 0);
+  for (const birthday of ["02-30", "04-31", "2020-01-01", 123])
+    assert.equal((await call("/me", 41, "PATCH", { birthday })).status, 400);
+  assert.equal(
+    (await call("/me", 41, "PATCH", { allow_resharing: "false" })).status,
+    400,
+  );
+  assert.equal(
+    (await call("/me", undefined, "PATCH", { birthday: "01-01" })).status,
+    401,
+  );
+  await call("/me", 42, "PATCH", { birthday: "06-12", user_id: "41" });
+  assert.equal((await call("/me", 41)).body.user.birthday, "02-29");
+  assert.equal(
+    (await call("/me", 41, "PATCH", { birthday: null })).body.user.birthday,
+    null,
+  );
+});
+
+test("wishlist freshness changes on all gift mutations but never on bookings or sign-in", async () => {
+  const g = await gift(43);
+  const raw = (await call("/guest-links", 43, "POST")).body.token;
+  async function old() {
+    await db
+      .prepare("UPDATE users SET wishlist_updated_at=1 WHERE id='43'")
+      .run();
+  }
+  async function updated() {
+    assert.ok((await call("/lists/43", 43)).body.owner.wishlist_updated_at > 1);
+  }
+  await old();
+  await call(`/gifts/${g}`, 43, "PUT", { ...input, title: "Изменено" });
+  await updated();
+  await old();
+  await call(`/gifts/${g}/archive`, 43, "POST", { reason: "changed_mind" });
+  await updated();
+  await old();
+  await call(`/gifts/${g}/restore`, 43, "POST");
+  await updated();
+  await old();
+  await call(`/gifts/${g}/reservation`, 44, "POST", undefined, raw);
+  assert.equal((await call("/lists/43", 43)).body.owner.wishlist_updated_at, 1);
+  await call(`/gifts/${g}/reservation`, 44, "DELETE");
+  assert.equal((await call("/me", 43)).body.user.wishlist_updated_at, 1);
+  await call("/me", 43, "PATCH", { birthday: "06-12" });
+  assert.equal((await call("/me", 43)).body.user.wishlist_updated_at, 1);
+  await old();
+  await call(`/gifts/${g}`, 43, "DELETE");
+  await updated();
+  await old();
+  await gift(43, { title: "Импортированное", archived: true });
+  await updated();
+  const guest = await call("/guest", undefined, "GET", undefined, raw);
+  assert.equal(guest.body.owner.birthday, "06-12");
+  assert.ok(guest.body.owner.wishlist_updated_at > 1);
+});
+
+test("viewers share independent links and owner disabling resharing revokes only viewers' links", async () => {
+  const g = await gift(45);
+  const original = (await call("/guest-links", 45, "POST")).body;
+  // Existing access is required; strangers cannot mint links by guessing an owner ID.
+  assert.equal((await call("/lists/45/share-links", 46, "POST")).status, 404);
+  const shared = await call(
+    "/lists/45/share-links",
+    46,
+    "POST",
+    undefined,
+    original.token,
+  );
+  assert.equal(shared.status, 200, shared.raw);
+  assert.notEqual(shared.body.token, original.token);
+  assert.deepEqual(
+    (await call("/lists/45/share-links", 46, "GET", undefined, original.token))
+      .body.links,
+    shared.body.links,
+  );
+  assert.deepEqual((await call("/guest-links", 45)).body.links, original.links);
+  assert.equal(
+    (await call("/guest", undefined, "GET", undefined, shared.body.token))
+      .status,
+    200,
+  );
+  const telegram = shared.body.links
+    .find((l: any) => l.kind === "telegram")
+    .web_url.split("startapp=s_")[1];
+  assert.equal(
+    (await call("/guest", 47, "GET", undefined, telegram)).status,
+    200,
+  );
+  await call("/me", 45, "PATCH", { allow_resharing: false });
+  assert.equal(
+    (await call("/guest", undefined, "GET", undefined, shared.body.token))
+      .status,
+    404,
+  );
+  assert.equal(
+    (
+      await call(
+        `/gifts/${g}/photo`,
+        undefined,
+        "GET",
+        undefined,
+        shared.body.token,
+      )
+    ).status,
+    404,
+  );
+  assert.equal(
+    (
+      await call(
+        `/guest-reservations/${g}`,
+        undefined,
+        "POST",
+        { name: "Гость" },
+        shared.body.token,
+      )
+    ).status,
+    409,
+  );
+  assert.equal(
+    (await call(`/gifts/${g}/reservation`, 47, "POST", undefined, telegram))
+      .status,
+    404,
+  );
+  assert.equal(
+    (await call("/lists/45/share-links", 46, "POST", undefined, original.token))
+      .status,
+    403,
+  );
+  assert.equal(
+    (await call("/guest", undefined, "GET", undefined, original.token)).status,
+    200,
+  );
+  assert.equal((await call("/guest-links", 45)).body.links.length, 2);
+  await call("/me", 45, "PATCH", { allow_resharing: true });
+  assert.equal(
+    (await call("/guest", undefined, "GET", undefined, shared.body.token))
+      .status,
+    404,
+  );
+  const fresh = await call(
+    "/lists/45/share-links",
+    46,
+    "POST",
+    undefined,
+    original.token,
+  );
+  assert.equal(fresh.status, 200);
+  assert.notEqual(fresh.body.token, shared.body.token);
+  // An unrelated viewer cannot revoke another person's links.
+  await call(`/guest-links/${fresh.body.id}`, 47, "DELETE");
+  assert.equal(
+    (await call("/guest", undefined, "GET", undefined, fresh.body.token))
+      .status,
+    200,
+  );
+  await call(`/guest-links/${fresh.body.id}`, 46, "DELETE");
+  assert.equal(
+    (await call("/guest", undefined, "GET", undefined, fresh.body.token))
+      .status,
+    404,
+  );
+});
+
+test("disabled resharing is rechecked on access and booking even for an unrevoked delegated link", async () => {
+  const g = await gift(48);
+  const original = (await call("/guest-links", 48, "POST")).body.token;
+  const delegated = (
+    await call("/lists/48/share-links", 49, "POST", undefined, original)
+  ).body;
+  await call("/me", 48, "PATCH", { allow_resharing: false });
+  // Simulate a link left over by an in-flight operation: policy checks must still deny it.
+  await db
+    .prepare(
+      "UPDATE guest_links SET revoked_at=NULL WHERE owner_id='48' AND created_by='49'",
+    )
+    .run();
+  assert.equal(
+    (await call("/guest", undefined, "GET", undefined, delegated.token)).status,
+    404,
+  );
+  assert.equal(
+    (
+      await call(
+        `/gifts/${g}/photo`,
+        undefined,
+        "GET",
+        undefined,
+        delegated.token,
+      )
+    ).status,
+    404,
+  );
+  assert.equal(
+    (
+      await call(
+        `/guest-reservations/${g}`,
+        undefined,
+        "POST",
+        { name: "Гость" },
+        delegated.token,
+      )
+    ).status,
+    409,
+  );
+  const telegram = delegated.links
+    .find((l: any) => l.kind === "telegram")
+    .web_url.split("startapp=s_")[1];
+  assert.equal(
+    (await call(`/gifts/${g}/reservation`, 50, "POST", undefined, telegram))
+      .status,
+    404,
+  );
+  assert.equal(
+    (await call("/guest", undefined, "GET", undefined, original)).status,
+    200,
+  );
 });

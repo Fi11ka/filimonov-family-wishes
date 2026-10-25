@@ -821,21 +821,30 @@ export function CopyValue({
     </>
   );
 }
-export function Share() {
+export function Share({
+  ownerId,
+  own = true,
+}: {
+  ownerId?: string;
+  own?: boolean;
+}) {
+  const endpoint = ownerId
+    ? `/api/lists/${ownerId}/share-links`
+    : "/api/guest-links";
   const [links, setLinks] = useState<
     { id: string; kind: string; web_url: string }[]
   >([]);
   const [error, setError] = useState("");
   const [legacy, setLegacy] = useState<{ id: string }[]>([]);
   useEffect(() => {
-    api("/api/guest-links")
-      .then((d) => (d.links.length === 2 ? d : api("/api/guest-links", "POST")))
+    api(endpoint)
+      .then((d) => (d.links.length === 2 ? d : api(endpoint, "POST")))
       .then((d) => {
         setLinks(d.links);
         setLegacy(d.legacy_links || []);
       })
       .catch((e) => setError(e.message));
-  }, []);
+  }, [endpoint]);
   return (
     <div className="share-result">
       <p>Ссылки действуют постоянно.</p>
@@ -874,7 +883,7 @@ export function Share() {
           <CopyValue
             value={link.web_url}
             warning={
-              link.kind === "guest"
+              link.kind === "guest" && own
                 ? "По этой ссылке видны все подарки и брони. Не открывайте её сами, если хотите сохранить сюрприз."
                 : undefined
             }
@@ -891,7 +900,7 @@ export function Share() {
               try {
                 await api(`/api/guest-links/${link.id}`, "DELETE");
                 setLinks(links.filter((l) => l.id !== link.id));
-                setLinks((await api("/api/guest-links", "POST")).links);
+                setLinks((await api(endpoint, "POST")).links);
               } catch (e) {
                 setError((e as Error).message);
               }
