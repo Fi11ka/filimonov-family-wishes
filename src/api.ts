@@ -1,4 +1,5 @@
-export const BOT = "FilimonovFamilyWishes_bot";
+export { BOT } from "./telegram-links";
+import { telegramAppLink } from "./telegram-links";
 export const telegram = (
   window as unknown as {
     Telegram?: {
@@ -124,8 +125,7 @@ export async function api<T = any>(
 export async function apiBlob(path: string, data: unknown, timeout = 30000) {
   return (await request(path, "POST", data, timeout)).blob();
 }
-export const telegramLink = () =>
-  `https://t.me/${BOT}?startapp${guestToken ? `=g_${guestToken}` : ""}`;
+export const telegramLink = () => telegramAppLink(guestToken, friendInvite);
 export { compressPhoto } from "./photo";
 import { compressPhoto } from "./photo";
 /** Downloads a picture through the API (shops forbid direct cross-site reads) and compresses it. */

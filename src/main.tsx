@@ -46,7 +46,7 @@ import {
   demoIncoming,
   demoUser,
 } from "./demo";
-import { GiftForm, Share, Modal, Confirm } from "./forms";
+import { GiftForm, Share, Modal, Confirm, CopyValue } from "./forms";
 import { AcceptInvite, AddFriend, Profile, Requests } from "./friends";
 import { ImportDialog } from "./import/ImportDialog";
 import {
@@ -93,7 +93,8 @@ function App() {
     >([]),
     [busy, setBusy] = useState(false),
     [menu, setMenu] = useState(false),
-    [webSession, setWebSession] = useState(false);
+    [webSession, setWebSession] = useState(false),
+    [showBrowserLogin, setShowBrowserLogin] = useState(false);
   const own = !!user && owner?.id === user.id;
   const notice = (message: string) => {
     setToast(message);
@@ -463,17 +464,29 @@ function App() {
               <p>
                 Мечтайте, сохраняйте подарки и готовьте друг другу сюрпризы.
               </p>
-              {apiConfigured && !telegram?.initData ? (
-                <>
-                  <WebLogin onSignedIn={() => void refresh()} />
-                  <a className="text-link" href={telegramLink()}>
-                    Открыть в Telegram <ArrowUpRight size={15} />
-                  </a>
-                </>
-              ) : (
-                <a className="button primary" href={telegramLink()}>
-                  Открыть в Telegram <ArrowUpRight size={18} />
-                </a>
+              <a className="button primary" href={telegramLink()}>
+                Открыть в Telegram <ArrowUpRight size={18} />
+              </a>
+              <p className="small-text">
+                Приложение откроется внутри Telegram. Вход — вашим
+                Telegram-аккаунтом.
+              </p>
+              <div className="welcome-app-link">
+                <span className="small-text">
+                  Ссылка для открытия и отправки близким
+                </span>
+                <CopyValue value={telegramLink()} />
+              </div>
+              {apiConfigured && !telegram?.initData && (
+                <details
+                  className="browser-login-option"
+                  onToggle={(e) => setShowBrowserLogin(e.currentTarget.open)}
+                >
+                  <summary>Остаться в браузере</summary>
+                  {showBrowserLogin && (
+                    <WebLogin onSignedIn={() => void refresh()} />
+                  )}
+                </details>
               )}
               {error && (
                 <div className="error" role="alert">
