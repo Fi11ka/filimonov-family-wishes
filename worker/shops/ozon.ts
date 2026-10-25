@@ -27,7 +27,8 @@ export function ozonWidgets(
     }
     if (!s || typeof s !== "object") continue;
     if (key.startsWith("webPrice") && !out.price) {
-      const text = String(s.cardPrice || s.price || s.originalPrice || "");
+      // The card-only discount is not the price available to every family member.
+      const text = String(s.price || s.originalPrice || "");
       out.price = text ? priceFromText(text, "RUB") : null;
     }
     if (key.startsWith("webProductHeading") && !out.title)
