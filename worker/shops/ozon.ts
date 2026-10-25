@@ -7,7 +7,7 @@ import {
   openGraph,
   priceFromText,
 } from "./html";
-import type { ProductInfo, Shop } from "./types";
+import type { Page, ProductInfo, Shop } from "./types";
 // Ozon embeds widget states as JSON strings. The same states are returned by the
 // composer API, which is tried when the page itself is an anti-bot stub.
 export function ozonWidgets(
@@ -56,7 +56,13 @@ export const ozon: Shop = {
   name: "Ozon",
   matches: (u) => /(^|\.)ozon\.(ru|by|kz)$/.test(u.hostname),
   async parse(url, ctx) {
-    const page = await ctx.page(url);
+    let page: Page;
+    try {
+      page = await ctx.page(url);
+    } catch {
+      // A transport failure must not skip the existing composer fallback.
+      page = { url, status: 503, html: "" };
+    }
     const onPage = fromPage(
       page,
       ozonWidgets(statesFromHtml(page.html), page.url),

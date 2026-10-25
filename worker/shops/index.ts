@@ -60,6 +60,7 @@ export interface LookupResult {
     currency: string;
   } | null;
   blocked: boolean;
+  unavailable: boolean;
 }
 export async function lookupProduct(
   raw: unknown,
@@ -98,6 +99,7 @@ export async function lookupProduct(
     title: info.title || "",
     image_url: info.image || "",
     price,
+    unavailable: !!info.unavailable,
     blocked: !!info.blocked && !price && !info.image,
   };
 }
