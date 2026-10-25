@@ -8,6 +8,7 @@ import {
   token,
   usernameOf,
   validateInitData,
+  validateLoginWidget,
   type Identity,
 } from "./security";
 import { fetchBytes, imageType, publicHttpsUrl } from "./net";
@@ -141,6 +142,43 @@ async function list(db: D1Database, owner: string, user: Identity | null) {
   ).all();
   return r.results;
 }
+const SESSION_DAYS = 30,
+  SESSION_LIMIT = 10;
+async function sessionUser(db: D1Database, raw: string): Promise<Identity> {
+  const u = /^[A-Za-z0-9_-]{43}$/.test(raw)
+    ? await stmt(
+        db,
+        "SELECT u.id,u.name,u.username FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?",
+        await hash(raw),
+        now(),
+      ).first<Identity>()
+    : null;
+  if (!u)
+    fail(401, "SESSION_EXPIRED", "Вход истёк. Войдите через Telegram ещё раз.");
+  return u;
+}
+async function saveUser(db: D1Database, user: Identity) {
+  await db.batch([
+    // A Telegram username can move to another account; the newest owner keeps it.
+    ...(user.username
+      ? [
+          stmt(
+            db,
+            "UPDATE users SET username=NULL WHERE username=? AND id<>?",
+            user.username,
+            user.id,
+          ),
+        ]
+      : []),
+    stmt(
+      db,
+      `INSERT INTO users(id,name,username) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,username=excluded.username WHERE name<>excluded.name OR username IS NOT excluded.username`,
+      user.id,
+      user.name,
+      user.username,
+    ),
+  ]);
+}
 function profile(db: D1Database, id: string) {
   return stmt(db, "SELECT id,name,username FROM users WHERE id=?", id).first<{
     id: string;
@@ -179,13 +217,49 @@ async function route(req: Request, env: Env): Promise<unknown> {
   if (!env.BOT_TOKEN)
     fail(503, "NOT_CONFIGURED", "Приложение ещё настраивается.");
   const auth = req.headers.get("authorization");
-  const user = auth
-    ? await validateInitData(
-        auth.startsWith("tma ") ? auth.slice(4) : "",
-        env.BOT_TOKEN,
-      )
-    : null;
+  // Mini App: signed initData on every request. Website: a session token issued
+  // after the Telegram Login Widget, looked up by its SHA-256.
+  const session = auth?.startsWith("Session ") ? auth.slice(8) : "";
+  const user = !auth
+    ? null
+    : session
+      ? await sessionUser(db, session)
+      : await validateInitData(
+          auth.startsWith("tma ") ? auth.slice(4) : "",
+          env.BOT_TOKEN,
+        );
   const guest = req.headers.get("x-guest-token");
+  if (path === "/api/auth/config" && method === "GET")
+    // The bot ID (token prefix) is public; the website needs it to open Telegram's sign-in window.
+    return { bot_id: Number(env.BOT_TOKEN.split(":")[0]) || null };
+  if (path === "/api/auth/telegram-login" && method === "POST") {
+    const b = await body(req);
+    await rate(
+      db,
+      `login:${await hash(req.headers.get("cf-connecting-ip") || "local")}`,
+      10,
+    );
+    const identity = await validateLoginWidget(b, env.BOT_TOKEN);
+    await saveUser(db, identity);
+    const raw = token(),
+      expires = now() + SESSION_DAYS * 86400;
+    await db.batch([
+      // Keep the newest sessions only; a forgotten browser does not stay signed in forever.
+      stmt(
+        db,
+        `DELETE FROM sessions WHERE user_id=?1 AND token_hash NOT IN (SELECT token_hash FROM sessions WHERE user_id=?1 ORDER BY created_at DESC LIMIT ${SESSION_LIMIT - 1})`,
+        identity.id,
+      ),
+      stmt(
+        db,
+        "INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)",
+        await hash(raw),
+        identity.id,
+        expires,
+      ),
+    ]);
+    return { token: raw, expires_at: expires, user: identity };
+  }
   if (
     !user &&
     !(
@@ -200,27 +274,8 @@ async function route(req: Request, env: Env): Promise<unknown> {
     ? `u:${user.id}`
     : `ip:${await hash(req.headers.get("cf-connecting-ip") || "local")}`;
   await rate(db, rateKey, user ? 240 : 120);
-  if (user)
-    await db.batch([
-      // A Telegram username can move to another account; the newest owner keeps it.
-      ...(user.username
-        ? [
-            stmt(
-              db,
-              "UPDATE users SET username=NULL WHERE username=? AND id<>?",
-              user.username,
-              user.id,
-            ),
-          ]
-        : []),
-      stmt(
-        db,
-        `INSERT INTO users(id,name,username) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,username=excluded.username WHERE name<>excluded.name OR username IS NOT excluded.username`,
-        user.id,
-        user.name,
-        user.username,
-      ),
-    ]);
+  // Session identities come from the users table; only signed Telegram data updates it.
+  if (user && !session) await saveUser(db, user);
   if (path === "/api/guest" && method === "GET") {
     if (!guest || !/^[A-Za-z0-9_-]{43}$/.test(guest)) missing();
     const link = await stmt(
@@ -254,7 +309,21 @@ async function route(req: Request, env: Env): Promise<unknown> {
   if (path === "/api/me" && method === "GET")
     return {
       user: { id: uid, name: user.name, username: user.username },
+      web_session: !!session,
     };
+  if (path === "/api/auth/logout" && method === "POST") {
+    if (session)
+      await stmt(
+        db,
+        "DELETE FROM sessions WHERE token_hash=?",
+        await hash(session),
+      ).run();
+    return { ok: true };
+  }
+  if (path === "/api/auth/logout-all" && method === "POST") {
+    await stmt(db, "DELETE FROM sessions WHERE user_id=?", uid).run();
+    return { ok: true };
+  }
   // ---- Friends ----
   if (path === "/api/friends" && method === "GET") {
     const rows = (
@@ -823,10 +892,13 @@ export default {
     }
   },
   async scheduled(_event: ScheduledEvent, env: Env) {
-    await stmt(
-      env.DB,
-      "DELETE FROM rate_limits WHERE window<?",
-      Math.floor(now() / 60) - 1440,
-    ).run();
+    await env.DB.batch([
+      stmt(
+        env.DB,
+        "DELETE FROM rate_limits WHERE window<?",
+        Math.floor(now() / 60) - 1440,
+      ),
+      stmt(env.DB, "DELETE FROM sessions WHERE expires_at<?", now()),
+    ]);
   },
 };

@@ -97,8 +97,9 @@ Cloudflare Workers Builds подключён только к репозитор�
 3. Bot Settings → **Configure Mini App** / **Main Mini App** (названия пунктов могут отличаться в клиенте) → Enable / Edit URL. Укажите полный GitHub Pages URL из шага 7.
 4. Включите Main Mini App. Именно эта настройка обеспечивает ссылки вида `https://t.me/FilimonovFamilyWishes_bot?startapp` и гостевые `?startapp=g_...`. Если в меню нет пункта, используйте `/newapp` для named Mini App только после адаптации генерируемых ссылок в `src/api.ts` и `worker/index.ts` к `/appname?startapp=...`; предпочтителен Main Mini App без appname.
 5. Настройте меню: `/setmenubutton` → выберите того же бота → укажите URL Pages → текст кнопки `Наши желания`. В некоторых версиях BotFather это Bot Settings → Menu Button → Configure menu button.
-6. При желании задайте название `Filimonov Family Wishes`, описание и аватар бота. Новый бот не нужен. `/setdomain` для данного WebApp-входа не требуется: это другая настройка для Telegram Login Widget.
-7. Откройте профиль бота и нажмите **Open App / Открыть приложение** или кнопку меню **Наши желания**. Открытие обычной веб-ссылки в браузере покажет приглашение войти через Telegram, а не поддельную авторизацию.
+6. При желании задайте название `Filimonov Family Wishes`, описание и аватар бота. Новый бот не нужен. Для мини-приложения `/setdomain` не нужен, но он нужен для входа на сайте (следующий пункт).
+7. Откройте профиль бота и нажмите **Open App / Открыть приложение** или кнопку меню **Наши желания**.
+8. Вход на сайте в обычном браузере: отправьте [@BotFather](https://t.me/BotFather) команду `/setdomain`, выберите `@FilimonovFamilyWishes_bot` и укажите домен `anastasiacopodevinho.github.io` (без `https://` и пути). Без этого кнопка «Войти через Telegram» на сайте покажет ошибку Telegram «Bot domain invalid». Новые секреты не нужны: вход проверяется тем же `BOT_TOKEN`.
 
 Пример официального формата ссылки: [Telegram Mini Apps](https://core.telegram.org/bots/webapps#direct-link-mini-apps). Передача `initData` и проверка подписи реализованы по [официальному алгоритму Telegram](https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app).
 
@@ -155,7 +156,9 @@ pnpm exec wrangler d1 export family-wishes --remote --output=backups/family-wish
 - `NOT_CONFIGURED`: runtime secret не добавлен или не развёрнут. Build secret не заменяет runtime secret.
 - `INTERNAL` сразу после настройки: проверьте ID D1, binding `DB` и применение миграций.
 - Pages 404: Pages source должен быть GitHub Actions, URL включает имя репозитория и завершающий `/`.
-- В браузере нет имени Telegram: это ожидаемо; войдите через бота.
+- В браузере нет имени Telegram: нажмите «Войти через Telegram» на сайте или откройте приложение через бота.
+- «Bot domain invalid» при входе на сайте: домен в `/setdomain` не совпадает с адресом сайта. Укажите `anastasiacopodevinho.github.io`.
+- Окно входа не открывается: браузер заблокировал всплывающее окно. Разрешите всплывающие окна для сайта.
 - Гостевая ссылка открывает чат, а не приложение: включите **Main Mini App** в BotFather.
 - Невозможно прочитать HEIC: экспортируйте фото как JPEG/PNG.
 - Бронь не отменяется после удаления самого подарка: владелец удалил желание вместе с бронью, обновите «Мои брони».

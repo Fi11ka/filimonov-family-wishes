@@ -6,6 +6,7 @@ import {
   UserPlus,
   X,
   Heart,
+  LogOut,
 } from "lucide-react";
 import { api, demo } from "./api";
 import { CopyValue } from "./forms";
@@ -319,11 +320,15 @@ export function AcceptInvite({
 export function Profile({
   user,
   friends,
+  webSession,
   onAddFriend,
+  onLogout,
 }: {
   user: User | null;
   friends: number;
+  webSession: boolean;
   onAddFriend: () => void;
+  onLogout: (everywhere: boolean) => void;
 }) {
   return (
     <div className="share-result">
@@ -348,6 +353,25 @@ export function Profile({
       <button className="button primary full-width" onClick={onAddFriend}>
         <UserPlus size={17} /> Добавить друга
       </button>
+      {webSession ? (
+        <div className="profile-logout">
+          <button className="button secondary" onClick={() => onLogout(false)}>
+            <LogOut size={16} /> Выйти
+          </button>
+          <button className="text-link danger" onClick={() => onLogout(true)}>
+            Выйти на всех устройствах
+          </button>
+        </div>
+      ) : (
+        user &&
+        !demo && (
+          <div className="profile-logout">
+            <button className="text-link" onClick={() => onLogout(true)}>
+              Завершить входы на сайте на всех устройствах
+            </button>
+          </div>
+        )
+      )}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { Miniflare } from "miniflare";
 import { validateInitData } from "../worker/security";
 const BOT = "123456:TEST_ONLY_NOT_A_REAL_TOKEN";
@@ -118,6 +118,7 @@ before(async () => {
     ),
   ]);
   await migrate("migrations/0002_profiles_friends_archive.sql");
+  await migrate("migrations/0003_web_sessions.sql");
   for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9])
     assert.equal((await call("/me", id)).status, 200);
 });
@@ -601,4 +602,224 @@ test("friend request guessing and link creation have per-user rate limits", asyn
   for (let i = 0; i < 5; i++)
     assert.equal((await call("/guest-links", 8, "POST")).status, 200);
   assert.equal((await call("/guest-links", 8, "POST")).status, 429);
+});
+// "Log in with Telegram" widget payload, signed the way Telegram signs it.
+function widget(id: number, extra: Record<string, string | number> = {}) {
+  const data: Record<string, string | number> = {
+    id,
+    first_name: `User ${id}`,
+    username: `user_${id}`,
+    auth_date: Math.floor(Date.now() / 1000),
+    ...extra,
+  };
+  const check = Object.entries(data)
+    .map(([k, v]) => `${k}=${v}`)
+    .sort()
+    .join("\n");
+  const key = createHash("sha256").update(BOT).digest();
+  return {
+    ...data,
+    hash: createHmac("sha256", key).update(check).digest("hex"),
+  };
+}
+const session = (t: string) => ({ Authorization: `Session ${t}` });
+test("website sign-in: widget login issues a revocable session for the same account", async () => {
+  const login = await call(
+    "/auth/telegram-login",
+    undefined,
+    "POST",
+    widget(1),
+  );
+  assert.equal(login.status, 200, login.raw);
+  const t = login.body.token;
+  assert.match(t, /^[A-Za-z0-9_-]{43}$/);
+  const stored = await db
+    .prepare("SELECT token_hash FROM sessions WHERE user_id='1'")
+    .all();
+  assert.ok(stored.results.length >= 1);
+  assert.ok(!stored.results.some((r: any) => r.token_hash === t));
+  const me = await call(
+    "/me",
+    undefined,
+    "GET",
+    undefined,
+    undefined,
+    session(t),
+  );
+  assert.equal(me.status, 200);
+  assert.deepEqual(me.body.user, {
+    id: "1",
+    name: "User 1",
+    username: "user_1",
+  });
+  assert.equal(me.body.web_session, true);
+  assert.equal((await call("/me", 1)).body.web_session, false);
+  // Same account as in the Mini App: friends' lists, own gifts, reservations.
+  assert.equal(
+    (await call("/lists/2", undefined, "GET", undefined, undefined, session(t)))
+      .status,
+    200,
+  );
+  const g = await gift(2);
+  assert.equal(
+    (
+      await call(
+        `/gifts/${g}/reservation`,
+        undefined,
+        "POST",
+        undefined,
+        undefined,
+        session(t),
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await call("/lists/2", 1)).body.gifts.find((v: any) => v.id === g)
+      .reservation,
+    "mine",
+  );
+  // Logout revokes only this session.
+  const other = (
+    await call("/auth/telegram-login", undefined, "POST", widget(1))
+  ).body.token;
+  assert.equal(
+    (await call("/auth/logout", undefined, "POST", {}, undefined, session(t)))
+      .status,
+    200,
+  );
+  assert.equal(
+    (await call("/me", undefined, "GET", undefined, undefined, session(t)))
+      .status,
+    401,
+  );
+  assert.equal(
+    (await call("/me", undefined, "GET", undefined, undefined, session(other)))
+      .status,
+    200,
+  );
+  // Logout everywhere, also possible from the Mini App.
+  assert.equal((await call("/auth/logout-all", 1, "POST", {})).status, 200);
+  assert.equal(
+    (await call("/me", undefined, "GET", undefined, undefined, session(other)))
+      .status,
+    401,
+  );
+});
+test("website sign-in rejects forged, stale and Mini App payloads, and expired sessions", async () => {
+  const forged = widget(5);
+  for (const bad of [
+    { ...forged, id: 6 },
+    { ...forged, hash: "0".repeat(64) },
+    widget(5, { auth_date: Math.floor(Date.now() / 1000) - 2 * 86400 }),
+    widget(5, { auth_date: Math.floor(Date.now() / 1000) + 600 }),
+    { ...widget(5), nested: { a: 1 } },
+    // initData is signed with a different key and must not pass as widget data.
+    Object.fromEntries(new URLSearchParams(signed(5))),
+  ])
+    assert.equal(
+      (await call("/auth/telegram-login", undefined, "POST", bad)).status,
+      401,
+      JSON.stringify(bad).slice(0, 80),
+    );
+  const t = (await call("/auth/telegram-login", undefined, "POST", widget(5)))
+    .body.token;
+  await db.prepare("UPDATE sessions SET expires_at=1 WHERE user_id='5'").run();
+  const expired = await call(
+    "/me",
+    undefined,
+    "GET",
+    undefined,
+    undefined,
+    session(t),
+  );
+  assert.equal(expired.status, 401);
+  assert.equal(expired.body.error.code, "SESSION_EXPIRED");
+  for (const bad of [
+    "Session short",
+    "Session " + "x".repeat(43),
+    "Bearer abc",
+  ])
+    assert.equal(
+      (
+        await call("/me", undefined, "GET", undefined, undefined, {
+          Authorization: bad,
+        })
+      ).status,
+      401,
+    );
+});
+test("website sign-in keeps at most 10 sessions per account and limits attempts", async () => {
+  const tokens: string[] = [];
+  for (let i = 0; i < 11; i++) {
+    const r = await call(
+      "/auth/telegram-login",
+      undefined,
+      "POST",
+      widget(4),
+      undefined,
+      {
+        "CF-Connecting-IP": `198.51.100.${i}`,
+      },
+    );
+    assert.equal(r.status, 200, r.raw);
+    tokens.push(r.body.token);
+  }
+  assert.equal(
+    (
+      await db
+        .prepare("SELECT COUNT(*) AS n FROM sessions WHERE user_id='4'")
+        .first()
+    )?.n,
+    10,
+  );
+  assert.equal(
+    (
+      await call(
+        "/me",
+        undefined,
+        "GET",
+        undefined,
+        undefined,
+        session(tokens[10]),
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await call(
+        "/me",
+        undefined,
+        "GET",
+        undefined,
+        undefined,
+        session(tokens[0]),
+      )
+    ).status,
+    401,
+  );
+  const ip = { "CF-Connecting-IP": "203.0.113.9" };
+  for (let i = 0; i < 10; i++)
+    await call(
+      "/auth/telegram-login",
+      undefined,
+      "POST",
+      { hash: "x" },
+      undefined,
+      ip,
+    );
+  assert.equal(
+    (
+      await call(
+        "/auth/telegram-login",
+        undefined,
+        "POST",
+        widget(4),
+        undefined,
+        ip,
+      )
+    ).status,
+    429,
+  );
 });

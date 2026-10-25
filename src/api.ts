@@ -38,6 +38,26 @@ export const guestToken =
 /** Friend invitation opened from t.me/…?startapp=f_<token> */
 export const friendInvite = start.startsWith("f_") ? start.slice(2) : "";
 export const demo = new URLSearchParams(location.search).get("demo") === "1";
+// Website sign-in: session token from POST /api/auth/telegram-login. The Mini App
+// never uses it; there Telegram's signed initData identifies the user.
+const SESSION_KEY = "fw:session";
+export function sessionToken() {
+  if (telegram?.initData) return "";
+  try {
+    return localStorage.getItem(SESSION_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+export function setSessionToken(value: string | null) {
+  try {
+    if (value) localStorage.setItem(SESSION_KEY, value);
+    else localStorage.removeItem(SESSION_KEY);
+  } catch {
+    // Without storage the website cannot stay signed in; the Mini App is unaffected.
+  }
+}
+export const signedIn = () => !!telegram?.initData || !!sessionToken();
 export const apiConfigured = !!import.meta.env.VITE_API_URL;
 export class RequestError extends Error {
   constructor(
@@ -58,7 +78,9 @@ async function request(
       "Адрес API ещё не настроен. Завершите подключение Cloudflare по инструкции DEPLOY.md.",
     );
   const headers: Record<string, string> = {};
+  const session = sessionToken();
   if (telegram?.initData) headers.Authorization = `tma ${telegram.initData}`;
+  else if (session) headers.Authorization = `Session ${session}`;
   if (guestToken) headers["X-Guest-Token"] = guestToken;
   if (data !== undefined) headers["Content-Type"] = "application/json";
   let res: Response;
@@ -81,6 +103,8 @@ async function request(
   }
   if (!res.ok) {
     const value: any = await res.json().catch(() => ({}));
+    // An expired or revoked website session: forget it so the sign-in button shows again.
+    if (res.status === 401 && session) setSessionToken(null);
     throw new RequestError(
       res.status,
       value.error?.message || "Не удалось выполнить запрос.",
