@@ -4,12 +4,15 @@ import {
   Archive,
   FileSpreadsheet,
   ImageOff,
+  ShoppingCart,
   Sparkles,
   Upload,
 } from "lucide-react";
 import {
   api,
   apiBlob,
+  type Cart,
+  type CartItem,
   compressPhoto,
   demo,
   photoFromUrl,
@@ -45,7 +48,7 @@ export function ImportDialog({
   onImported: (message: string) => void;
 }) {
   const [step, setStep] = useState<Step>("source"),
-    [source, setSource] = useState<"google" | "file">("google"),
+    [source, setSource] = useState<"google" | "file" | "cart">("google"),
     [url, setUrl] = useState(""),
     [busy, setBusy] = useState(""),
     [error, setError] = useState(""),
@@ -88,6 +91,95 @@ export function ImportDialog({
       setBusy("Читаем листы…");
       const wb = readXlsx(new Uint8Array(await blob.arrayBuffer()));
       open({ sheets: wb.sheets, image: wb.image });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy("");
+    }
+  }
+  /** Shared WB basket, WB wishlist or Ozon cart: every product is looked up like a single link. */
+  async function loadCart() {
+    if (demo) {
+      setError("В демо корзины по ссылке не загружаются.");
+      return;
+    }
+    setBusy("Открываем список товаров…");
+    setError("");
+    try {
+      const cart = await api<Cart>("/api/fetch/cart", "POST", {
+        url: url.trim(),
+      });
+      const made: ImportRow[] = new Array(cart.items.length);
+      let done = 0,
+        next = 0;
+      const lookup = async (item: CartItem) => {
+        for (let attempt = 0; attempt < 2; attempt++)
+          try {
+            return await api<ProductLookup>("/api/fetch/product", "POST", {
+              url: item.url,
+              bulk: true,
+            });
+          } catch (e) {
+            if (e instanceof RequestError && e.status === 429 && attempt === 0)
+              await wait(61000);
+            else return null;
+          }
+        return null;
+      };
+      // A few lookups at a time: each one may wait for the shop for several seconds.
+      await Promise.all(
+        Array.from({ length: 4 }, async () => {
+          while (next < cart.items.length) {
+            const i = next++;
+            const item = cart.items[i];
+            const r = await lookup(item);
+            const min = r?.price?.min_minor ?? item.price_minor ?? null,
+              max = r?.price ? r.price.max_minor : null;
+            made[i] = {
+              key: `cart-${i}`,
+              sheet: cart.title,
+              line: i + 1,
+              include: true,
+              title: (r?.title || item.title || "Без названия").slice(0, 120),
+              priceMode:
+                min === null && max === null
+                  ? "none"
+                  : max !== null
+                    ? "range"
+                    : "exact",
+              priceMin: amountText(min),
+              priceMax: amountText(max),
+              currency:
+                r?.price &&
+                (currencies as readonly string[]).includes(r.price.currency)
+                  ? (r.price.currency as Currency)
+                  : "RUB",
+              shopUrl: r?.url || item.url,
+              description:
+                r?.details ||
+                (r && item.title !== r.title ? item.title || "" : ""),
+              priority: 2,
+              archived: false,
+              image: r?.image_url ? { kind: "url", url: r.image_url } : null,
+              warnings: [
+                ...(min === null && max === null
+                  ? ["Магазин не отдал цену"]
+                  : []),
+                ...(!r?.image_url ? ["Нет фото"] : []),
+              ],
+            };
+            done++;
+            setBusy(`Смотрим товары: ${done} из ${cart.items.length}…`);
+          }
+        }),
+      );
+      setLoaded(null);
+      setRows(made);
+      setStep("preview");
+      if (cart.truncated)
+        setError(
+          `В ссылке больше ${cart.items.length} товаров — показаны первые ${cart.items.length}.`,
+        );
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -183,8 +275,9 @@ export function ImportDialog({
     );
   }
   async function photoFor(r: ImportRow) {
-    if (!r.image || !loaded) return "";
+    if (!r.image) return "";
     if (r.image.kind === "embedded") {
+      if (!loaded) return "";
       const bytes = loaded.image(r.image.path);
       if (!bytes) return "";
       return compressPhoto(
@@ -272,8 +365,40 @@ export function ImportDialog({
           >
             <Upload size={15} /> Файл .xlsx / .csv
           </button>
+          <button
+            className={source === "cart" ? "selected" : ""}
+            onClick={() => setSource("cart")}
+          >
+            <ShoppingCart size={15} /> Корзина WB / Ozon
+          </button>
         </div>
-        {source === "google" ? (
+        {source === "cart" ? (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void loadCart();
+            }}
+          >
+            <p className="muted">
+              В корзине Wildberries или Ozon нажмите «Поделиться» и вставьте
+              ссылку. Подходит и ссылка на вишлист Wildberries. Перед
+              сохранением откроется предпросмотр: лишнее можно снять.
+            </p>
+            <label>
+              Ссылка на корзину или вишлист
+              <input
+                type="url"
+                required
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://www.wildberries.ru/basket?shareId=…"
+              />
+            </label>
+            <button className="button primary full-width" disabled={!!busy}>
+              {busy || "Открыть"}
+            </button>
+          </form>
+        ) : source === "google" ? (
           <form
             onSubmit={(e) => {
               e.preventDefault();

@@ -178,8 +178,10 @@ test("Ozon lookup goes through the helper and parses title, price and photo", as
   ]);
   assert.equal(job.kind, "page");
   assert.equal(result.shop, "Ozon");
+  // Without Workers AI a long title is shortened by rules; the full one goes to the hint.
+  assert.equal(result.title, "Столик журнальный круглый");
   assert.match(
-    result.title,
+    result.details,
     /^Столик журнальный круглый металлический Sheffilton, сo' стеклом/,
   );
   assert.deepEqual(result.price, {

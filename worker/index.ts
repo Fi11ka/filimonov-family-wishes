@@ -14,6 +14,7 @@ import {
 import { fetchBytes, imageType, publicHttpsUrl } from "./net";
 import { JWKS_URL, liveJwks, verifyIdToken, type Jwk } from "./oidc";
 import { liveContext, lookupProduct } from "./shops";
+import { cartKind, readCart } from "./shops/carts";
 import { aiNamer } from "./shops/naming";
 import { cleanupHelperJobs, helperRoute, homeHelper } from "./helper";
 import {
@@ -1150,9 +1151,45 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     return { ok: true };
   }
   // ---- Fetching from other sites (user-initiated, authenticated, rate-limited) ----
+  if (path === "/api/fetch/cart" && method === "POST") {
+    // Shared WB basket / WB wishlist / Ozon cart → product links for the import preview.
+    const b = await body(req);
+    await rate(db, `sheet:${uid}`, 5);
+    const target = publicHttpsUrl(text(b.url, 2048, true));
+    if (!cartKind(target))
+      fail(
+        400,
+        "VALIDATION",
+        "Вставьте ссылку «Поделиться» из корзины Wildberries или Ozon либо ссылку на вишлист Wildberries.",
+      );
+    let cart;
+    try {
+      cart = await readCart(
+        target,
+        liveContext(env.HELPER_TOKEN ? homeHelper(db) : null),
+      );
+    } catch {
+      fail(
+        502,
+        "CART_UNAVAILABLE",
+        "Магазин не отдал список товаров. Попробуйте позже или добавьте товары по одной ссылке.",
+      );
+    }
+    if (!cart.items.length)
+      fail(
+        404,
+        "CART_EMPTY",
+        cart.shop === "Ozon"
+          ? "Не удалось прочитать корзину Ozon: магазин закрылся от сервера. Если настроен домашний помощник, проверьте, что он запущен."
+          : "В этой ссылке не нашлось товаров.",
+      );
+    return cart;
+  }
   if (path === "/api/fetch/product" && method === "POST") {
     const b = await body(req);
-    await rate(db, `fetch:${uid}`, 30);
+    // Imports from a cart look up many products in a row; they get their own budget.
+    if (b.bulk === true) await rate(db, `fetchbulk:${uid}`, 120);
+    else await rate(db, `fetch:${uid}`, 30);
     return lookupProduct(
       text(b.url, 2048, true),
       liveContext(env.HELPER_TOKEN ? homeHelper(db) : null),

@@ -169,6 +169,18 @@ export async function photoFromUrl(url: string) {
   // Up to ~32 s when the photo comes through the home helper.
   return compressPhoto(await apiBlob("/api/fetch/image", { url }, 40000));
 }
+/** POST /api/fetch/cart: a shared WB basket, WB wishlist or Ozon cart. */
+export interface CartItem {
+  url: string;
+  title?: string;
+  price_minor?: number | null;
+}
+export interface Cart {
+  shop: string;
+  title: string;
+  items: CartItem[];
+  truncated: boolean;
+}
 export interface ProductLookup {
   shop: string | null;
   url: string;

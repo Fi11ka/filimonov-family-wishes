@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { lookupProduct } from "../worker/shops";
 import {
   aiNamer,
+  NAMING_MODEL,
   isShortRussian,
   parseWishName,
   type AiBinding,
@@ -74,13 +75,13 @@ test("model failures and timeouts fall back to the shop title", async () => {
   );
   const slow: AiBinding = { run: () => new Promise(() => {}) };
   const started = Date.now();
-  // The real timeout is 6 s; the test only checks that a hung call resolves.
+  // The real timeout is 9 s; a short one here checks that a hung call resolves.
   const result = await Promise.race([
-    aiNamer(slow)(amazonTitle, null),
-    new Promise((r) => setTimeout(() => r("still waiting"), 6500)),
+    aiNamer(slow, NAMING_MODEL, 50)(amazonTitle, null),
+    new Promise((r) => setTimeout(() => r("still waiting"), 2000)),
   ]);
   assert.equal(result, null);
-  assert.ok(Date.now() - started < 6500);
+  assert.ok(Date.now() - started < 2000);
 });
 
 const amazonPage = `<html><head><meta property="og:title" content="${amazonTitle}">

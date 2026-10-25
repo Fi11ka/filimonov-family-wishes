@@ -11,7 +11,7 @@ import { yandexMarket } from "./yandex-market";
 import { productLink } from "./link";
 import { dns } from "./dns";
 import type { HomeHelper } from "../helper";
-import type { Namer } from "./naming";
+import { shortTitle, type Namer } from "./naming";
 /** Order matters only for overlapping hosts; the generic parser is always last. */
 export const shops: Shop[] = [
   wildberries,
@@ -124,7 +124,10 @@ export async function lookupProduct(
         : shop.name;
   let title = info.title || "",
     details = "";
-  const named = title && namer ? await namer(title, shopName) : null;
+  // Workers AI first; if it is unavailable or slow, shorten by rules.
+  const named =
+    (title && namer ? await namer(title, shopName) : null) ||
+    (title ? shortTitle(title) : null);
   if (named && named.title !== title) {
     // Nothing from the shop title is lost: it goes to the hint if the model
     // did not list the details itself.
