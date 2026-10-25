@@ -35,7 +35,8 @@ const start =
   "";
 export const guestToken =
   new URLSearchParams(location.hash.slice(1)).get("guest") ||
-  (start.startsWith("g_") ? start.slice(2) : "");
+  (start.startsWith("g_") || start.startsWith("s_") ? start.slice(2) : "");
+export const authShare = start.startsWith("s_");
 /** Friend invitation opened from t.me/…?startapp=f_<token> */
 export const friendInvite = start.startsWith("f_") ? start.slice(2) : "";
 export const demo = new URLSearchParams(location.search).get("demo") === "1";
@@ -125,7 +126,8 @@ export async function api<T = any>(
 export async function apiBlob(path: string, data: unknown, timeout = 30000) {
   return (await request(path, "POST", data, timeout)).blob();
 }
-export const telegramLink = () => telegramAppLink(guestToken, friendInvite);
+export const telegramLink = () =>
+  telegramAppLink(guestToken, friendInvite, authShare);
 export { compressPhoto } from "./photo";
 import { compressPhoto } from "./photo";
 /** Downloads a picture through the API (shops forbid direct cross-site reads) and compresses it. */

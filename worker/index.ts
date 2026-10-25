@@ -117,16 +117,22 @@ async function canView(
   if (guest && /^[A-Za-z0-9_-]{43}$/.test(guest))
     return !!(await stmt(
       db,
-      "SELECT 1 AS ok FROM guest_links WHERE owner_id=? AND token_hash=? AND revoked_at IS NULL AND expires_at>?",
+      "SELECT 1 AS ok FROM guest_links WHERE owner_id=? AND token_hash=? AND revoked_at IS NULL AND expires_at>? AND (kind='guest' OR ? IS NOT NULL)",
       owner,
       await hash(guest),
       now(),
+      user?.id || null,
     ).first());
   return false;
 }
-async function list(db: D1Database, owner: string, user: Identity | null) {
-  // Owner/anonymous query NEVER reads reservation table, even its row count or timestamp.
-  if (!user || user.id === owner)
+async function list(
+  db: D1Database,
+  owner: string,
+  user: Identity | null,
+  guestView = false,
+) {
+  // The normal owner list never reads reservations; guest links explicitly expose statuses.
+  if (!guestView && (!user || user.id === owner))
     return (
       await stmt(
         db,
@@ -137,7 +143,7 @@ async function list(db: D1Database, owner: string, user: Identity | null) {
   const r = await stmt(
     db,
     `SELECT ${giftColumns},CASE WHEN r.gift_id IS NULL THEN 'available' WHEN r.user_id=? THEN 'mine' ELSE 'reserved' END AS reservation FROM gifts g LEFT JOIN reservations r ON r.gift_id=g.id WHERE g.owner_id=? AND g.archived_at IS NULL ORDER BY g.priority DESC,g.created_at DESC,g.id`,
-    user.id,
+    guestView ? "" : user?.id || "",
     owner,
   ).all();
   return r.results;
@@ -304,9 +310,11 @@ async function route(req: Request, env: Env): Promise<unknown> {
   if (
     !user &&
     !(
-      method === "GET" &&
-      (path === "/api/guest" ||
-        /^\/api\/gifts\/[a-f0-9-]{36}\/photo$/.test(path))
+      (method === "POST" &&
+        /^\/api\/guest-reservations\/[a-f0-9-]{36}$/.test(path)) ||
+      (method === "GET" &&
+        (path === "/api/guest" ||
+          /^\/api\/gifts\/[a-f0-9-]{36}\/photo$/.test(path)))
     )
   )
     fail(401, "AUTH_REQUIRED", "Откройте приложение через Telegram.");
@@ -321,17 +329,47 @@ async function route(req: Request, env: Env): Promise<unknown> {
     if (!guest || !/^[A-Za-z0-9_-]{43}$/.test(guest)) missing();
     const link = await stmt(
       db,
-      "SELECT owner_id FROM guest_links WHERE token_hash=? AND revoked_at IS NULL AND expires_at>?",
+      "SELECT owner_id,kind FROM guest_links WHERE token_hash=? AND revoked_at IS NULL AND expires_at>? AND (kind='guest' OR ? IS NOT NULL)",
       await hash(guest),
       now(),
-    ).first<{ owner_id: string }>();
+      user?.id || null,
+    ).first<{ owner_id: string; kind: string }>();
     if (!link) missing();
     return {
       owner: await profile(db, link.owner_id),
-      gifts: await list(db, link.owner_id, user),
-      can_reserve: !!user && user.id !== link.owner_id,
+      gifts: await list(db, link.owner_id, user, link.kind === "guest"),
+      can_reserve:
+        link.kind === "guest" || (!!user && user.id !== link.owner_id),
       is_owner: user?.id === link.owner_id,
     };
+  }
+  const guestReservation = path.match(
+    /^\/api\/guest-reservations\/([a-f0-9-]{36})$/,
+  );
+  if (guestReservation && method === "POST") {
+    const b = await body(req);
+    const name = text(b.name, 80);
+    if (!name)
+      fail(400, "VALIDATION", "Введите имя того, кто покупает подарок.");
+    if (!guest || !/^[A-Za-z0-9_-]{43}$/.test(guest)) missing();
+    const result = await stmt(
+      db,
+      `INSERT INTO reservations(gift_id,guest_name)
+      SELECT g.id,? FROM gifts g JOIN guest_links l ON l.owner_id=g.owner_id
+      WHERE g.id=? AND g.archived_at IS NULL AND l.token_hash=? AND l.kind='guest'
+      AND l.revoked_at IS NULL AND l.expires_at>? ON CONFLICT(gift_id) DO NOTHING RETURNING gift_id`,
+      name,
+      guestReservation[1],
+      await hash(guest),
+      now(),
+    ).first();
+    if (!result)
+      fail(
+        409,
+        "UNAVAILABLE",
+        "Подарок уже забронирован или ссылка недоступна.",
+      );
+    return { ok: true };
   }
   if (!user && method === "GET" && path.endsWith("/photo")) {
     const match = path.match(/^\/api\/gifts\/([a-f0-9-]{36})\/photo$/);
@@ -409,7 +447,10 @@ async function route(req: Request, env: Env): Promise<unknown> {
     const b = await body(req);
     await rate(db, `friendreq:${uid}`, 10);
     const username = usernameOf(b.username);
-    if (!username)
+    if (
+      !username &&
+      !(typeof b.user_id === "string" && /^\d+$/.test(b.user_id))
+    )
       fail(
         400,
         "VALIDATION",
@@ -417,8 +458,9 @@ async function route(req: Request, env: Env): Promise<unknown> {
       );
     const target = await stmt(
       db,
-      "SELECT id FROM users WHERE username=?",
+      "SELECT id FROM users WHERE username=? OR id=?",
       username,
+      typeof b.user_id === "string" ? b.user_id : "",
     ).first<{ id: string }>();
     if (!target)
       fail(
@@ -761,43 +803,94 @@ async function route(req: Request, env: Env): Promise<unknown> {
     ).all();
     return { reservations: r.results };
   }
-  if (path === "/api/guest-links" && method === "GET")
+  if (path === "/api/guest-bookings" && method === "GET") {
     return {
-      links: (
+      reservations: (
         await stmt(
           db,
-          "SELECT id,expires_at,revoked_at,created_at FROM guest_links WHERE owner_id=? ORDER BY created_at DESC LIMIT 30",
+          `SELECT r.gift_id,r.guest_name,g.title FROM reservations r JOIN gifts g ON g.id=r.gift_id WHERE g.owner_id=? AND r.user_id IS NULL ORDER BY r.created_at DESC`,
           uid,
         ).all()
       ).results,
     };
-  if (path === "/api/guest-links" && method === "POST") {
-    await rate(db, `links:${uid}`, 5);
-    const raw = token(),
-      id = crypto.randomUUID(),
-      expires = now() + 30 * 86400;
-    await db.batch([
-      stmt(
+  }
+  const manageGuest = path.match(/^\/api\/guest-bookings\/([a-f0-9-]{36})$/);
+  if (manageGuest && (method === "PATCH" || method === "DELETE")) {
+    const filter =
+      "gift_id=? AND user_id IS NULL AND EXISTS(SELECT 1 FROM gifts WHERE id=reservations.gift_id AND owner_id=?)";
+    if (method === "DELETE")
+      await stmt(
         db,
-        "UPDATE guest_links SET revoked_at=? WHERE owner_id=? AND revoked_at IS NULL",
-        now(),
+        `DELETE FROM reservations WHERE ${filter}`,
+        manageGuest[1],
         uid,
-      ),
-      stmt(
+      ).run();
+    else {
+      const name = text((await body(req)).name, 80);
+      if (!name) fail(400, "VALIDATION", "Введите имя.");
+      await stmt(
         db,
-        "INSERT INTO guest_links(id,owner_id,token_hash,expires_at) VALUES(?,?,?,?)",
-        id,
+        `UPDATE reservations SET guest_name=? WHERE ${filter}`,
+        name,
+        manageGuest[1],
         uid,
-        await hash(raw),
-        expires,
-      ),
-    ]);
+      ).run();
+    }
+    return { ok: true };
+  }
+  if (path === "/api/guest-links" && (method === "GET" || method === "POST")) {
+    if (method === "POST") await rate(db, `links:${uid}`, 5);
+    const links = [];
+    for (const kind of ["telegram", "guest"]) {
+      let link = await stmt(
+        db,
+        "SELECT id,token_value FROM guest_links WHERE owner_id=? AND kind=? AND revoked_at IS NULL AND token_value IS NOT NULL LIMIT 1",
+        uid,
+        kind,
+      ).first<{ id: string; token_value: string }>();
+      if (!link && method === "GET") continue;
+      if (!link) {
+        const raw = token(),
+          id = crypto.randomUUID();
+        await stmt(
+          db,
+          "INSERT OR IGNORE INTO guest_links(id,owner_id,token_hash,expires_at,kind,token_value) VALUES(?,?,?,253402300799,?,?)",
+          id,
+          uid,
+          await hash(raw),
+          kind,
+          raw,
+        ).run();
+        link = await stmt(
+          db,
+          "SELECT id,token_value FROM guest_links WHERE owner_id=? AND kind=? AND revoked_at IS NULL AND token_value IS NOT NULL",
+          uid,
+          kind,
+        ).first<{ id: string; token_value: string }>();
+        if (!link) missing();
+      }
+      links.push({
+        id: link.id,
+        kind,
+        web_url:
+          kind === "guest"
+            ? `${https(env.APP_URL)}#guest=${link.token_value}`
+            : `${BOT_LINK}?startapp=s_${link.token_value}`,
+      });
+    }
+    const guestLink = links.find((l) => l.kind === "guest")!;
     return {
-      id,
-      expires_at: expires,
-      token: raw,
-      telegram_url: `${BOT_LINK}?startapp=g_${raw}`,
-      web_url: `${https(env.APP_URL)}#guest=${raw}`,
+      links,
+      legacy_links: (
+        await stmt(
+          db,
+          "SELECT id FROM guest_links WHERE owner_id=? AND token_value IS NULL AND revoked_at IS NULL AND expires_at>?",
+          uid,
+          now(),
+        ).all()
+      ).results,
+      id: guestLink?.id,
+      token: guestLink?.web_url.split("#guest=")[1],
     };
   }
   const linkMatch = path.match(/^\/api\/guest-links\/([a-f0-9-]{36})$/);
@@ -887,7 +980,7 @@ export default {
       headers.set("Access-Control-Allow-Origin", origin);
       headers.set(
         "Access-Control-Allow-Methods",
-        "GET,POST,PUT,DELETE,OPTIONS",
+        "GET,POST,PUT,PATCH,DELETE,OPTIONS",
       );
       headers.set(
         "Access-Control-Allow-Headers",

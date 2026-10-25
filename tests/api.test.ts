@@ -132,6 +132,7 @@ before(async () => {
   await migrate("migrations/0002_profiles_friends_archive.sql");
   await migrate("migrations/0003_web_sessions.sql");
   await migrate("migrations/0004_oidc_login.sql");
+  await migrate("migrations/0005_permanent_sharing.sql");
   for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9])
     assert.equal((await call("/me", id)).status, 200);
 });
@@ -239,7 +240,7 @@ test("owner response remains byte-identical before/after reservation; no identit
     undefined,
     ownGuest.body.token,
   );
-  assert.ok(!ownerView.raw.includes("reservation"));
+  assert.ok(ownerView.raw.includes("reservation"));
   const photo = await call(`/gifts/${g}/photo`, 1);
   assert.deepEqual(Object.keys(photo.body), ["photo"]);
   assert.equal((await call("/reservations", 1)).body.reservations.length, 0);
@@ -335,7 +336,7 @@ test("archive: bought gifts leave friends' lists, cannot be reserved and can be 
     (await call("/archive", 1)).body.gifts.some((v: any) => v.id === r.body.id),
   );
 });
-test("guest scope, anonymous anti-spoiler, authenticated reservation and revocation", async () => {
+test("guest scope, anonymous booking statuses, authenticated reservation and revocation", async () => {
   const g = await gift(),
     unrelated = await gift(2);
   const link = await call("/guest-links", 1, "POST"),
@@ -352,8 +353,8 @@ test("guest scope, anonymous anti-spoiler, authenticated reservation and revocat
   );
   const anonymous = await call("/guest", undefined, "GET", undefined, raw);
   assert.equal(anonymous.status, 200);
-  assert.ok(!anonymous.raw.includes("reservation"));
-  assert.equal(anonymous.body.can_reserve, false);
+  assert.ok(anonymous.raw.includes("reservation"));
+  assert.equal(anonymous.body.can_reserve, true);
   assert.equal(
     (await call(`/gifts/${g}/photo`, undefined, "GET", undefined, raw)).status,
     200,
@@ -401,12 +402,12 @@ test("guest scope, anonymous anti-spoiler, authenticated reservation and revocat
     404,
   );
 });
-test("expired guest link cannot grant access and new link revokes old", async () => {
+test("permanent guest links are reused and revocation remains available", async () => {
   const a = await call("/guest-links", 2, "POST"),
     b = await call("/guest-links", 2, "POST");
   assert.equal(
     (await call("/guest", undefined, "GET", undefined, a.body.token)).status,
-    404,
+    200,
   );
   await db
     .prepare("UPDATE guest_links SET expires_at=1 WHERE id=?")
@@ -858,5 +859,192 @@ test("website sign-in keeps at most 10 sessions per account and limits attempts"
       )
     ).status,
     429,
+  );
+});
+
+test("permanent Telegram share requires login and allows friend requests by profile ID", async () => {
+  await call("/me", 21);
+  const shared = await call("/guest-links", 21, "POST");
+  const telegram = shared.body.links.find((l: any) => l.kind === "telegram");
+  const raw = telegram.web_url.split("startapp=s_")[1];
+  assert.equal(
+    (await call("/guest", undefined, "GET", undefined, raw)).status,
+    404,
+  );
+  const view = await call("/guest", 22, "GET", undefined, raw);
+  assert.equal(view.status, 200, view.raw);
+  assert.equal(view.body.owner.id, "21");
+  const g = await gift(21);
+  assert.equal(
+    (await call(`/gifts/${g}/photo`, undefined, "GET", undefined, raw)).status,
+    404,
+  );
+  assert.equal(
+    (
+      await call(
+        `/guest-reservations/${g}`,
+        undefined,
+        "POST",
+        { name: "Гость" },
+        raw,
+      )
+    ).status,
+    409,
+  );
+  assert.equal(
+    (await call("/friends/requests", 22, "POST", { user_id: "21" })).status,
+    200,
+  );
+  const again = await call("/guest-links", 21);
+  assert.deepEqual(again.body.links, shared.body.links);
+});
+
+test("guest reservations require names, reveal status only, and share the atomic booking slot", async () => {
+  const g = await gift(23);
+  const link = (await call("/guest-links", 23, "POST")).body.token;
+  assert.equal(
+    (
+      await call(
+        `/guest-reservations/${g}`,
+        undefined,
+        "POST",
+        { name: " " },
+        link,
+      )
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await call(
+        `/guest-reservations/${g}`,
+        undefined,
+        "POST",
+        { name: "Бабушка" },
+        link,
+      )
+    ).status,
+    200,
+  );
+  const view = await call("/guest", undefined, "GET", undefined, link);
+  assert.equal(
+    view.body.gifts.find((x: any) => x.id === g).reservation,
+    "reserved",
+  );
+  assert.ok(!view.raw.includes("Бабушка"));
+  assert.equal(
+    (
+      await call(
+        `/guest-reservations/${g}`,
+        undefined,
+        "POST",
+        { name: "Другой гость" },
+        link,
+      )
+    ).status,
+    409,
+  );
+  assert.equal(
+    (await call(`/gifts/${g}/reservation`, 24, "POST", undefined, link)).status,
+    409,
+  );
+  const own = await call("/lists/23", 23);
+  assert.ok(!own.raw.includes("reservation"));
+  assert.ok(!own.raw.includes("Бабушка"));
+});
+
+test("only owner can manage guest bookings and Telegram bookings stay hidden", async () => {
+  const g = await gift(25),
+    registered = await gift(25);
+  const raw = (await call("/guest-links", 25, "POST")).body.token;
+  await call(
+    `/guest-reservations/${g}`,
+    undefined,
+    "POST",
+    { name: "Бабушка" },
+    raw,
+  );
+  await call(`/gifts/${registered}/reservation`, 26, "POST", undefined, raw);
+  const rows = await call("/guest-bookings", 25);
+  assert.deepEqual(
+    rows.body.reservations.map((r: any) => r.gift_id),
+    [g],
+  );
+  await call(`/guest-bookings/${g}`, 26, "DELETE");
+  assert.equal((await call("/guest-bookings", 25)).body.reservations.length, 1);
+  assert.equal(
+    (await call(`/guest-bookings/${g}`, 25, "PATCH", { name: "Дедушка" }))
+      .status,
+    200,
+  );
+  assert.equal(
+    (await call("/guest-bookings", 25)).body.reservations[0].guest_name,
+    "Дедушка",
+  );
+  await call(`/guest-bookings/${registered}`, 25, "DELETE");
+  assert.equal((await call("/reservations", 26)).body.reservations.length, 1);
+  await call(`/guest-bookings/${g}`, 25, "DELETE");
+  assert.equal(
+    (
+      await call(
+        `/guest-reservations/${g}`,
+        undefined,
+        "POST",
+        { name: "Бабушка" },
+        raw,
+      )
+    ).status,
+    200,
+  );
+  const another = await gift(26);
+  assert.equal(
+    (
+      await call(
+        `/guest-reservations/${another}`,
+        undefined,
+        "POST",
+        { name: "Гость" },
+        raw,
+      )
+    ).status,
+    409,
+  );
+});
+
+test("guest and Telegram bookings racing for one gift have exactly one winner", async () => {
+  const g = await gift(27);
+  const link = (await call("/guest-links", 27, "POST")).body.token;
+  const results = await Promise.all([
+    call(
+      `/guest-reservations/${g}`,
+      undefined,
+      "POST",
+      { name: "Бабушка" },
+      link,
+    ),
+    call(`/gifts/${g}/reservation`, 28, "POST", undefined, link),
+    call(
+      `/guest-reservations/${g}`,
+      undefined,
+      "POST",
+      { name: "Дедушка" },
+      link,
+    ),
+  ]);
+  assert.deepEqual(results.map((r) => r.status).sort(), [200, 409, 409]);
+});
+
+test("guest booking editing is allowed by browser CORS preflight", async () => {
+  const result = await call(
+    "/guest-bookings/00000000-0000-0000-0000-000000000000",
+    undefined,
+    "OPTIONS",
+    undefined,
+    undefined,
+    { "Access-Control-Request-Method": "PATCH" },
+  );
+  assert.equal(result.status, 204);
+  assert.ok(
+    result.headers.get("Access-Control-Allow-Methods")?.includes("PATCH"),
   );
 });
