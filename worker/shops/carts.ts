@@ -1,11 +1,16 @@
 // Shared carts and wishlists: the list of product links. Each product is then
 // looked up like a single link (/api/fetch/product), so photos, prices and
 // short names come from the same shop modules.
+import { parsePriceText } from "../../shared/price";
+import { shortTitle } from "./naming";
 import type { ShopContext } from "./types";
 export interface CartItem {
   url: string;
-  /** What the cart itself says; used when the product lookup finds nothing. */
+  /** What the cart itself says; complete items need no product lookup. */
   title?: string;
+  /** The full shop title when `title` was shortened. */
+  details?: string;
+  image?: string;
   price_minor?: number | null;
 }
 export interface Cart {
@@ -38,7 +43,12 @@ const wbProduct = (id: number) =>
   `https://www.wildberries.ru/catalog/${id}/detail.aspx`;
 function finish(shop: Cart["shop"], title: string, items: CartItem[]): Cart {
   const seen = new Set<string>();
-  const unique = items.filter((i) => !seen.has(i.url) && seen.add(i.url));
+  const unique = items
+    .filter((i) => !seen.has(i.url) && seen.add(i.url))
+    .map((i) => {
+      const named = i.title ? shortTitle(i.title) : null;
+      return named ? { ...i, title: named.title, details: named.details } : i;
+    });
   return {
     shop,
     title,
@@ -99,38 +109,99 @@ export async function readCart(url: URL, ctx: ShopContext): Promise<Cart> {
     );
   }
   if (kind === "ozon-cart") {
-    // Ozon renders the shared cart on its page; product links are collected from
-    // the page and, if it is an anti-bot stub, from the page API.
-    const path = `${url.pathname}${url.search}`;
-    let text = "";
+    // The shared cart opens as the modal /modal/shareCartFrom; the /cart page
+    // around it is Ozon's own recommendations and is not read.
+    const api = new URL(
+      `https://www.ozon.ru/api/entrypoint-api.bx/page/json/v2?url=${encodeURIComponent(`/modal/shareCartFrom?share=${url.searchParams.get("share")}`)}`,
+    );
+    let data: unknown = null;
     try {
-      text = (await ctx.page(url)).html;
+      // Through the home helper when configured: Ozon blocks servers.
+      data = jsonFromPage((await ctx.page(api, "application/json")).html);
     } catch {
-      text = "";
+      data = null;
     }
-    let items = ozonProducts(text);
-    if (!items.length)
+    if (!data)
       try {
-        const api = await ctx.json(
-          new URL(
-            `https://www.ozon.ru/api/entrypoint-api.bx/page/json/v2?url=${encodeURIComponent(path)}`,
-          ),
-        );
-        items = ozonProducts(JSON.stringify(api));
+        data = await ctx.json(api);
       } catch {
-        items = [];
+        data = null;
       }
-    return finish("Ozon", "Корзина Ozon", items);
+    return finish("Ozon", "Корзина Ozon", ozonSharedCart(data));
   }
   throw new Error("unsupported");
 }
-/** Product links anywhere in Ozon HTML or JSON: /product/<slug>-<id>/ or /product/<id>/. */
-export function ozonProducts(text: string): CartItem[] {
-  const ids = new Set<string>();
-  for (const m of text
-    .replace(/\\u002F/gi, "/")
-    .replace(/\\\//g, "/")
-    .matchAll(/\/product\/(?:[a-z0-9-]*-)?(\d{5,12})(?=[/?"'\\])/gi))
-    ids.add(m[1]);
-  return [...ids].map((id) => ({ url: `https://www.ozon.ru/product/${id}/` }));
+/** A JSON answer as the helper's browser shows it: raw, or inside <pre>. */
+function jsonFromPage(text: string): unknown {
+  const pre = text.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i)?.[1];
+  const raw = (pre ?? text)
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+  const start = raw.indexOf("{"),
+    end = raw.lastIndexOf("}");
+  if (start < 0 || end < start) return null;
+  try {
+    return JSON.parse(raw.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+type OzonText = { text?: { text?: string } };
+type OzonPrice = {
+  prices?: {
+    elements?: {
+      price?: { text?: string }[];
+      priceStyle?: { styleType?: string };
+    }[];
+  };
+};
+/**
+ * Items of the shared-cart modal: widget cartSplit-… holds id, name, photo and
+ * prices of each product. The Ozon-card price is skipped, like for single links.
+ */
+export function ozonSharedCart(data: unknown): CartItem[] {
+  const states =
+    (data as { widgetStates?: Record<string, unknown> } | null)?.widgetStates ||
+    {};
+  const items: CartItem[] = [];
+  for (const [key, raw] of Object.entries(states)) {
+    if (!key.startsWith("cartSplit")) continue;
+    let state: { cartItems?: { product?: Record<string, unknown> }[] };
+    try {
+      state = typeof raw === "string" ? JSON.parse(raw) : (raw as never);
+    } catch {
+      continue;
+    }
+    for (const { product: p } of state?.cartItems || []) {
+      const id = String(p?.id ?? "");
+      if (!/^\d{3,12}$/.test(id)) continue;
+      const title = ((p?.titleColumn as OzonText[]) || []).find(
+        (c) => c?.text?.text,
+      )?.text?.text;
+      const prices = ((p?.priceColumn as OzonPrice[]) || []).flatMap(
+        (c) => c?.prices?.elements || [],
+      );
+      const price =
+        prices.find((e) => e.priceStyle?.styleType !== "CARD_PRICE") ||
+        prices[0];
+      const amount = parsePriceText(
+        (price?.price || []).map((x) => x.text || "").join(" "),
+      );
+      const image = String(
+        (p?.image as { image?: { url?: unknown } })?.image?.url || "",
+      );
+      items.push({
+        url: `https://www.ozon.ru/product/${id}/`,
+        title: typeof title === "string" ? title : undefined,
+        price_minor: amount.exact ? amount.min : null,
+        image: /^https:\/\/[a-z0-9.-]+\.ozone?\.ru\//i.test(image)
+          ? image
+          : undefined,
+      });
+    }
+  }
+  return items;
 }

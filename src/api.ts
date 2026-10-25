@@ -173,6 +173,9 @@ export async function photoFromUrl(url: string) {
 export interface CartItem {
   url: string;
   title?: string;
+  /** Full shop title when `title` was shortened. */
+  details?: string;
+  image?: string;
   price_minor?: number | null;
 }
 export interface Cart {

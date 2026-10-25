@@ -709,13 +709,48 @@ test("long Russian titles are shortened by rules when Workers AI is unavailable"
 
 test("shared carts and wishlists: WB basket, WB wishlist and Ozon cart become product links", async () => {
   const calls: string[] = [];
-  const ozonHtml = `<a href="/product/nabor-spits-123456789/?asb=1">x</a>
-    <div data-state='{"link":"\\/product\\/pled-987654321\\/"}'></div>
-    <a href="/product/nabor-spits-123456789/">again</a>`;
+  // Shape of Ozon's /modal/shareCartFrom answer (October 2026), trimmed.
+  const product = (id: number, title: string, prices: [string, string][]) => ({
+    product: {
+      id,
+      titleColumn: [{ type: "text", text: { text: title } }],
+      priceColumn: prices.map(([text, styleType]) => ({
+        type: "prices",
+        prices: {
+          elements: [{ price: [{ text }], priceStyle: { styleType } }],
+        },
+      })),
+      image: {
+        image: { url: `https://ir-20.ozone.ru/s3/multimedia-1-o/${id}.jpg` },
+      },
+    },
+  });
+  const ozonModal = {
+    widgetStates: {
+      "cartSplit-11722126-default-1": JSON.stringify({
+        cartItems: [
+          product(
+            871879794,
+            "Серьги: с жемчугом, бабочки, змейки, колечки. Набор сережек 5 пар под золото",
+            [
+              ["199 ₽", "CARD_PRICE"],
+              ["221 ₽", "SECOND_LVL"],
+            ],
+          ),
+          product(3959434846, "Серьги цветы", [["99 ₽", "CARD_PRICE"]]),
+        ],
+      }),
+      "master-3173885-default-1": "{}",
+    },
+  };
   const ctx: ShopContext = {
     async page(url) {
       calls.push(url.href);
-      return { url, status: 200, html: ozonHtml };
+      // The home helper's browser shows JSON inside <pre>.
+      const json = JSON.stringify(ozonModal)
+        .replace(/&/g, "&amp;")
+        .replace(/"/g, "&quot;");
+      return { url, status: 200, html: `<html><pre>${json}</pre></html>` };
     },
     async json(url) {
       calls.push(url.href);
@@ -775,13 +810,28 @@ test("shared carts and wishlists: WB basket, WB wishlist and Ozon cart become pr
     new URL("https://www.ozon.ru/cart?share=c_34mIv4gBHSrJW2L4txPlj"),
     ctx,
   );
-  assert.deepEqual(
-    ozonCart.items.map((i) => i.url),
-    [
-      "https://www.ozon.ru/product/123456789/",
-      "https://www.ozon.ru/product/987654321/",
-    ],
+  // Only the shared modal is read, not the recommendations on /cart.
+  assert.equal(
+    calls.at(-1),
+    "https://www.ozon.ru/api/entrypoint-api.bx/page/json/v2?url=%2Fmodal%2FshareCartFrom%3Fshare%3Dc_34mIv4gBHSrJW2L4txPlj",
   );
+  assert.deepEqual(ozonCart.items, [
+    {
+      url: "https://www.ozon.ru/product/871879794/",
+      title: "Серьги",
+      details:
+        "Серьги: с жемчугом, бабочки, змейки, колечки. Набор сережек 5 пар под золото",
+      // Without the Ozon card discount.
+      price_minor: 22100,
+      image: "https://ir-20.ozone.ru/s3/multimedia-1-o/871879794.jpg",
+    },
+    {
+      url: "https://www.ozon.ru/product/3959434846/",
+      title: "Серьги цветы",
+      price_minor: 9900,
+      image: "https://ir-20.ozone.ru/s3/multimedia-1-o/3959434846.jpg",
+    },
+  ]);
   for (const bad of [
     "https://www.wildberries.ru/catalog/1/detail.aspx",
     "https://www.ozon.ru/cart",

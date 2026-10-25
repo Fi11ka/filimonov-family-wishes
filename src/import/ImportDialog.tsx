@@ -132,9 +132,13 @@ export function ImportDialog({
           while (next < cart.items.length) {
             const i = next++;
             const item = cart.items[i];
-            const r = await lookup(item);
+            // A cart that already gave name, photo and price needs no shop lookup.
+            const complete =
+              !!item.title && !!item.image && item.price_minor != null;
+            const r = complete ? null : await lookup(item);
             const min = r?.price?.min_minor ?? item.price_minor ?? null,
               max = r?.price ? r.price.max_minor : null;
+            const image = r?.image_url || item.image || "";
             made[i] = {
               key: `cart-${i}`,
               sheet: cart.title,
@@ -157,15 +161,16 @@ export function ImportDialog({
               shopUrl: r?.url || item.url,
               description:
                 r?.details ||
+                item.details ||
                 (r && item.title !== r.title ? item.title || "" : ""),
               priority: 2,
               archived: false,
-              image: r?.image_url ? { kind: "url", url: r.image_url } : null,
+              image: image ? { kind: "url", url: image } : null,
               warnings: [
                 ...(min === null && max === null
                   ? ["Магазин не отдал цену"]
                   : []),
-                ...(!r?.image_url ? ["Нет фото"] : []),
+                ...(!image ? ["Нет фото"] : []),
               ],
             };
             done++;
