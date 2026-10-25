@@ -101,8 +101,7 @@ function App() {
     >([]),
     [busy, setBusy] = useState(false),
     [menu, setMenu] = useState(false),
-    [webSession, setWebSession] = useState(false),
-    [showBrowserLogin, setShowBrowserLogin] = useState(false);
+    [webSession, setWebSession] = useState(false);
   const [archiveGift, setArchiveGift] = useState<Wish | null>(null);
   const [giftDirty, setGiftDirty] = useState(false);
   const [giftSaving, setGiftSaving] = useState(false);
@@ -504,30 +503,15 @@ function App() {
               <p>
                 Мечтайте, сохраняйте подарки и готовьте друг другу сюрпризы.
               </p>
-              <a className="button primary" href={telegramLink()}>
-                Открыть в Telegram <ArrowUpRight size={18} />
-              </a>
-              <p className="small-text">
-                Приложение откроется внутри Telegram. Вход — вашим
-                Telegram-аккаунтом.
-              </p>
+              {apiConfigured && !telegram?.initData && (
+                <WebLogin onSignedIn={() => void refresh()} />
+              )}
               <div className="welcome-app-link">
                 <span className="small-text">
-                  Ссылка для открытия и отправки близким
+                  Ссылка на приложение в Telegram для близких
                 </span>
                 <CopyValue value={telegramLink()} />
               </div>
-              {apiConfigured && !telegram?.initData && (
-                <details
-                  className="browser-login-option"
-                  onToggle={(e) => setShowBrowserLogin(e.currentTarget.open)}
-                >
-                  <summary>Остаться в браузере</summary>
-                  {showBrowserLogin && (
-                    <WebLogin onSignedIn={() => void refresh()} />
-                  )}
-                </details>
-              )}
               {error && (
                 <div className="error" role="alert">
                   {error}

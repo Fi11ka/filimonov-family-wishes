@@ -23,6 +23,7 @@ import { type Wish, priorities } from "./types";
 import { currencies } from "../shared/price";
 import { LookupState } from "./lookup-state";
 const modalStack: symbol[] = [];
+let originalBodyOverflow = "";
 export function Modal({
   title,
   onClose,
@@ -42,11 +43,11 @@ export function Modal({
   const titleId = React.useId();
   useEffect(() => {
     const modalId = Symbol();
+    if (!modalStack.length) originalBodyOverflow = document.body.style.overflow;
     modalStack.push(modalId);
     const dialog = ref.current;
     const previous = document.activeElement as HTMLElement;
     dialog?.focus();
-    const old = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const key = (e: KeyboardEvent) => {
       if (modalStack.at(-1) !== modalId) return;
@@ -80,7 +81,8 @@ export function Modal({
     return () => {
       modalStack.splice(modalStack.indexOf(modalId), 1);
       document.removeEventListener("keydown", key);
-      document.body.style.overflow = old;
+      if (!modalStack.length)
+        document.body.style.overflow = originalBodyOverflow;
       previous?.focus();
     };
   }, []);
@@ -203,9 +205,11 @@ export function GiftForm({
     photoRequest = useRef(0);
   const photoIsLookup = useRef(false);
   const autoTitle = useRef(false),
+    autoDescription = useRef(false),
     autoPhoto = useRef(false);
   const draft = useRef({
     title,
+    description,
     priceTouched,
     priceMin,
     priceMax,
@@ -214,6 +218,7 @@ export function GiftForm({
   });
   draft.current = {
     title,
+    description,
     priceTouched,
     priceMin,
     priceMax,
@@ -291,6 +296,7 @@ export function GiftForm({
     const current = draft.current;
     const job = gate.current.begin({
       title: !current.title.trim(),
+      description: !current.description.trim(),
       price: !current.priceTouched || (!current.priceMin && !current.priceMax),
       photo: !current.photo && !current.photoLoading && !gift?.has_photo,
     });
@@ -301,6 +307,11 @@ export function GiftForm({
       if (r.title && job.canApply("title")) {
         setTitle(r.title.slice(0, 120));
         autoTitle.current = true;
+        // Brand, model, colour and sizes from the full shop title.
+        if (r.details && job.canApply("description")) {
+          setDescription(r.details.slice(0, 2000));
+          autoDescription.current = true;
+        }
       }
       if (r.price && job.canApply("price")) {
         const range = r.price.max_minor !== null;
@@ -463,6 +474,10 @@ export function GiftForm({
               if (autoTitle.current) {
                 setTitle("");
                 autoTitle.current = false;
+              }
+              if (autoDescription.current) {
+                setDescription("");
+                autoDescription.current = false;
               }
               if (!draft.current.priceTouched) {
                 setPriceMin("");
@@ -679,7 +694,11 @@ export function GiftForm({
           rows={3}
           maxLength={2000}
           value={description}
-          onChange={(e) => setDescription(e.target.value)}
+          onChange={(e) => {
+            gate.current.edit("description");
+            autoDescription.current = false;
+            setDescription(e.target.value);
+          }}
           placeholder="Цвет, размер или другие важные детали"
         />
       </label>

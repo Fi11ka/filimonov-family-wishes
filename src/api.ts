@@ -139,6 +139,8 @@ export interface ProductLookup {
   shop: string | null;
   url: string;
   title: string;
+  /** Details moved out of a shortened title, for «Подсказка близким». */
+  details?: string;
   image_url: string;
   price: {
     min_minor: number | null;

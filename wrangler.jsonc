@@ -16,6 +16,9 @@
     "APP_ORIGIN": "https://anastasiacopodevinho.github.io",
     "APP_URL": "https://anastasiacopodevinho.github.io/filimonov-family-wishes/"
   },
+  "ai": {
+    "binding": "AI"
+  },
   "d1_databases": [
     {
       "binding": "DB",
