@@ -118,12 +118,14 @@ export function Modal({
 }
 /** In-app confirmation: window.confirm is unreliable inside Telegram WebViews. */
 export function Confirm({
+  title = "Подтвердите действие",
   text,
   action,
   danger,
   onConfirm,
   onCancel,
 }: {
+  title?: string;
   text: string;
   action: string;
   danger?: boolean;
@@ -131,7 +133,7 @@ export function Confirm({
   onCancel: () => void;
 }) {
   return (
-    <Modal title="Вы уверены?" onClose={onCancel}>
+    <Modal title={title} onClose={onCancel}>
       <p className="muted">{text}</p>
       <div className="confirm-actions">
         <button className="button secondary" onClick={onCancel}>
@@ -612,7 +614,7 @@ export function GiftForm({
             autoTitle.current = false;
             setTitle(e.target.value);
           }}
-          placeholder="О чём вы мечтаете?"
+          placeholder="Например, беспроводные наушники"
         />
       </label>
       <div className="price-field">
@@ -688,7 +690,7 @@ export function GiftForm({
         </div>
       </div>
       <label>
-        Подсказка близким
+        Комментарий
         <textarea
           name="description"
           rows={3}
@@ -703,7 +705,7 @@ export function GiftForm({
         />
       </label>
       <label>
-        Как сильно хочется?
+        Приоритет
         <select
           name="priority"
           value={priority}
@@ -792,8 +794,9 @@ export function CopyValue({
       {copyError && <p role="alert">{copyError}</p>}
       {confirmCopy && (
         <Confirm
+          title="Перед копированием"
           text={warning!}
-          action="Понятно, скопировать ссылку"
+          action="Скопировать ссылку"
           onCancel={() => setConfirmCopy(false)}
           onConfirm={() => void copy()}
         />
@@ -818,7 +821,7 @@ export function Share() {
   }, []);
   return (
     <div className="share-result">
-      <p>Обе ссылки постоянные. Сохраните их и делитесь ими в любое время.</p>
+      <p>Ссылки действуют постоянно.</p>
       {error && <p role="alert">{error}</p>}
       {legacy.map((link) => (
         <div className="active-link" key={link.id}>
@@ -848,14 +851,14 @@ export function Share() {
           </h3>
           <p>
             {link.kind === "telegram"
-              ? "Открывает ваш вишлист после входа через Telegram. Можно добавить вас в друзья."
-              : "Для тех, кому сложно войти через Telegram, например бабушки или дедушки. Для выбора подарка достаточно указать имя."}
+              ? "Просмотр и бронирование после входа через Telegram."
+              : "Вход в Telegram не нужен. Для брони достаточно имени."}
           </p>
           <CopyValue
             value={link.web_url}
             warning={
               link.kind === "guest"
-                ? "По этой ссылке близкие увидят весь ваш вишлист и какие подарки уже выбраны. Для бронирования достаточно имени. Не открывайте её сами, если хотите сохранить сюрприз: вы тоже увидите, что забронировано."
+                ? "По этой ссылке видны все подарки и брони. Не открывайте её сами, если хотите сохранить сюрприз."
                 : undefined
             }
           />
@@ -877,7 +880,7 @@ export function Share() {
               }
             }}
           >
-            Отозвать и заменить ссылку
+            Заменить ссылку
           </button>
         </section>
       ))}
@@ -915,13 +918,11 @@ export function GuestBookings() {
   return (
     <div className="share-result">
       <p>
-        Здесь подарки, выбранные близкими по ссылке без входа в Telegram —
-        например, бабушкой или дедушкой. Можно исправить имя покупателя или
-        отменить случайный выбор. Брони тех, кто вошёл через Telegram, остаются
-        скрыты.
+        Брони по ссылке «Для близких без регистрации». Здесь можно исправить имя
+        или отменить бронь.
       </p>
       {error && <p role="alert">{error}</p>}
-      {!rows.length && <p>По ссылке без входа пока никто не выбрал подарок.</p>}
+      {!rows.length && <p>Броней без регистрации пока нет.</p>}
       {rows.map((row) => (
         <form
           key={row.gift_id}
@@ -1086,8 +1087,8 @@ export function ArchiveWish({
         </div>
         {status?.reserved && (
           <p>
-            Подарок уже выбран близким. Можно перенести его в архив только как
-            полученный подарок, подтвердив дарителя.
+            Подарок забронирован. Доступен только вариант «Подарили» с
+            подтверждением дарителя.
           </p>
         )}
         {reason === "gifted" &&
@@ -1112,9 +1113,7 @@ export function ArchiveWish({
                 </label>
               </div>
             ) : (
-              <p>
-                Для этого подарка нет брони. Можно отметить его как подаренный.
-              </p>
+              <p>Брони нет. Можно перенести в архив.</p>
             )
           ) : (
             <p role="status">Загружаем имя дарителя…</p>

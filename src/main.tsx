@@ -16,7 +16,6 @@ import {
   ChevronDown,
   Pencil,
   Trash2,
-  ShieldCheck,
   RefreshCw,
   Menu,
   Archive,
@@ -48,7 +47,7 @@ import {
   demoIncoming,
   demoUser,
 } from "./demo";
-import { GiftForm, Share, Modal, Confirm, CopyValue } from "./forms";
+import { GiftForm, Share, Modal, Confirm } from "./forms";
 import { AcceptInvite, AddFriend, Profile, Requests } from "./friends";
 import { ImportDialog } from "./import/ImportDialog";
 import {
@@ -317,9 +316,7 @@ function App() {
         );
         telegram?.HapticFeedback?.notificationOccurred("success");
         notice(
-          g.reservation === "mine"
-            ? "Бронь отменена"
-            : "Подарок забронирован. Это наш секрет!",
+          g.reservation === "mine" ? "Бронь отменена" : "Подарок забронирован",
         );
       } finally {
         if (owner) await loadList(owner.id);
@@ -393,7 +390,6 @@ function App() {
             Filimonov<span className="brand-sub">FAMILY WISHES</span>
           </span>
         </a>
-        <div className="sidebar-caption">МАЛЕНЬКИЕ МЕЧТЫ. БОЛЬШАЯ СЕМЬЯ.</div>
         <nav aria-label="Основная навигация">
           {(
             [
@@ -423,24 +419,6 @@ function App() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-note">
-          <div className="note-icon">
-            <Sparkles size={22} />
-          </div>
-          <strong>Дарить — это про любовь</strong>
-          <p>
-            Сохраняйте желания.
-            <br />
-            Радуйте друг друга.
-          </p>
-          <span className="note-hearts">
-            ♡ <span>♡</span> ♡
-          </span>
-        </div>
-        <div className="sidebar-bottom">
-          <ShieldCheck size={17} />
-          <span>Сюрпризы под защитой</span>
-        </div>
       </aside>
       <div className="workspace">
         <header className="topbar">
@@ -451,9 +429,6 @@ function App() {
           >
             <Menu />
           </button>
-          <span className="breadcrumb">
-            Вишлисты близких <span>♡</span>
-          </span>
           <div className="topbar-right">
             {demo && <span className="demo-badge">Демо · без сохранения</span>}
             {fullscreen.supported && (
@@ -491,27 +466,17 @@ function App() {
         <main>
           {locked ? (
             <section className="welcome">
-              <span className="welcome-icon">
-                <Gift size={42} />
-              </span>
-              <div className="eyebrow">FILIMONOV FAMILY WISHES</div>
-              <h1>
-                Все желания близких.
-                <br />
-                <em>В одном месте.</em>
-              </h1>
+              <h1>Вишлист</h1>
               <p>
-                Мечтайте, сохраняйте подарки и готовьте друг другу сюрпризы.
+                Войдите через Telegram, чтобы добавить желания и выбрать подарки
+                друзьям.
               </p>
               {apiConfigured && !telegram?.initData && (
                 <WebLogin onSignedIn={() => void refresh()} />
               )}
-              <div className="welcome-app-link">
-                <span className="small-text">
-                  Ссылка на приложение в Telegram для близких
-                </span>
-                <CopyValue value={telegramLink()} />
-              </div>
+              <a className="text-link" href={telegramLink()}>
+                Открыть в Telegram <ArrowUpRight size={15} />
+              </a>
               {error && (
                 <div className="error" role="alert">
                   {error}
@@ -519,12 +484,11 @@ function App() {
               )}
               {!apiConfigured && (
                 <p className="small-text">
-                  Приложение подготовлено. Осталось подключить API и
-                  опубликовать его.
+                  Сервис пока недоступен. Попробуйте позже.
                 </p>
               )}
               <a className="text-link" href="?demo=1">
-                Посмотреть интерфейс
+                Попробовать демо
               </a>
             </section>
           ) : (
@@ -562,32 +526,17 @@ function App() {
               )}
               <div className="page-title">
                 <div>
-                  <div className="eyebrow">
-                    {tab === "archive"
-                      ? "ИСПОЛНЕННЫЕ МЕЧТЫ"
-                      : "СОБИРАЕМ ТО, ЧТО РАДУЕТ"}
-                  </div>
                   <h1>
                     {tab === "bookings"
-                      ? "Мои маленькие сюрпризы"
+                      ? "Мои брони"
                       : tab === "archive"
                         ? "Архив"
                         : tab === "friends" && !guestToken && !viewingFriend
-                          ? "Желания друзей"
+                          ? "Друзья"
                           : own
                             ? "Мой вишлист"
-                            : `Вишлист ${ownerFirst}`}
-                    <span className="title-sparkle">✧</span>
+                            : `Вишлист: ${owner?.name || ownerFirst}`}
                   </h1>
-                  <p>
-                    {tab === "bookings"
-                      ? "Подарки, которые вы выбрали для близких."
-                      : tab === "archive"
-                        ? "Желания, которые вы убрали из списка. Любое можно вернуть в вишлист."
-                        : own
-                          ? "Пусть близким будет чуть проще сделать вас счастливее."
-                          : "Самые тёплые подарки начинаются с маленькой подсказки."}
-                  </p>
                 </div>
                 {tab === "mine" && user && (
                   <div className="title-actions">
@@ -596,7 +545,7 @@ function App() {
                       onClick={() => setModal("import")}
                     >
                       <FileSpreadsheet size={18} />
-                      Импорт
+                      Из таблицы
                     </button>
                     <button
                       className="button primary"
@@ -627,7 +576,9 @@ function App() {
               {!error && tab === "friends" && !guestToken && (
                 <section className="family-section">
                   <div className="section-heading">
-                    <h2>Кого порадуем?</h2>
+                    <span className="muted">
+                      {friends.length ? `Друзей: ${friends.length}` : ""}
+                    </span>
                     <button
                       className="text-link"
                       onClick={() => setModal("add-friend")}
@@ -667,17 +618,11 @@ function App() {
                   ) : (
                     <div className="empty compact">
                       <Users />
-                      <h3>Вместе мечтать ещё приятнее</h3>
+                      <h3>Друзей пока нет</h3>
                       <p>
-                        Добавьте близких по нику в Telegram или отправьте им
-                        ссылку-приглашение.
+                        Добавьте друга по нику Telegram или отправьте
+                        приглашение.
                       </p>
-                      <button
-                        className="button primary"
-                        onClick={() => setModal("add-friend")}
-                      >
-                        Добавить друга
-                      </button>
                     </div>
                   )}
                   {friends.length > 0 && !viewingFriend && (
@@ -689,109 +634,47 @@ function App() {
               )}
               {!error && showList && (
                 <>
-                  {tab !== "archive" && (
-                    <section className="hero">
-                      <div className="hero-copy">
-                        <span className="hero-label">
-                          <Heart size={14} /> ДЛЯ ТЕХ, КТО РЯДОМ
-                        </span>
-                        <h2>
-                          {own
-                            ? "Здесь живут мои «хочу»"
-                            : "Идеи для счастливых улыбок"}
-                        </h2>
-                        <p>
-                          {own
-                            ? "От маленьких радостей до большой мечты."
-                            : "Выберите подарок, забронируйте и сохраните сюрприз."}
-                          <br />
-                          {own
-                            ? "А сюрпризы пусть остаются сюрпризами."
-                            : guestToken && !authShare
-                              ? "Для бронирования достаточно вашего имени."
-                              : "Владелец списка ничего не узнает."}
-                        </p>
-                        {own && (
-                          <button
-                            className="hero-share"
-                            onClick={() => {
-                              if (demo) {
-                                notice(
-                                  "Ссылки для близких будут доступны после подключения.",
-                                );
-                                return;
-                              }
-                              setModal("share");
-                            }}
-                          >
-                            <LinkIcon size={16} />
-                            Поделиться вишлистом
-                            <ArrowUpRight size={15} />
-                          </button>
-                        )}
-                        {viewingFriend && owner && (
-                          <button
-                            className="hero-share subtle"
-                            onClick={() => unfriend(owner)}
-                          >
-                            <UserMinus size={15} />
-                            Убрать из друзей
-                          </button>
-                        )}
-                      </div>
-                      <div className="gift-art" aria-hidden="true">
-                        <span className="art-star s1">✧</span>
-                        <span className="art-star s2">✦</span>
-                        <span className="art-heart">♡</span>
-                        <div className="present shadow-present">
-                          <i />
-                          <b />
-                        </div>
-                        <div className="present main-present">
-                          <div className="bow b1" />
-                          <div className="bow b2" />
-                          <i />
-                          <b />
-                        </div>
-                        <span className="art-dot" />
-                      </div>
-                      <div className="wish-counter">
-                        <strong>{gifts.length}</strong>
-                        <span>
-                          маленьких
-                          <br />
-                          подсказок
-                        </span>
-                      </div>
-                    </section>
-                  )}
                   {own && tab === "mine" && (
-                    <button
-                      className="button secondary guest-management"
-                      onClick={() => setModal("guest-bookings")}
-                    >
-                      Выбор подарков без входа в Telegram
-                    </button>
-                  )}
-                  {own && tab === "mine" && (
-                    <div className="privacy-note">
-                      <ShieldCheck size={16} />
-                      <span>
-                        Вы не видите бронирования своих подарков. Всё, чтобы
-                        сохранить волшебство.
-                      </span>
+                    <div className="wishlist-actions">
+                      <button
+                        className="button secondary"
+                        onClick={() => {
+                          if (demo) {
+                            notice("В демо ссылки не создаются.");
+                            return;
+                          }
+                          setModal("share");
+                        }}
+                      >
+                        <LinkIcon size={16} />
+                        Поделиться
+                      </button>
+                      <button
+                        className="text-link"
+                        onClick={() => setModal("guest-bookings")}
+                      >
+                        Брони без регистрации
+                      </button>
                     </div>
                   )}
-
+                  {viewingFriend &&
+                    owner &&
+                    friends.some((f) => f.id === owner.id) && (
+                      <button
+                        className="text-link danger remove-friend"
+                        onClick={() => unfriend(owner)}
+                      >
+                        <UserMinus size={15} />
+                        Удалить из друзей
+                      </button>
+                    )}
+                  {guestToken && !authShare && (
+                    <p className="list-help">
+                      Нажмите «Забронировать» у подарка, который хотите купить.
+                    </p>
+                  )}
                   <div className="list-toolbar">
-                    <h2>
-                      {tab === "archive"
-                        ? "Архив желаний"
-                        : own
-                          ? "Мои желания"
-                          : "Список желаний"}{" "}
-                      <span>{list.length}</span>
-                    </h2>
+                    <span className="list-count">{wishCount(list.length)}</span>
                     <div className="list-controls">
                       <label className="search">
                         <Search size={16} />
@@ -825,6 +708,7 @@ function App() {
                         onClick={() => {
                           if (demo) notice("Демонстрационные данные");
                           else if (tab === "archive") void loadArchive();
+                          else if (guestToken) void refresh();
                           else if (owner) void loadList(owner.id);
                         }}
                       >
@@ -835,7 +719,7 @@ function App() {
                   {loading ? (
                     <div className="loading" role="status">
                       <span />
-                      Собираем желания…
+                      Загрузка…
                     </div>
                   ) : shown.length ? (
                     <div className="gift-grid">
@@ -877,16 +761,18 @@ function App() {
                           ? "Ничего не нашлось"
                           : tab === "archive"
                             ? "Архив пока пуст"
-                            : "У каждой мечты есть начало"}
+                            : own
+                              ? "Добавьте первое желание"
+                              : "Желаний пока нет"}
                       </h3>
                       <p>
                         {search
                           ? "Попробуйте другое название."
                           : tab === "archive"
-                            ? "Когда желание исполнится, нажмите «Отправить в архив» — оно переедет сюда."
+                            ? "Здесь появятся желания, которые вы перенесёте в архив."
                             : own
-                              ? "Добавьте первое желание — близкие будут благодарны за подсказку."
-                              : "Здесь пока нет желаний. Загляните чуть позже."}
+                              ? "Нажмите «Добавить желание» и укажите подарок."
+                              : "Владелец ещё не добавил подарки."}
                       </p>
                     </div>
                   )}
@@ -896,7 +782,7 @@ function App() {
                 (loading ? (
                   <div className="loading" role="status">
                     <span />
-                    Загружаем сюрпризы…
+                    Загрузка…
                   </div>
                 ) : (
                   <section className="bookings">
@@ -910,8 +796,8 @@ function App() {
                             <h3>{b.title}</h3>
                             <p>
                               {b.archived
-                                ? "Владелец отметил желание как исполненное"
-                                : "Вы подготовите этот сюрприз"}
+                                ? "В архиве"
+                                : "Вы забронировали этот подарок"}
                             </p>
                           </div>
                           <button
@@ -939,11 +825,8 @@ function App() {
                     ) : (
                       <div className="empty">
                         <Bookmark size={34} />
-                        <h3>Самое приятное ещё впереди</h3>
-                        <p>
-                          Выберите желание близкого человека и нажмите
-                          «Подарю!».
-                        </p>
+                        <h3>У вас пока нет броней</h3>
+                        <p>Откройте вишлист друга и нажмите «Забронировать».</p>
                         <button
                           className="button primary"
                           onClick={() => void navigate("friends")}
@@ -956,11 +839,6 @@ function App() {
                 ))}
             </>
           )}
-          <footer>
-            <Heart size={13} />
-            <span>Сделано для нашей семьи, с любовью</span>
-            <span className="footer-brand">Filimonov Family Wishes</span>
-          </footer>
         </main>
       </div>
       {toast && (
@@ -1013,8 +891,7 @@ function App() {
               />
             </label>
             <p>
-              Регистрация не нужна. Если ошиблись, владелец вишлиста сможет
-              исправить или отменить эту бронь.
+              Чтобы исправить или отменить бронь, обратитесь к владельцу списка.
             </p>
             <button
               className="button primary"
@@ -1041,14 +918,12 @@ function App() {
           wide={modal === "import"}
           title={
             {
-              gift: editing
-                ? "Редактировать желание"
-                : "Новое маленькое желание",
-              "guest-bookings": "Выбор подарков без входа в Telegram",
-              share: "Поделиться мечтами",
+              gift: editing ? "Редактировать желание" : "Добавить желание",
+              "guest-bookings": "Брони без регистрации",
+              share: "Поделиться вишлистом",
               "add-friend": "Добавить друга",
               profile: "Мой профиль",
-              import: "Импорт вишлиста",
+              import: "Добавить из таблицы",
               invite: "Приглашение в друзья",
             }[modal]
           }
@@ -1193,7 +1068,7 @@ function GiftCard({
       <div className="card-content">
         <div className="gift-price">{money(g)}</div>
         <h3>{g.title}</h3>
-        <p>{g.description || "Ещё одна маленькая мечта."}</p>
+        {g.description && <p>{g.description}</p>}
         {mode === "archive" && g.gifted_by_name && (
           <p className="archive-donor">
             Подарил(а): {g.gifted_by_name}
@@ -1210,9 +1085,7 @@ function GiftCard({
             >
               В магазин <ArrowUpRight size={15} />
             </a>
-          ) : (
-            <span className="card-hint">Выбрано с любовью</span>
-          )}
+          ) : null}
           {mode === "own" ? (
             <span className="owner-actions">
               <button
@@ -1261,7 +1134,7 @@ function GiftCard({
               {g.reservation === "reserved" ? (
                 <>
                   <Bookmark size={13} />
-                  Уже выбрали
+                  Забронировано
                 </>
               ) : g.reservation === "mine" ? (
                 <>
@@ -1271,7 +1144,7 @@ function GiftCard({
               ) : (
                 <>
                   <Gift size={14} />
-                  Подарю!
+                  Забронировать
                 </>
               )}
             </button>
@@ -1313,7 +1186,6 @@ function Photo({ wish }: { wish: Wish }) {
   ) : (
     <div className="photo-placeholder">
       <Gift size={42} />
-      <span>Маленькая мечта</span>
     </div>
   );
 }
