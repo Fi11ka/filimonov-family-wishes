@@ -99,7 +99,7 @@ Cloudflare Workers Builds подключён только к репозитор�
 5. Настройте меню: `/setmenubutton` → выберите того же бота → укажите URL Pages → текст кнопки `Наши желания`. В некоторых версиях BotFather это Bot Settings → Menu Button → Configure menu button.
 6. При желании задайте название `Filimonov Family Wishes`, описание и аватар бота. Новый бот не нужен. `/setdomain` не нужен ни мини-приложению, ни входу на сайте.
 7. Откройте профиль бота и нажмите **Open App / Открыть приложение** или кнопку меню **Наши желания**.
-8. Вход на сайте в обычном браузере (Telegram Login, OpenID Connect): откройте мини-приложение [@BotFather](https://t.me/BotFather) → `@FilimonovFamilyWishes_bot` → **Bot Settings → Login Widget** и добавьте в Allowed URLs адреса `https://anastasiacopodevinho.github.io` и `https://anastasiacopodevinho.github.io/filimonov-family-wishes/`. Алгоритм подписи оставьте RS256 (или ES256): с EdDSA Telegram не передаёт данные профиля, и вход не сработает. Client Secret не нужен — сервер проверяет подпись открытыми ключами Telegram, Client ID берётся из `BOT_TOKEN`. Новые секреты не нужны. Миграция `0004_oidc_login.sql` применяется при `pnpm run deploy`.
+8. Вход на сайте в обычном браузере (Telegram Login, OpenID Connect): откройте мини-приложение [@BotFather](https://t.me/BotFather) → `@FilimonovFamilyWishes_bot` → **Bot Settings → Login Widget** и укажите адрес сайта `https://anastasiacopodevinho.github.io` — только домен, без `/filimonov-family-wishes/`: Telegram сверяет источник страницы, путь не нужен. Если в настройках есть выбор алгоритма подписи, оставьте RS256 (или ES256): с EdDSA Telegram не передаёт данные профиля, и вход не сработает. Client Secret не нужен — сервер проверяет подпись открытыми ключами Telegram, Client ID берётся из `BOT_TOKEN`. Новые секреты не нужны. Миграция `0004_oidc_login.sql` применяется при `pnpm run deploy`.
 
 Пример официального формата ссылки: [Telegram Mini Apps](https://core.telegram.org/bots/webapps#direct-link-mini-apps). Передача `initData` и проверка подписи реализованы по [официальному алгоритму Telegram](https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app).
 
@@ -157,7 +157,7 @@ pnpm exec wrangler d1 export family-wishes --remote --output=backups/family-wish
 - `INTERNAL` сразу после настройки: проверьте ID D1, binding `DB` и применение миграций.
 - Pages 404: Pages source должен быть GitHub Actions, URL включает имя репозитория и завершающий `/`.
 - В браузере нет имени Telegram: нажмите «Войти через Telegram» на сайте или откройте приложение через бота.
-- Окно Telegram пишет, что адрес не разрешён: адрес сайта не добавлен в Allowed URLs Login Widget в BotFather. Добавьте `https://anastasiacopodevinho.github.io` и `https://anastasiacopodevinho.github.io/filimonov-family-wishes/`.
+- Окно Telegram пишет, что адрес не разрешён: адрес сайта не добавлен в Allowed URLs Login Widget в BotFather. Укажите `https://anastasiacopodevinho.github.io`.
 - Окно входа не открывается: браузер заблокировал всплывающее окно. Разрешите всплывающие окна для сайта.
 - Гостевая ссылка открывает чат, а не приложение: включите **Main Mini App** в BotFather.
 - Невозможно прочитать HEIC: экспортируйте фото как JPEG/PNG.
