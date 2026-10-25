@@ -8,10 +8,10 @@ import {
   token,
   usernameOf,
   validateInitData,
-  validateLoginWidget,
   type Identity,
 } from "./security";
 import { fetchBytes, imageType, publicHttpsUrl } from "./net";
+import { JWKS_URL, liveJwks, verifyIdToken, type Jwk } from "./oidc";
 import { lookupProduct } from "./shops";
 export interface Env {
   DB: D1Database;
@@ -157,6 +157,42 @@ async function sessionUser(db: D1Database, raw: string): Promise<Identity> {
     fail(401, "SESSION_EXPIRED", "Вход истёк. Войдите через Telegram ещё раз.");
   return u;
 }
+async function createSession(db: D1Database, identity: Identity) {
+  const raw = token(),
+    expires = now() + SESSION_DAYS * 86400;
+  await db.batch([
+    // Keep the newest sessions only; a forgotten browser does not stay signed in forever.
+    stmt(
+      db,
+      `DELETE FROM sessions WHERE user_id=?1 AND token_hash NOT IN (SELECT token_hash FROM sessions WHERE user_id=?1 ORDER BY created_at DESC LIMIT ${SESSION_LIMIT - 1})`,
+      identity.id,
+    ),
+    stmt(
+      db,
+      "INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)",
+      await hash(raw),
+      identity.id,
+      expires,
+    ),
+  ]);
+  return { token: raw, expires_at: expires, user: identity };
+}
+// Telegram's signing keys, cached per Worker instance (see oidc.ts).
+const telegramKeys = liveJwks(async () => {
+  const f = await fetchBytes(new URL(JWKS_URL), {
+    timeoutMs: 5000,
+    maxBytes: 65536,
+    accept: "application/json",
+    allowHost: (h) => h === "oauth.telegram.org",
+  });
+  if (f.status !== 200) throw new Error(`JWKS HTTP ${f.status}`);
+  const keys = (
+    JSON.parse(new TextDecoder().decode(f.bytes)) as { keys?: Jwk[] }
+  ).keys;
+  if (!Array.isArray(keys)) throw new Error("JWKS without keys");
+  return keys;
+});
+const NONCE_TTL = 600;
 async function saveUser(db: D1Database, user: Identity) {
   await db.batch([
     // A Telegram username can move to another account; the newest owner keeps it.
@@ -218,7 +254,7 @@ async function route(req: Request, env: Env): Promise<unknown> {
     fail(503, "NOT_CONFIGURED", "Приложение ещё настраивается.");
   const auth = req.headers.get("authorization");
   // Mini App: signed initData on every request. Website: a session token issued
-  // after the Telegram Login Widget, looked up by its SHA-256.
+  // after Telegram Login (OpenID Connect), looked up by its SHA-256.
   const session = auth?.startsWith("Session ") ? auth.slice(8) : "";
   const user = !auth
     ? null
@@ -230,35 +266,40 @@ async function route(req: Request, env: Env): Promise<unknown> {
         );
   const guest = req.headers.get("x-guest-token");
   if (path === "/api/auth/config" && method === "GET")
-    // The bot ID (token prefix) is public; the website needs it to open Telegram's sign-in window.
+    // The Client ID of Telegram Login is the bot ID (token prefix); it is public.
     return { bot_id: Number(env.BOT_TOKEN.split(":")[0]) || null };
-  if (path === "/api/auth/telegram-login" && method === "POST") {
-    const b = await body(req);
-    await rate(
+  const ipKey = async () =>
+    hash(req.headers.get("cf-connecting-ip") || "local");
+  if (path === "/api/auth/nonce" && method === "POST") {
+    // One-time value that Telegram puts into the id_token; it binds the token
+    // to a login started from our site and makes a token single-use.
+    await rate(db, `nonce:${await ipKey()}`, 30);
+    const nonce = token();
+    await stmt(
       db,
-      `login:${await hash(req.headers.get("cf-connecting-ip") || "local")}`,
-      10,
-    );
-    const identity = await validateLoginWidget(b, env.BOT_TOKEN);
+      "INSERT INTO login_nonces(nonce_hash,expires_at) VALUES(?,?)",
+      await hash(nonce),
+      now() + NONCE_TTL,
+    ).run();
+    return { nonce, expires_in: NONCE_TTL };
+  }
+  if (path === "/api/auth/telegram-oidc" && method === "POST") {
+    const b = await body(req);
+    await rate(db, `login:${await ipKey()}`, 10);
+    const clientId = env.BOT_TOKEN.split(":")[0];
+    const identity = await verifyIdToken(b.id_token, {
+      clientId,
+      jwks: telegramKeys,
+      nonce: async (value) =>
+        !!(await stmt(
+          db,
+          "DELETE FROM login_nonces WHERE nonce_hash=? AND expires_at>? RETURNING nonce_hash",
+          await hash(value),
+          now(),
+        ).first()),
+    });
     await saveUser(db, identity);
-    const raw = token(),
-      expires = now() + SESSION_DAYS * 86400;
-    await db.batch([
-      // Keep the newest sessions only; a forgotten browser does not stay signed in forever.
-      stmt(
-        db,
-        `DELETE FROM sessions WHERE user_id=?1 AND token_hash NOT IN (SELECT token_hash FROM sessions WHERE user_id=?1 ORDER BY created_at DESC LIMIT ${SESSION_LIMIT - 1})`,
-        identity.id,
-      ),
-      stmt(
-        db,
-        "INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)",
-        await hash(raw),
-        identity.id,
-        expires,
-      ),
-    ]);
-    return { token: raw, expires_at: expires, user: identity };
+    return createSession(db, identity);
   }
   if (
     !user &&
@@ -899,6 +940,7 @@ export default {
         Math.floor(now() / 60) - 1440,
       ),
       stmt(env.DB, "DELETE FROM sessions WHERE expires_at<?", now()),
+      stmt(env.DB, "DELETE FROM login_nonces WHERE expires_at<?", now()),
     ]);
   },
 };

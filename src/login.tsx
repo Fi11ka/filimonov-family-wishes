@@ -1,26 +1,28 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Send } from "lucide-react";
 import { api, setSessionToken } from "./api";
-// Website sign-in with Telegram. The page CSP forbids eval, which the iframe
-// widget needs for data-onauth, so the official popup API Telegram.Login.auth
-// is used with our own button. The popup must open inside the click handler,
-// hence the script and bot ID are loaded in advance.
-const WIDGET = "https://telegram.org/js/telegram-widget.js?22";
-type AuthData = Record<string, string | number> | false;
+// Website sign-in with Telegram Login (OpenID Connect), using the official
+// JS API of telegram-login.js. The HTML snippet with data-onauth is not used:
+// the library runs that attribute through new Function, which the page CSP
+// forbids. The popup must open inside the click handler, so the library, the
+// Client ID and a one-time nonce are prepared in advance.
+const LIBRARY = "https://oauth.telegram.org/js/telegram-login.js?6";
+const NONCE_REFRESH_MS = 8 * 60_000; // server nonces live 10 minutes
+type LoginResult = { id_token?: string; error?: string };
 interface LoginApi {
   auth: (
-    options: { bot_id: number; lang?: string },
-    callback: (data: AuthData) => void,
+    options: { client_id: number; nonce: string; lang?: string },
+    callback: (result: LoginResult) => void,
   ) => void;
 }
 const loginApi = () =>
   (window as unknown as { Telegram?: { Login?: LoginApi } }).Telegram?.Login;
 let scriptLoad: Promise<void> | null = null;
-function loadWidget() {
-  if (loginApi()) return Promise.resolve();
+function loadLibrary() {
+  if (loginApi()?.auth) return Promise.resolve();
   scriptLoad ||= new Promise((resolve, reject) => {
     const s = document.createElement("script");
-    s.src = WIDGET;
+    s.src = LIBRARY;
     s.async = true;
     s.onload = () => resolve();
     s.onerror = () => {
@@ -38,63 +40,110 @@ export function WebLogin({
   onSignedIn: () => void;
   compact?: boolean;
 }) {
-  const [botId, setBotId] = useState<number | null>(null),
+  const [clientId, setClientId] = useState<number | null>(null),
+    [ready, setReady] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  const nonce = useRef<{ value: string; at: number } | null>(null);
+  async function freshNonce() {
+    try {
+      const r = await api<{ nonce: string }>("/api/auth/nonce", "POST");
+      nonce.current = { value: r.nonce, at: Date.now() };
+      setReady(true);
+    } catch (e) {
+      nonce.current = null;
+      setReady(false);
+      setError((e as Error).message);
+    }
+  }
   useEffect(() => {
     let alive = true;
     Promise.all([
       api<{ bot_id: number | null }>("/api/auth/config"),
-      loadWidget(),
+      loadLibrary(),
     ])
-      .then(([c]) => alive && setBotId(c.bot_id))
+      .then(([c]) => {
+        if (!alive) return;
+        setClientId(c.bot_id);
+        return freshNonce();
+      })
       .catch((e) => alive && setError((e as Error).message));
+    // Keep a valid nonce ready so the popup can open immediately on click.
+    const timer = setInterval(() => void freshNonce(), NONCE_REFRESH_MS);
     return () => {
       alive = false;
+      clearInterval(timer);
     };
   }, []);
   function signIn() {
     const login = loginApi();
-    if (!login || !botId) return;
+    const n = nonce.current;
+    if (!login || !clientId || !n || Date.now() - n.at > NONCE_REFRESH_MS) {
+      setError("Вход ещё готовится. Нажмите ещё раз через пару секунд.");
+      void freshNonce();
+      return;
+    }
+    // A nonce is single-use: take it now and prepare the next one.
+    nonce.current = null;
+    setReady(false);
     setError("");
     setBusy(true);
-    login.auth({ bot_id: botId, lang: "ru" }, async (data) => {
-      if (!data) {
-        setBusy(false);
-        setError(
-          "Вход не завершён. Подтвердите его в Telegram и попробуйте ещё раз.",
-        );
-        return;
-      }
-      try {
-        const r = await api<{ token: string }>(
-          "/api/auth/telegram-login",
-          "POST",
-          data,
-        );
-        setSessionToken(r.token);
-        onSignedIn();
-      } catch (e) {
-        setError((e as Error).message);
-      } finally {
-        setBusy(false);
-      }
-    });
+    login.auth(
+      { client_id: clientId, nonce: n.value, lang: "ru" },
+      async (r) => {
+        void freshNonce();
+        if (!r.id_token) {
+          setBusy(false);
+          setError(
+            r.error === "popup_closed"
+              ? "Окно входа закрыто — вход не выполнен."
+              : "Вход не завершён. Подтвердите его в Telegram и попробуйте ещё раз.",
+          );
+          return;
+        }
+        try {
+          const s = await api<{ token: string }>(
+            "/api/auth/telegram-oidc",
+            "POST",
+            { id_token: r.id_token },
+          );
+          setSessionToken(s.token);
+          onSignedIn();
+        } catch (e) {
+          setError((e as Error).message);
+        } finally {
+          setBusy(false);
+        }
+      },
+    );
   }
   return (
     <div className={`web-login ${compact ? "compact" : ""}`}>
       <button
         className="button telegram-login"
-        disabled={!botId || busy}
+        disabled={!clientId || !ready || busy}
         onClick={signIn}
       >
         <Send size={17} />
         {busy ? "Ждём подтверждения…" : "Войти через Telegram"}
       </button>
-      {!compact && (
+      {busy && (
+        <button
+          className="text-link"
+          onClick={() => {
+            setBusy(false);
+            setError(
+              "Если окно Telegram не открылось, разрешите всплывающие окна для сайта и нажмите ещё раз.",
+            );
+          }}
+        >
+          Отмена
+        </button>
+      )}
+      {!compact && !busy && (
         <p className="small-text">
-          Откроется окно Telegram: подтвердите вход, и сайт откроется под вашим
-          аккаунтом.
+          Откроется окно Telegram: выберите аккаунт и подтвердите вход — сайт
+          откроется под вашим аккаунтом.
         </p>
       )}
       {error && (
