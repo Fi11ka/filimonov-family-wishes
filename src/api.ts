@@ -10,6 +10,20 @@ export const telegram = (
         setBackgroundColor: (c: string) => void;
         openTelegramLink: (u: string) => void;
         HapticFeedback?: { notificationOccurred: (type: string) => void };
+        platform?: string;
+        isVersionAtLeast?: (version: string) => boolean;
+        // Bot API 8.0+: full-screen mode on mobile and desktop clients.
+        isFullscreen?: boolean;
+        requestFullscreen?: () => void;
+        exitFullscreen?: () => void;
+        onEvent?: (
+          event: string,
+          handler: (e?: { error?: string }) => void,
+        ) => void;
+        offEvent?: (
+          event: string,
+          handler: (e?: { error?: string }) => void,
+        ) => void;
       };
     };
   }

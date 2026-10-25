@@ -23,7 +23,10 @@ import {
   FileSpreadsheet,
   UserPlus,
   UserMinus,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
+import { useFullscreen } from "./fullscreen";
 import {
   api,
   apiConfigured,
@@ -92,6 +95,7 @@ function App() {
     setToast(message);
     setTimeout(() => setToast(""), 4500);
   };
+  const fullscreen = useFullscreen(notice);
   async function loadList(id: string) {
     setLoading(true);
     setError("");
@@ -375,6 +379,24 @@ function App() {
           </span>
           <div className="topbar-right">
             {demo && <span className="demo-badge">Демо · без сохранения</span>}
+            {fullscreen.supported && (
+              <button
+                className="icon-button fullscreen-toggle"
+                onClick={fullscreen.toggle}
+                aria-label={
+                  fullscreen.on ? "Свернуть в окно" : "Развернуть на весь экран"
+                }
+                title={
+                  fullscreen.on ? "Свернуть в окно" : "Развернуть на весь экран"
+                }
+              >
+                {fullscreen.on ? (
+                  <Minimize2 size={18} />
+                ) : (
+                  <Maximize2 size={18} />
+                )}
+              </button>
+            )}
             <button
               className="family-chip"
               onClick={() => setModal("profile")}
