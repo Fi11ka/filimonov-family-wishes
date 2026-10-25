@@ -175,7 +175,7 @@ pnpm exec wrangler d1 export family-wishes --remote --output=backups/family-wish
 
 ## Ссылка запуска и повторная публикация
 
-Основная ссылка для семьи: https://t.me/FilimonovFamilyWishes_bot?startapp — открывает Main Mini App. Ссылка без `?startapp` открывает чат бота, а адрес GitHub Pages открывает обычный сайт. Вне Telegram сайт предлагает Mini App главным действием; вход в браузере находится в пункте «Остаться в браузере». Гостевой список (`g_…`) и приглашение друга (`f_…`) сохраняются при переходе в Telegram.
+Основная ссылка для семьи: https://t.me/FilimonovFamilyWishes_bot?startapp — открывает Main Mini App. Ссылка без `?startapp` открывает чат бота, а адрес GitHub Pages открывает обычный сайт. Вне Telegram сайт сразу показывает кнопку «Войти через Telegram» (вход в браузере), без перехода в Mini App; ниже — ссылка на Mini App, чтобы скопировать и отправить близким. Гостевой список (`g_…`) и приглашение друга (`f_…`) открываются ссылками `t.me` в Telegram.
 
 Браузерный вход отдельно требует Redirect URIs и Trusted Origins в настройках Login Widget бота (пункт 8). После настройки закройте старое окно с ошибкой и заново нажмите «Войти через Telegram». Main Mini App авторизуется подписанными `initData`, веб-вход — подписанным `id_token` Telegram и сессией.
 
