@@ -8,10 +8,18 @@ const BOT = "123456:TEST_ONLY_NOT_A_REAL_TOKEN";
 const origin = "https://family.example";
 let mf: Miniflare;
 let db: Awaited<ReturnType<Miniflare["getD1Database"]>>;
-function signed(id: number, extra: Record<string, string> = {}) {
+function signed(
+  id: number,
+  extra: Record<string, string> = {},
+  username: string | null = `user_${id}`,
+) {
   const p = new URLSearchParams({
     auth_date: String(Math.floor(Date.now() / 1000)),
-    user: JSON.stringify({ id, first_name: `User ${id}` }),
+    user: JSON.stringify({
+      id,
+      first_name: `User ${id}`,
+      ...(username ? { username } : {}),
+    }),
     ...extra,
   });
   const data = [...p.entries()]
@@ -42,12 +50,13 @@ async function call(
     body: value === undefined ? undefined : JSON.stringify(value),
   });
   const raw = await res.text();
-  return {
-    status: res.status,
-    body: raw ? JSON.parse(raw) : null,
-    raw,
-    headers: res.headers,
-  };
+  let body = null;
+  try {
+    body = raw ? JSON.parse(raw) : null;
+  } catch {
+    body = null;
+  }
+  return { status: res.status, body, raw, headers: res.headers };
 }
 const input = {
   title: "Подарок",
@@ -63,22 +72,12 @@ async function gift(id = 1, overrides = {}) {
   assert.equal(r.status, 200, r.raw);
   return r.body.id as string;
 }
-before(async () => {
-  mf = new Miniflare({
-    modules: true,
-    scriptPath: ".test/worker.mjs",
-    compatibilityDate: "2026-07-01",
-    d1Databases: { DB: "test" },
-    bindings: { BOT_TOKEN: BOT, APP_ORIGIN: origin, APP_URL: `${origin}/app/` },
-    log: undefined,
-  });
-  db = await mf.getD1Database("DB");
-  // Run real migration against workerd's D1 SQLite, not an in-memory JS mock.
+async function migrate(file: string) {
+  // Run real migrations against workerd's D1 SQLite, not an in-memory JS mock.
   const statements: string[] = [];
   let statement = "";
-  for (const line of readFileSync("migrations/0001_initial.sql", "utf8").split(
-    "\n",
-  )) {
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (!statement && line.trimStart().startsWith("--")) continue;
     statement += line + " ";
     if (
       statement.trimStart().startsWith("CREATE TRIGGER")
@@ -90,30 +89,48 @@ before(async () => {
     statement = "";
   }
   await db.batch(statements.map((sql) => db.prepare(sql)));
-  for (const id of [1, 2, 3, 4, 5, 6, 7, 8])
+}
+before(async () => {
+  mf = new Miniflare({
+    modules: true,
+    scriptPath: ".test/worker.mjs",
+    compatibilityDate: "2026-07-01",
+    d1Databases: { DB: "test" },
+    bindings: { BOT_TOKEN: BOT, APP_ORIGIN: origin, APP_URL: `${origin}/app/` },
+    log: undefined,
+  });
+  db = await mf.getD1Database("DB");
+  await migrate("migrations/0001_initial.sql");
+  // A family created before the switch to profiles: 1, 2 and 3 share it, 4 does not.
+  await db.batch([
+    ...[1, 2, 3, 4].map((id) =>
+      db
+        .prepare("INSERT INTO users(id,name) VALUES(?,?)")
+        .bind(String(id), `User ${id}`),
+    ),
+    db.prepare(
+      "INSERT INTO families(id,name,owner_id,invite_hash) VALUES('f1','Семья','1','x')",
+    ),
+    ...[1, 2, 3].map((id) =>
+      db
+        .prepare("INSERT INTO members(user_id,family_id) VALUES(?, 'f1')")
+        .bind(String(id)),
+    ),
+  ]);
+  await migrate("migrations/0002_profiles_friends_archive.sql");
+  for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9])
     assert.equal((await call("/me", id)).status, 200);
-  const f = await call("/family", 1, "POST", { name: "Семья" });
-  assert.equal(f.status, 200);
-  for (const id of [2, 3])
-    assert.equal(
-      (await call("/family/join", id, "POST", { code: f.body.invite_code }))
-        .status,
-      200,
-    );
 });
 after(async () => {
   await mf?.dispose();
 });
 test("Telegram: valid HMAC including signature field", async () => {
-  assert.equal(
-    (
-      await validateInitData(
-        signed(99, { signature: "example-signature" }),
-        BOT,
-      )
-    ).id,
-    "99",
+  const me = await validateInitData(
+    signed(99, { signature: "example-signature" }),
+    BOT,
   );
+  assert.equal(me.id, "99");
+  assert.equal(me.username, "user_99");
 });
 test("Telegram: forged user, malformed HMAC, expired/future and duplicate fields rejected", async () => {
   await assert.rejects(
@@ -146,8 +163,35 @@ test("unauthenticated identity and untrusted user ID cannot grant access", async
     ).status,
     401,
   );
+  assert.equal(
+    (
+      await call("/fetch/product", undefined, "POST", {
+        url: "https://example.com",
+      })
+    ).status,
+    401,
+  );
 });
-test("family isolation and gift ownership are enforced", async () => {
+test("former family members become friends of each other", async () => {
+  const f = (await call("/friends", 1)).body;
+  assert.deepEqual(
+    f.friends.map((x: any) => x.id),
+    ["2", "3"],
+  );
+  assert.equal(f.friends[0].username, "user_2");
+  assert.equal((await call("/friends", 4)).body.friends.length, 0);
+  assert.equal(
+    (
+      await db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM friendships WHERE status='accepted'",
+        )
+        .first()
+    )?.n,
+    3,
+  );
+});
+test("friend isolation and gift ownership are enforced", async () => {
   const g = await gift();
   assert.equal((await call("/lists/1", 2)).status, 200);
   assert.equal((await call("/lists/1", 4)).status, 404);
@@ -156,6 +200,7 @@ test("family isolation and gift ownership are enforced", async () => {
     404,
   );
   assert.equal((await call(`/gifts/${g}`, 2, "DELETE")).status, 404);
+  assert.equal((await call(`/gifts/${g}/archive`, 2, "POST")).status, 404);
   assert.equal((await call(`/gifts/${g}/photo`, 4)).status, 404);
   assert.equal(
     (await call(`/gifts/${g}`, 1, "PUT", { ...input, title: "Изменено" }))
@@ -200,6 +245,15 @@ test("owner response remains byte-identical before/after reservation; no identit
       .reservation,
     "mine",
   );
+  // Archiving and restoring a reserved gift answers exactly like an unreserved one.
+  const free = await gift();
+  const a = await call(`/gifts/${g}/archive`, 1, "POST"),
+    b = await call(`/gifts/${free}/archive`, 1, "POST");
+  assert.equal(a.raw, b.raw);
+  const archive = await call("/archive", 1);
+  assert.ok(!archive.raw.includes("reservation"));
+  assert.equal((await call(`/gifts/${g}/restore`, 1, "POST")).raw, a.raw);
+  await call(`/gifts/${free}/restore`, 1, "POST");
 });
 test("atomic concurrent reservations: exactly one succeeds", async () => {
   const g = await gift();
@@ -239,6 +293,32 @@ test("atomic concurrent reservations: exactly one succeeds", async () => {
   assert.equal(
     (await call(`/gifts/${g}/reservation`, loser, "POST")).status,
     200,
+  );
+});
+test("archive: bought gifts leave friends' lists, cannot be reserved and can be restored", async () => {
+  const g = await gift(1, { title: "Куплено" });
+  assert.equal((await call(`/gifts/${g}/archive`, 1, "POST")).status, 200);
+  assert.ok(
+    !(await call("/lists/1", 2)).body.gifts.some((v: any) => v.id === g),
+  );
+  assert.ok(
+    !(await call("/lists/1", 1)).body.gifts.some((v: any) => v.id === g),
+  );
+  const archive = (await call("/archive", 1)).body.gifts;
+  assert.ok(archive.some((v: any) => v.id === g && v.archived_at > 0));
+  assert.equal((await call("/archive", 2)).body.gifts.length, 0);
+  assert.equal((await call(`/gifts/${g}/reservation`, 2, "POST")).status, 404);
+  assert.equal((await call(`/gifts/${g}/photo`, 2)).status, 404);
+  assert.equal((await call(`/gifts/${g}/photo`, 1)).status, 200);
+  assert.equal((await call(`/gifts/${g}/restore`, 1, "POST")).status, 200);
+  assert.ok(
+    (await call("/lists/1", 2)).body.gifts.some((v: any) => v.id === g),
+  );
+  // Imported "bought" rows go straight to the archive.
+  const r = await call("/gifts", 1, "POST", { ...input, archived: true });
+  assert.equal(r.status, 200);
+  assert.ok(
+    (await call("/archive", 1)).body.gifts.some((v: any) => v.id === r.body.id),
   );
 });
 test("guest scope, anonymous anti-spoiler, authenticated reservation and revocation", async () => {
@@ -286,8 +366,8 @@ test("guest scope, anonymous anti-spoiler, authenticated reservation and revocat
   );
   assert.equal((await call(`/gifts/${g}`, 4, "PUT", input, raw)).status, 404);
   assert.equal(
-    (await call("/family/members", 4, "GET", undefined, raw)).status,
-    404,
+    (await call("/friends", 4, "GET", undefined, raw)).body.friends.length,
+    0,
   );
   assert.equal(
     (await call(`/guest-links/${link.body.id}`, 1, "DELETE")).status,
@@ -323,10 +403,82 @@ test("expired guest link cannot grant access and new link revokes old", async ()
     404,
   );
 });
-test("removed member loses list access and can cancel their own reservation", async () => {
+test("friend requests by username need confirmation", async () => {
+  assert.equal(
+    (await call("/friends/requests", 5, "POST", { username: "@nobody_here" }))
+      .status,
+    404,
+  );
+  assert.equal(
+    (await call("/friends/requests", 5, "POST", { username: "@user_5" }))
+      .status,
+    400,
+  );
+  const r = await call("/friends/requests", 5, "POST", { username: "@User_6" });
+  assert.deepEqual(r.body, { status: "pending" });
+  assert.equal((await call("/lists/6", 5)).status, 404);
+  assert.deepEqual(
+    (await call("/friends", 6)).body.incoming.map((x: any) => x.id),
+    ["5"],
+  );
+  assert.deepEqual(
+    (await call("/friends", 5)).body.outgoing.map((x: any) => x.id),
+    ["6"],
+  );
+  // The requester cannot accept on the other person's behalf.
+  assert.equal((await call("/friends/6/accept", 5, "POST")).status, 404);
+  assert.equal((await call("/friends/5/accept", 6, "POST")).status, 200);
+  assert.equal((await call("/lists/6", 5)).status, 200);
+  assert.equal((await call("/lists/5", 6)).status, 200);
+  assert.equal(
+    (await call("/friends/requests", 5, "POST", { username: "user_6" })).status,
+    409,
+  );
+  // Unfriending removes access both ways.
+  assert.equal((await call("/friends/5", 6, "DELETE")).status, 200);
+  assert.equal((await call("/lists/6", 5)).status, 404);
+  // A counter-request accepts the pending one.
+  await call("/friends/requests", 5, "POST", { username: "user_6" });
+  assert.deepEqual(
+    (await call("/friends/requests", 6, "POST", { username: "user_5" })).body,
+    { status: "accepted" },
+  );
+});
+test("friend invite links: preview, confirm, revoke", async () => {
+  const inv = await call("/friend-invites", 7, "POST");
+  assert.equal(inv.status, 200);
+  const raw = new URL(inv.body.telegram_url).searchParams
+    .get("startapp")!
+    .slice(2);
+  assert.match(raw, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(
+    (await call("/friend-invites/preview", 7, "POST", { token: raw })).status,
+    400,
+  );
+  const preview = await call("/friend-invites/preview", 8, "POST", {
+    token: raw,
+  });
+  assert.equal(preview.body.owner.id, "7");
+  assert.equal(preview.body.already_friends, false);
+  assert.equal((await call("/lists/7", 8)).status, 404);
+  assert.equal(
+    (await call("/friend-invites/accept", 8, "POST", { token: raw })).status,
+    200,
+  );
+  assert.equal((await call("/lists/7", 8)).status, 200);
+  assert.equal(
+    (await call(`/friend-invites/${inv.body.id}`, 7, "DELETE")).status,
+    200,
+  );
+  assert.equal(
+    (await call("/friend-invites/accept", 9, "POST", { token: raw })).status,
+    404,
+  );
+});
+test("removed friend loses list access and can cancel their own reservation", async () => {
   const g = await gift();
   assert.equal((await call(`/gifts/${g}/reservation`, 3, "POST")).status, 200);
-  assert.equal((await call("/family/members/3", 1, "DELETE")).status, 200);
+  assert.equal((await call("/friends/3", 1, "DELETE")).status, 200);
   assert.equal((await call("/lists/1", 3)).status, 404);
   assert.equal(
     (await call(`/gifts/${g}/reservation`, 3, "DELETE")).status,
@@ -334,21 +486,29 @@ test("removed member loses list access and can cancel their own reservation", as
   );
   assert.equal((await call(`/gifts/${g}/reservation`, 3, "POST")).status, 404);
 });
-test("only family owner can rotate invites/remove members; creator cannot leave", async () => {
-  assert.equal((await call("/family/invite", 2, "POST")).status, 404);
-  assert.equal((await call("/family/members/1", 2, "DELETE")).status, 404);
-  assert.equal((await call("/family/leave", 1, "POST")).status, 409);
-  const old = await call("/family/invite", 1, "POST");
-  await call("/family/invite", 1, "POST");
-  assert.equal(
-    (await call("/family/join", 5, "POST", { code: old.body.invite_code }))
-      .status,
-    404,
-  );
-  assert.equal(
-    (await call("/family", 2, "POST", { name: "Other" })).status,
-    409,
-  );
+test("price ranges are validated and stored", async () => {
+  const id = await gift(2, {
+    price_minor: 600000,
+    price_max_minor: 4000000,
+    price_range: true,
+  });
+  const from = await gift(2, { price_minor: 100000, price_range: true });
+  const listed = (await call("/lists/2", 2)).body.gifts;
+  const r = listed.find((v: any) => v.id === id),
+    f = listed.find((v: any) => v.id === from);
+  assert.equal(r.price_max_minor, 4000000);
+  assert.equal(r.price_range, 1);
+  assert.equal(f.price_max_minor, null);
+  assert.equal(f.price_range, 1);
+  for (const overrides of [
+    { price_minor: 500, price_max_minor: 100, price_range: true },
+    { price_minor: 500, price_max_minor: 900 },
+    { price_minor: 500, price_max_minor: 1.5, price_range: true },
+  ])
+    assert.equal(
+      (await call("/gifts", 2, "POST", { ...input, ...overrides })).status,
+      400,
+    );
 });
 test("input validation blocks unsafe URLs, invalid price, priority, oversized photos and non-JSON", async () => {
   for (const overrides of [
@@ -383,10 +543,38 @@ test("input validation blocks unsafe URLs, invalid price, priority, oversized ph
     413,
   );
 });
+test("outbound fetches refuse internal and non-HTTPS addresses", async () => {
+  for (const url of [
+    "http://example.com/item",
+    "https://127.0.0.1/",
+    "https://2130706433/",
+    "https://[::1]/",
+    "https://localhost/",
+    "https://printer.local/",
+    "https://intranet/",
+    "https://user:pass@example.com/",
+    "https://example.com:8443/",
+    "https://evil.workers.dev/",
+    "file:///etc/passwd",
+  ]) {
+    const r = await call("/fetch/product", 1, "POST", { url });
+    assert.ok([400].includes(r.status), `${url} → ${r.status}`);
+    assert.equal((await call("/fetch/image", 1, "POST", { url })).status, 400);
+  }
+  assert.equal(
+    (
+      await call("/fetch/sheet", 1, "POST", {
+        url: "https://example.com/spreadsheets/d/abc",
+      })
+    ).status,
+    400,
+  );
+});
 test("private responses are never cached and CORS is restricted", async () => {
   const r = await call("/me", 1);
   assert.equal(r.headers.get("Cache-Control"), "no-store, private");
   assert.equal(r.headers.get("Access-Control-Allow-Origin"), origin);
+  assert.equal(r.body.user.username, "user_1");
   assert.equal(
     (
       await call("/me", 1, "GET", undefined, undefined, {
@@ -398,14 +586,16 @@ test("private responses are never cached and CORS is restricted", async () => {
   const preflight = await call("/me", undefined, "OPTIONS");
   assert.equal(preflight.status, 204);
 });
-test("join guessing and link creation have per-user rate limits", async () => {
-  for (let i = 0; i < 5; i++)
+test("friend request guessing and link creation have per-user rate limits", async () => {
+  for (let i = 0; i < 10; i++)
     assert.equal(
-      (await call("/family/join", 7, "POST", { code: "wrong" })).status,
+      (await call("/friends/requests", 9, "POST", { username: `missing_${i}` }))
+        .status,
       404,
     );
   assert.equal(
-    (await call("/family/join", 7, "POST", { code: "wrong" })).status,
+    (await call("/friends/requests", 9, "POST", { username: "missing_x" }))
+      .status,
     429,
   );
   for (let i = 0; i < 5; i++)

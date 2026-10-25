@@ -1,14 +1,20 @@
-export const demoUser = { id: "1001", name: "Анастасия Филимонова" };
-export const demoFamily = {
-  id: "demo",
-  name: "Семья Филимоновых",
-  owner_id: "1001",
+export const demoUser = {
+  id: "1001",
+  name: "Анастасия Филимонова",
+  username: "nastya_f",
 };
-export const demoMembers = [
-  { ...demoUser, gift_count: 6 },
-  { id: "1002", name: "Александр Филимонов", gift_count: 4 },
-  { id: "1003", name: "Мария Филимонова", gift_count: 3 },
-  { id: "1004", name: "Михаил Филимонов", gift_count: 5 },
+export const demoFriends = [
+  {
+    id: "1002",
+    name: "Александр Филимонов",
+    username: "sasha_f",
+    gift_count: 4,
+  },
+  { id: "1003", name: "Мария Филимонова", username: "masha_f", gift_count: 3 },
+  { id: "1004", name: "Михаил Филимонов", username: null, gift_count: 5 },
+];
+export const demoIncoming = [
+  { id: "1005", name: "Дарина Филимонова", username: "darina_f" },
 ];
 export const demoGifts = [
   {
@@ -76,6 +82,26 @@ export const demoGifts = [
   owner_id: "1001",
   has_photo: 1,
   shop_url: "",
+  price_max_minor: null as number | null,
+  price_range: 0,
   created_at: 0,
   updated_at: 0,
 }));
+demoGifts[3] = {
+  ...demoGifts[3],
+  price_minor: 2500,
+  price_max_minor: 4500,
+  price_range: 1,
+};
+export const demoArchive = [
+  {
+    ...demoGifts[0],
+    id: "demo-archived",
+    title: "Тёплый плед в клетку",
+    description: "Подарили на Новый год — спасибо!",
+    price_minor: 5900,
+    archived_at: 1735689600,
+    photo:
+      "https://images.unsplash.com/photo-1580301762395-21ce84d00bc6?w=700&auto=format&fit=crop&q=85",
+  },
+];

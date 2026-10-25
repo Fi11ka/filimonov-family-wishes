@@ -1,0 +1,353 @@
+import React, { useEffect, useState } from "react";
+import {
+  AtSign,
+  Check,
+  Link as LinkIcon,
+  UserPlus,
+  X,
+  Heart,
+} from "lucide-react";
+import { api, demo } from "./api";
+import { CopyValue } from "./forms";
+import { type User, handle, initials } from "./types";
+export function AddFriend({ onDone }: { onDone: (message: string) => void }) {
+  const [mode, setMode] = useState<"nick" | "link">("nick"),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false),
+    [invite, setInvite] = useState<{
+      id: string;
+      telegram_url: string;
+      expires_at: number;
+    } | null>(null),
+    [active, setActive] = useState<{ id: string; expires_at: number }[]>([]);
+  async function reload() {
+    if (demo) return;
+    try {
+      setActive((await api("/api/friend-invites")).invites);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  useEffect(() => {
+    if (mode === "link") void reload();
+  }, [mode]);
+  return (
+    <>
+      <div className="segmented">
+        <button
+          className={mode === "nick" ? "selected" : ""}
+          onClick={() => setMode("nick")}
+        >
+          <AtSign size={15} /> По нику
+        </button>
+        <button
+          className={mode === "link" ? "selected" : ""}
+          onClick={() => setMode("link")}
+        >
+          <LinkIcon size={15} /> По ссылке
+        </button>
+      </div>
+      {mode === "nick" ? (
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (demo) {
+              setError("В демо заявки не отправляются.");
+              return;
+            }
+            setBusy(true);
+            setError("");
+            try {
+              const r = await api("/api/friends/requests", "POST", {
+                username: new FormData(e.currentTarget).get("username"),
+              });
+              onDone(
+                r.status === "accepted"
+                  ? "Вы теперь друзья!"
+                  : "Заявка отправлена. Друг увидит её в разделе «Друзья».",
+              );
+            } catch (err) {
+              setError((err as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <p className="muted">
+            Введите ник из Telegram. Человек должен хотя бы раз открыть
+            приложение и подтвердить заявку.
+          </p>
+          <label>
+            Ник в Telegram
+            <input
+              name="username"
+              required
+              maxLength={33}
+              placeholder="@nickname"
+              autoCapitalize="none"
+            />
+          </label>
+          {error && (
+            <div className="error" role="alert">
+              {error}
+            </div>
+          )}
+          <button className="button primary full-width" disabled={busy}>
+            <UserPlus size={17} />
+            {busy ? "Отправляем…" : "Отправить заявку"}
+          </button>
+        </form>
+      ) : (
+        <div className="share-result">
+          <p className="muted">
+            Отправьте ссылку тому, кого хотите добавить. Открыв её в Telegram,
+            он подтвердит дружбу — и вы увидите вишлисты друг друга.
+          </p>
+          {invite && <CopyValue value={invite.telegram_url} />}
+          {error && (
+            <div className="error" role="alert">
+              {error}
+            </div>
+          )}
+          <button
+            className="button primary full-width"
+            disabled={busy}
+            onClick={async () => {
+              if (demo) {
+                setError("В демо приглашения не создаются.");
+                return;
+              }
+              setBusy(true);
+              setError("");
+              try {
+                setInvite(await api("/api/friend-invites", "POST"));
+                await reload();
+              } catch (e) {
+                setError((e as Error).message);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            <LinkIcon size={17} />
+            {invite ? "Заменить ссылку" : "Создать ссылку-приглашение"}
+          </button>
+          <p className="small-text">
+            Ссылка действует 30 дней, новая заменяет прежнюю. Делитесь ею только
+            с теми, кого хотите видеть в друзьях.
+          </p>
+          {active.map((l) => (
+            <div className="active-link" key={l.id}>
+              <span>
+                Действует до{" "}
+                {new Date(l.expires_at * 1000).toLocaleDateString("ru-RU")}
+              </span>
+              <button
+                className="text-link danger"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    await api(`/api/friend-invites/${l.id}`, "DELETE");
+                    setInvite(null);
+                    await reload();
+                  } catch (e) {
+                    setError((e as Error).message);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Отозвать
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+export function Requests({
+  incoming,
+  outgoing,
+  onChanged,
+  notice,
+}: {
+  incoming: User[];
+  outgoing: User[];
+  onChanged: () => void;
+  notice: (m: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  if (!incoming.length && !outgoing.length) return null;
+  async function act(path: string, method: string, message: string) {
+    if (demo) {
+      notice("В демо заявки не меняются.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api(path, method);
+      notice(message);
+      onChanged();
+    } catch (e) {
+      notice((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="requests">
+      {incoming.map((u) => (
+        <div className="request" key={u.id}>
+          <span className="avatar small">{initials(u.name)}</span>
+          <span>
+            <strong>{u.name}</strong> {handle(u)}
+            <small>хочет добавить вас в друзья</small>
+          </span>
+          <button
+            className="button primary small-button"
+            disabled={busy}
+            onClick={() =>
+              void act(
+                `/api/friends/${u.id}/accept`,
+                "POST",
+                "Вы теперь друзья!",
+              )
+            }
+          >
+            <Check size={15} /> Принять
+          </button>
+          <button
+            className="icon-button"
+            aria-label={`Отклонить заявку ${u.name}`}
+            disabled={busy}
+            onClick={() =>
+              void act(`/api/friends/${u.id}`, "DELETE", "Заявка отклонена")
+            }
+          >
+            <X size={16} />
+          </button>
+        </div>
+      ))}
+      {outgoing.map((u) => (
+        <div className="request outgoing" key={u.id}>
+          <span className="avatar small">{initials(u.name)}</span>
+          <span>
+            <strong>{u.name}</strong> {handle(u)}
+            <small>ждём подтверждения</small>
+          </span>
+          <button
+            className="text-link"
+            disabled={busy}
+            onClick={() =>
+              void act(`/api/friends/${u.id}`, "DELETE", "Заявка отменена")
+            }
+          >
+            Отменить
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+export function AcceptInvite({
+  token,
+  onDone,
+}: {
+  token: string;
+  onDone: (message: string) => void;
+}) {
+  const [owner, setOwner] = useState<User | null>(null),
+    [already, setAlready] = useState(false),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false);
+  useEffect(() => {
+    void api("/api/friend-invites/preview", "POST", { token })
+      .then((r) => {
+        setOwner(r.owner);
+        setAlready(r.already_friends);
+      })
+      .catch((e) => setError((e as Error).message));
+  }, [token]);
+  if (error)
+    return (
+      <div className="error" role="alert">
+        {error}
+      </div>
+    );
+  if (!owner)
+    return (
+      <div className="loading" role="status">
+        <span />
+        Проверяем приглашение…
+      </div>
+    );
+  return (
+    <div className="share-result">
+      <span className="avatar large">{initials(owner.name)}</span>
+      <h3>
+        {owner.name} {handle(owner)}
+      </h3>
+      <p>
+        {already
+          ? "Вы уже друзья — вишлисты друг друга доступны в разделе «Друзья»."
+          : "приглашает вас в друзья. Вы будете видеть вишлисты друг друга и сможете тайно бронировать подарки."}
+      </p>
+      {!already && (
+        <button
+          className="button primary full-width"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await api("/api/friend-invites/accept", "POST", { token });
+              onDone(`Вы теперь друзья с ${owner.name.split(" ")[0]}!`);
+            } catch (e) {
+              setError((e as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <Heart size={17} /> Добавить в друзья
+        </button>
+      )}
+    </div>
+  );
+}
+export function Profile({
+  user,
+  friends,
+  onAddFriend,
+}: {
+  user: User | null;
+  friends: number;
+  onAddFriend: () => void;
+}) {
+  return (
+    <div className="share-result">
+      <span className="avatar large">{initials(user?.name || "Гость")}</span>
+      <h3>{user?.name || "Гость"}</h3>
+      <p className="muted">
+        {user?.username ? (
+          <>
+            Ваш ник: <strong>@{user.username}</strong>. По нему вас можно
+            добавить в друзья.
+          </>
+        ) : (
+          <>
+            У вас нет ника в Telegram. Друзья смогут добавить вас по
+            ссылке-приглашению, или задайте ник в настройках Telegram.
+          </>
+        )}
+      </p>
+      <p className="small-text">
+        Друзей: {friends}. Имя и ник берутся из Telegram.
+      </p>
+      <button className="button primary full-width" onClick={onAddFriend}>
+        <UserPlus size={17} /> Добавить друга
+      </button>
+    </div>
+  );
+}

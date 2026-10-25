@@ -18,48 +18,72 @@ import {
   ShieldCheck,
   RefreshCw,
   Menu,
+  Archive,
+  ArchiveRestore,
+  FileSpreadsheet,
+  UserPlus,
+  UserMinus,
 } from "lucide-react";
 import {
   api,
   apiConfigured,
   demo,
+  friendInvite,
   guestToken,
   telegram,
   telegramLink,
 } from "./api";
-import { demoFamily, demoGifts, demoMembers, demoUser } from "./demo";
-import { GiftForm, FamilyForm, Share, FamilySettings, Modal } from "./forms";
+import {
+  demoArchive,
+  demoFriends,
+  demoGifts,
+  demoIncoming,
+  demoUser,
+} from "./demo";
+import { GiftForm, Share, Modal, Confirm } from "./forms";
+import { AcceptInvite, AddFriend, Profile, Requests } from "./friends";
+import { ImportDialog } from "./import/ImportDialog";
 import {
   type User,
-  type Family,
+  type Friend,
   type Wish,
-  type Member,
   priorities,
   initials,
+  handle,
   money,
   wishCount,
 } from "./types";
 import "./style.css";
+type Tab = "mine" | "friends" | "bookings" | "archive";
+type ModalKind =
+  "gift" | "share" | "add-friend" | "profile" | "import" | "invite";
+interface Confirmation {
+  text: string;
+  action: string;
+  danger?: boolean;
+  run: () => Promise<void>;
+}
 function App() {
   const [user, setUser] = useState<User | null>(demo ? demoUser : null),
-    [family, setFamily] = useState<Family | null>(demo ? demoFamily : null);
-  const [members, setMembers] = useState<Member[]>(demo ? demoMembers : []),
-    [owner, setOwner] = useState<User | null>(demo ? demoUser : null),
-    [gifts, setGifts] = useState<Wish[]>(demo ? demoGifts : []);
-  const [tab, setTab] = useState<"mine" | "family" | "bookings">(
-      guestToken ? "family" : "mine",
-    ),
+    [friends, setFriends] = useState<Friend[]>(demo ? demoFriends : []),
+    [incoming, setIncoming] = useState<User[]>(demo ? demoIncoming : []),
+    [outgoing, setOutgoing] = useState<User[]>([]);
+  const [owner, setOwner] = useState<User | null>(demo ? demoUser : null),
+    [gifts, setGifts] = useState<Wish[]>(demo ? demoGifts : []),
+    [archive, setArchive] = useState<Wish[]>(demo ? demoArchive : []);
+  const [tab, setTab] = useState<Tab>(guestToken ? "friends" : "mine"),
     [loading, setLoading] = useState(!demo),
     [error, setError] = useState(""),
     [toast, setToast] = useState("");
-  const [modal, setModal] = useState<
-      "gift" | "family" | "share" | "settings" | null
-    >(null),
+  const [modal, setModal] = useState<ModalKind | null>(
+      friendInvite && !demo ? "invite" : null,
+    ),
+    [confirmation, setConfirmation] = useState<Confirmation | null>(null),
     [editing, setEditing] = useState<Wish | null>(null),
     [search, setSearch] = useState(""),
     [sort, setSort] = useState("priority");
   const [bookings, setBookings] = useState<
-      { gift_id: string; title: string }[]
+      { gift_id: string; title: string; archived?: number }[]
     >([]),
     [busy, setBusy] = useState(false),
     [menu, setMenu] = useState(false);
@@ -82,6 +106,24 @@ function App() {
       setLoading(false);
     }
   }
+  async function loadFriends() {
+    if (demo) return;
+    const f = await api("/api/friends");
+    setFriends(f.friends);
+    setIncoming(f.incoming);
+    setOutgoing(f.outgoing);
+  }
+  async function loadArchive() {
+    if (demo) return;
+    setLoading(true);
+    try {
+      setArchive((await api("/api/archive")).gifts);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
   async function refresh() {
     if (demo) return;
     setLoading(true);
@@ -91,19 +133,16 @@ function App() {
         const d = await api("/api/guest");
         setOwner(d.owner);
         setGifts(d.gifts);
-        if (telegram?.initData) {
-          const me = await api("/api/me");
-          setUser(me.user);
-          setFamily(me.family);
-        }
+        if (telegram?.initData) setUser((await api("/api/me")).user);
       } else if (telegram?.initData) {
         const me = await api("/api/me");
         setUser(me.user);
-        setFamily(me.family);
-        const d = await api(`/api/lists/${me.user.id}`);
-        setOwner(d.owner);
-        setGifts(d.gifts);
-        if (me.family) setMembers((await api("/api/family/members")).members);
+        if (tab === "mine" || !owner) {
+          const d = await api(`/api/lists/${me.user.id}`);
+          setOwner(d.owner);
+          setGifts(d.gifts);
+        } else if (owner) await loadList(owner.id);
+        await loadFriends();
       }
     } catch (e) {
       setError((e as Error).message);
@@ -120,26 +159,33 @@ function App() {
     }
     void refresh();
   }, []);
-  async function navigate(next: typeof tab) {
+  async function navigate(next: Tab) {
     setMenu(false);
     setTab(next);
     setSearch("");
+    setError("");
     if (demo) {
       if (next === "mine") {
         setOwner(demoUser);
         setGifts(demoGifts);
       }
+      if (next === "friends") {
+        setOwner(null);
+        setGifts([]);
+      }
       return;
     }
-    setError("");
     if (next === "mine" && user) await loadList(user.id);
-    if (next === "family" && family) {
+    if (next === "friends" && !guestToken) {
+      setOwner(null);
+      setGifts([]);
       try {
-        setMembers((await api("/api/family/members")).members);
+        await loadFriends();
       } catch (e) {
         setError((e as Error).message);
       }
     }
+    if (next === "archive") await loadArchive();
     if (next === "bookings") {
       setLoading(true);
       try {
@@ -151,53 +197,110 @@ function App() {
       }
     }
   }
-  async function reserve(g: Wish) {
+  function openFriend(f: Friend) {
     if (demo) {
-      notice("Бронирование доступно после подключения приложения.");
+      setOwner(f);
+      setGifts(
+        demoGifts.slice(0, f.gift_count).map((g, n) => ({
+          ...g,
+          owner_id: f.id,
+          reservation: n === 1 ? "reserved" : n === 2 ? "mine" : "available",
+        })),
+      );
+      return;
+    }
+    void loadList(f.id);
+  }
+  async function guarded(action: () => Promise<void>, demoMessage: string) {
+    if (demo) {
+      notice(demoMessage);
       return;
     }
     setBusy(true);
     try {
-      await api(
-        `/api/gifts/${g.id}/reservation`,
-        g.reservation === "mine" ? "DELETE" : "POST",
-      );
-      telegram?.HapticFeedback?.notificationOccurred("success");
-      if (owner) await loadList(owner.id);
-      notice(
-        g.reservation === "mine"
-          ? "Бронь отменена"
-          : "Подарок забронирован. Это наш секрет!",
-      );
+      await action();
     } catch (e) {
       notice((e as Error).message);
-      if (owner) await loadList(owner.id);
     } finally {
       setBusy(false);
     }
   }
-  async function remove(g: Wish) {
-    if (!confirm(`Удалить «${g.title}» из списка?`)) return;
-    setBusy(true);
-    try {
-      await api(`/api/gifts/${g.id}`, "DELETE");
+  async function reserve(g: Wish) {
+    await guarded(async () => {
+      try {
+        await api(
+          `/api/gifts/${g.id}/reservation`,
+          g.reservation === "mine" ? "DELETE" : "POST",
+        );
+        telegram?.HapticFeedback?.notificationOccurred("success");
+        notice(
+          g.reservation === "mine"
+            ? "Бронь отменена"
+            : "Подарок забронирован. Это наш секрет!",
+        );
+      } finally {
+        if (owner) await loadList(owner.id);
+      }
+    }, "Бронирование доступно после подключения приложения.");
+  }
+  async function markBought(g: Wish) {
+    await guarded(async () => {
+      await api(`/api/gifts/${g.id}/archive`, "POST");
       if (user) await loadList(user.id);
-      notice("Желание удалено");
-    } catch (e) {
-      notice((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
+      notice("Ура! Желание перенесено в архив");
+    }, "В демо архив не меняется.");
   }
-  const shown = gifts
+  async function restore(g: Wish) {
+    await guarded(async () => {
+      await api(`/api/gifts/${g.id}/restore`, "POST");
+      await loadArchive();
+      notice("Желание снова в вишлисте");
+    }, "В демо архив не меняется.");
+  }
+  function remove(g: Wish, fromArchive: boolean) {
+    setConfirmation({
+      text: `Удалить «${g.title}» навсегда? Это действие нельзя отменить. Если подарок уже подарили, лучше нажмите «Куплено» — он сохранится в архиве.`,
+      action: "Удалить",
+      danger: true,
+      run: () =>
+        guarded(async () => {
+          await api(`/api/gifts/${g.id}`, "DELETE");
+          if (fromArchive) await loadArchive();
+          else if (user) await loadList(user.id);
+          notice("Желание удалено");
+        }, "В демо удаление недоступно."),
+    });
+  }
+  function unfriend(f: User) {
+    setConfirmation({
+      text: `Убрать ${f.name} из друзей? Вы перестанете видеть вишлисты друг друга. Уже сделанные брони сохранятся.`,
+      action: "Убрать",
+      danger: true,
+      run: () =>
+        guarded(async () => {
+          await api(`/api/friends/${f.id}`, "DELETE");
+          setOwner(null);
+          setGifts([]);
+          await loadFriends();
+          notice("Удалено из друзей");
+        }, "В демо друзья не меняются."),
+    });
+  }
+  const list = tab === "archive" ? archive : gifts;
+  const shown = list
     .filter((g) => g.title.toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) =>
       sort === "price"
         ? a.currency.localeCompare(b.currency) ||
-          (a.price_minor ?? Infinity) - (b.price_minor ?? Infinity)
+          (a.price_minor ?? a.price_max_minor ?? Infinity) -
+            (b.price_minor ?? b.price_max_minor ?? Infinity)
         : b.priority - a.priority,
     );
   const locked = !demo && !user && !guestToken && !loading;
+  const viewingFriend = tab === "friends" && !!owner && !own;
+  const showList =
+    tab === "mine" || tab === "archive" || !!guestToken || viewingFriend;
+  const ownerFirst = owner?.name.split(" ")[0] || "друга";
   return (
     <div className="app-shell">
       <aside className={`sidebar ${menu ? "is-open" : ""}`}>
@@ -211,25 +314,33 @@ function App() {
         </a>
         <div className="sidebar-caption">МАЛЕНЬКИЕ МЕЧТЫ. БОЛЬШАЯ СЕМЬЯ.</div>
         <nav aria-label="Основная навигация">
-          {[
-            ["mine", Heart, "Мой вишлист"],
-            ["family", Users, "Моя семья"],
-            ["bookings", Bookmark, "Мои брони"],
-          ].map(([key, Icon, label]) => {
-            const I = Icon as typeof Heart;
-            return (
-              <button
-                key={String(key)}
-                className={`nav-item ${tab === key ? "active" : ""}`}
-                onClick={() => void navigate(key as typeof tab)}
-                disabled={!!guestToken && key !== "family" && !user}
-              >
-                <I size={20} />
-                {String(label)}
-                {tab === key && <span className="nav-dot" />}
-              </button>
-            );
-          })}
+          {(
+            [
+              ["mine", Heart, "Мой вишлист"],
+              ["friends", Users, "Друзья"],
+              ["bookings", Bookmark, "Мои брони"],
+              ["archive", Archive, "Архив"],
+            ] as const
+          ).map(([key, I, label]) => (
+            <button
+              key={key}
+              className={`nav-item ${tab === key ? "active" : ""}`}
+              onClick={() => void navigate(key)}
+              disabled={!!guestToken && key !== "friends" && !user}
+            >
+              <I size={20} />
+              {label}
+              {key === "friends" && incoming.length > 0 && (
+                <span
+                  className="nav-count"
+                  aria-label={`Заявок: ${incoming.length}`}
+                >
+                  {incoming.length}
+                </span>
+              )}
+              {tab === key && <span className="nav-dot" />}
+            </button>
+          ))}
         </nav>
         <div className="sidebar-note">
           <div className="note-icon">
@@ -260,16 +371,17 @@ function App() {
             <Menu />
           </button>
           <span className="breadcrumb">
-            Наше семейное пространство <span>♡</span>
+            Вишлисты близких <span>♡</span>
           </span>
           <div className="topbar-right">
             {demo && <span className="demo-badge">Демо · без сохранения</span>}
             <button
               className="family-chip"
-              onClick={() => setModal(family ? "settings" : "family")}
+              onClick={() => setModal("profile")}
+              disabled={!user}
             >
               <span className="family-dot" />
-              {family?.name || "Вместе — лучше"}
+              {user ? handle(user) || user.name.split(" ")[0] : "Гость"}
               <ChevronDown size={14} />
             </button>
             <span className="avatar small">
@@ -285,7 +397,7 @@ function App() {
               </span>
               <div className="eyebrow">FILIMONOV FAMILY WISHES</div>
               <h1>
-                Все желания семьи.
+                Все желания близких.
                 <br />
                 <em>В одном месте.</em>
               </h1>
@@ -327,42 +439,53 @@ function App() {
               )}
               <div className="page-title">
                 <div>
-                  <div className="eyebrow">СОБИРАЕМ ТО, ЧТО РАДУЕТ</div>
+                  <div className="eyebrow">
+                    {tab === "archive"
+                      ? "ИСПОЛНЕННЫЕ МЕЧТЫ"
+                      : "СОБИРАЕМ ТО, ЧТО РАДУЕТ"}
+                  </div>
                   <h1>
                     {tab === "bookings"
                       ? "Мои маленькие сюрпризы"
-                      : tab === "family" && !guestToken
-                        ? "Желания любимых"
-                        : own
-                          ? "Мой вишлист"
-                          : `Вишлист ${owner?.name.split(" ")[0] || "участника"}`}
+                      : tab === "archive"
+                        ? "Архив"
+                        : tab === "friends" && !guestToken && !viewingFriend
+                          ? "Желания друзей"
+                          : own
+                            ? "Мой вишлист"
+                            : `Вишлист ${ownerFirst}`}
                     <span className="title-sparkle">✧</span>
                   </h1>
                   <p>
                     {tab === "bookings"
                       ? "Подарки, которые вы выбрали для близких."
-                      : own
-                        ? "Пусть близким будет чуть проще сделать вас счастливее."
-                        : "Самые тёплые подарки начинаются с маленькой подсказки."}
+                      : tab === "archive"
+                        ? "Купленные и подаренные желания. Любое можно вернуть в вишлист."
+                        : own
+                          ? "Пусть близким будет чуть проще сделать вас счастливее."
+                          : "Самые тёплые подарки начинаются с маленькой подсказки."}
                   </p>
                 </div>
                 {tab === "mine" && user && (
-                  <button
-                    className="button primary"
-                    onClick={() => {
-                      if (demo) {
-                        notice(
-                          "Это демо. Добавление будет доступно в подключённом приложении.",
-                        );
-                        return;
-                      }
-                      setEditing(null);
-                      setModal("gift");
-                    }}
-                  >
-                    <Plus size={18} />
-                    Добавить желание
-                  </button>
+                  <div className="title-actions">
+                    <button
+                      className="button secondary"
+                      onClick={() => setModal("import")}
+                    >
+                      <FileSpreadsheet size={18} />
+                      Импорт
+                    </button>
+                    <button
+                      className="button primary"
+                      onClick={() => {
+                        setEditing(null);
+                        setModal("gift");
+                      }}
+                    >
+                      <Plus size={18} />
+                      Добавить желание
+                    </button>
+                  </div>
                 )}
               </div>
               {error && (
@@ -377,332 +500,265 @@ function App() {
                   </button>
                 </div>
               )}
-              {!error && tab !== "bookings" && (
-                <>
-                  {tab === "family" && !guestToken && (
-                    <section className="family-section">
-                      <div className="section-heading">
-                        <h2>Кого порадуем?</h2>
+              {!error && tab === "friends" && !guestToken && (
+                <section className="family-section">
+                  <div className="section-heading">
+                    <h2>Кого порадуем?</h2>
+                    <button
+                      className="text-link"
+                      onClick={() => setModal("add-friend")}
+                    >
+                      <UserPlus size={16} />
+                      Добавить друга
+                    </button>
+                  </div>
+                  <Requests
+                    incoming={incoming}
+                    outgoing={outgoing}
+                    notice={notice}
+                    onChanged={() => void loadFriends()}
+                  />
+                  {friends.length ? (
+                    <div className="members">
+                      {friends.map((m, i) => (
                         <button
-                          className="text-link"
-                          onClick={() =>
-                            setModal(family ? "settings" : "family")
-                          }
+                          className={`member ${m.id === owner?.id ? "selected" : ""}`}
+                          key={m.id}
+                          onClick={() => openFriend(m)}
                         >
-                          <Plus size={16} />
-                          {family ? "Пригласить в семью" : "Создать семью"}
-                        </button>
-                      </div>
-                      {family ? (
-                        <div className="members">
-                          {members.map((m, i) => (
-                            <button
-                              className={`member ${m.id === owner?.id ? "selected" : ""}`}
-                              key={m.id}
-                              onClick={() => {
-                                if (demo) {
-                                  setOwner(m);
-                                  setGifts(
-                                    demoGifts
-                                      .slice(0, m.gift_count)
-                                      .map((g, n) => ({
-                                        ...g,
-                                        owner_id: m.id,
-                                        reservation:
-                                          m.id === user?.id
-                                            ? undefined
-                                            : n === 1
-                                              ? "reserved"
-                                              : n === 2
-                                                ? "mine"
-                                                : "available",
-                                      })),
-                                  );
-                                } else void loadList(m.id);
-                              }}
-                            >
-                              <span className={`avatar tone-${i % 4}`}>
-                                {initials(m.name)}
-                                {m.id === owner?.id && (
-                                  <span className="avatar-check">
-                                    <Check size={10} />
-                                  </span>
-                                )}
+                          <span className={`avatar tone-${i % 4}`}>
+                            {initials(m.name)}
+                            {m.id === owner?.id && (
+                              <span className="avatar-check">
+                                <Check size={10} />
                               </span>
-                              <strong>
-                                {m.name.split(" ")[0]}
-                                {m.id === user?.id ? " (вы)" : ""}
-                              </strong>
-                              <span>{wishCount(m.gift_count)}</span>
-                            </button>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="empty compact">
-                          <Users />
-                          <h3>Вместе мечтать ещё приятнее</h3>
-                          <p>
-                            Создайте семью или присоединитесь по коду
-                            приглашения.
-                          </p>
-                          <button
-                            className="button primary"
-                            onClick={() => setModal("family")}
-                          >
-                            Собрать семью
-                          </button>
-                        </div>
-                      )}
-                    </section>
+                            )}
+                          </span>
+                          <strong>{m.name.split(" ")[0]}</strong>
+                          {m.username && <small>@{m.username}</small>}
+                          <span>{wishCount(m.gift_count)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="empty compact">
+                      <Users />
+                      <h3>Вместе мечтать ещё приятнее</h3>
+                      <p>
+                        Добавьте близких по нику в Telegram или отправьте им
+                        ссылку-приглашение.
+                      </p>
+                      <button
+                        className="button primary"
+                        onClick={() => setModal("add-friend")}
+                      >
+                        Добавить друга
+                      </button>
+                    </div>
                   )}
-                  {(tab === "mine" || guestToken || family) && (
-                    <>
-                      <section className="hero">
-                        <div className="hero-copy">
-                          <span className="hero-label">
-                            <Heart size={14} /> ДЛЯ ТЕХ, КТО РЯДОМ
-                          </span>
-                          <h2>
-                            {own
-                              ? "Здесь живут мои «хочу»"
-                              : "Идеи для счастливых улыбок"}
-                          </h2>
-                          <p>
-                            {own
-                              ? "От маленьких радостей до большой мечты."
-                              : "Выберите подарок, забронируйте и сохраните сюрприз."}
-                            <br />
-                            {own
-                              ? "А сюрпризы пусть остаются сюрпризами."
-                              : "Владелец списка ничего не узнает."}
-                          </p>
-                          {own && (
-                            <button
-                              className="hero-share"
-                              onClick={() => {
-                                if (demo) {
-                                  notice(
-                                    "Гостевая ссылка будет доступна после подключения.",
-                                  );
-                                  return;
-                                }
-                                setModal("share");
-                              }}
-                            >
-                              <LinkIcon size={16} />
-                              Поделиться вишлистом
-                              <ArrowUpRight size={15} />
-                            </button>
-                          )}
-                        </div>
-                        <div className="gift-art" aria-hidden="true">
-                          <span className="art-star s1">✧</span>
-                          <span className="art-star s2">✦</span>
-                          <span className="art-heart">♡</span>
-                          <div className="present shadow-present">
-                            <i />
-                            <b />
-                          </div>
-                          <div className="present main-present">
-                            <div className="bow b1" />
-                            <div className="bow b2" />
-                            <i />
-                            <b />
-                          </div>
-                          <span className="art-dot" />
-                        </div>
-                        <div className="wish-counter">
-                          <strong>{gifts.length}</strong>
-                          <span>
-                            маленьких
-                            <br />
-                            подсказок
-                          </span>
-                        </div>
-                      </section>
-                      {own && (
-                        <div className="privacy-note">
-                          <ShieldCheck size={16} />
-                          <span>
-                            Вы не видите бронирования своих подарков. Всё, чтобы
-                            сохранить волшебство.
-                          </span>
-                        </div>
-                      )}
-                      {guestToken && !user && (
-                        <div className="privacy-note guest-login">
-                          <ShieldCheck size={18} />
-                          <span>
-                            Для бронирования откройте этот список в Telegram.
-                            Вступать в семью не нужно.
-                          </span>
-                          <a className="button primary" href={telegramLink()}>
-                            Открыть <ArrowUpRight size={15} />
-                          </a>
-                        </div>
-                      )}
-                      <div className="list-toolbar">
+                  {friends.length > 0 && !viewingFriend && (
+                    <p className="muted pick-hint">
+                      Выберите друга, чтобы открыть его вишлист.
+                    </p>
+                  )}
+                </section>
+              )}
+              {!error && showList && (
+                <>
+                  {tab !== "archive" && (
+                    <section className="hero">
+                      <div className="hero-copy">
+                        <span className="hero-label">
+                          <Heart size={14} /> ДЛЯ ТЕХ, КТО РЯДОМ
+                        </span>
                         <h2>
-                          {own ? "Мои желания" : "Список желаний"}{" "}
-                          <span>{gifts.length}</span>
+                          {own
+                            ? "Здесь живут мои «хочу»"
+                            : "Идеи для счастливых улыбок"}
                         </h2>
-                        <div className="list-controls">
-                          <label className="search">
-                            <Search size={16} />
-                            <input
-                              aria-label="Найти желание"
-                              placeholder="Найти желание"
-                              value={search}
-                              onChange={(e) => setSearch(e.target.value)}
-                            />
-                          </label>
-                          <label className="sort">
-                            <select
-                              aria-label="Сортировка"
-                              value={sort}
-                              onChange={(e) => setSort(e.target.value)}
-                            >
-                              <option value="priority">По приоритету</option>
-                              <option value="price">По валюте и цене</option>
-                            </select>
-                            <ChevronDown size={14} />
-                          </label>
+                        <p>
+                          {own
+                            ? "От маленьких радостей до большой мечты."
+                            : "Выберите подарок, забронируйте и сохраните сюрприз."}
+                          <br />
+                          {own
+                            ? "А сюрпризы пусть остаются сюрпризами."
+                            : "Владелец списка ничего не узнает."}
+                        </p>
+                        {own && (
                           <button
-                            className="icon-button"
-                            aria-label="Обновить список"
+                            className="hero-share"
                             onClick={() => {
-                              if (demo) notice("Демонстрационные данные");
-                              else if (owner) void loadList(owner.id);
+                              if (demo) {
+                                notice(
+                                  "Гостевая ссылка будет доступна после подключения.",
+                                );
+                                return;
+                              }
+                              setModal("share");
                             }}
                           >
-                            <RefreshCw size={17} />
+                            <LinkIcon size={16} />
+                            Поделиться вишлистом
+                            <ArrowUpRight size={15} />
                           </button>
-                        </div>
+                        )}
+                        {viewingFriend && owner && (
+                          <button
+                            className="hero-share subtle"
+                            onClick={() => unfriend(owner)}
+                          >
+                            <UserMinus size={15} />
+                            Убрать из друзей
+                          </button>
+                        )}
                       </div>
-                      {loading ? (
-                        <div className="loading" role="status">
-                          <span />
-                          Собираем желания…
+                      <div className="gift-art" aria-hidden="true">
+                        <span className="art-star s1">✧</span>
+                        <span className="art-star s2">✦</span>
+                        <span className="art-heart">♡</span>
+                        <div className="present shadow-present">
+                          <i />
+                          <b />
                         </div>
-                      ) : shown.length ? (
-                        <div className="gift-grid">
-                          {shown.map((g) => (
-                            <article className="gift-card" key={g.id}>
-                              <div className="photo-wrap">
-                                <Photo wish={g} />
-                                <span className={`priority p${g.priority}`}>
-                                  {g.priority === 3 ? (
-                                    <Sparkles size={12} />
-                                  ) : (
-                                    <Heart size={12} />
-                                  )}{" "}
-                                  {priorities[g.priority]}
-                                </span>
-                                {own && (
-                                  <button
-                                    className="card-edit"
-                                    aria-label={`Редактировать ${g.title}`}
-                                    onClick={() => {
-                                      if (demo) {
-                                        notice(
-                                          "Редактирование доступно в подключённом приложении.",
-                                        );
-                                        return;
-                                      }
-                                      setEditing(g);
-                                      setModal("gift");
-                                    }}
-                                  >
-                                    <Pencil size={15} />
-                                  </button>
-                                )}
-                              </div>
-                              <div className="card-content">
-                                <div className="gift-price">{money(g)}</div>
-                                <h3>{g.title}</h3>
-                                <p>
-                                  {g.description || "Ещё одна маленькая мечта."}
-                                </p>
-                                <div className="card-actions">
-                                  {g.shop_url ? (
-                                    <a
-                                      href={g.shop_url}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="shop-link"
-                                    >
-                                      В магазин <ArrowUpRight size={15} />
-                                    </a>
-                                  ) : (
-                                    <span className="card-hint">
-                                      Выбрано с любовью
-                                    </span>
-                                  )}
-                                  {own ? (
-                                    <button
-                                      className="icon-button delete-button"
-                                      aria-label={`Удалить ${g.title}`}
-                                      disabled={busy || demo}
-                                      onClick={() => void remove(g)}
-                                    >
-                                      <Trash2 size={16} />
-                                    </button>
-                                  ) : user ? (
-                                    <button
-                                      disabled={
-                                        busy || g.reservation === "reserved"
-                                      }
-                                      className={`reserve-button ${g.reservation === "mine" ? "mine" : ""}`}
-                                      onClick={() => void reserve(g)}
-                                    >
-                                      {g.reservation === "reserved" ? (
-                                        <>
-                                          <Bookmark size={13} />
-                                          Уже выбрали
-                                        </>
-                                      ) : g.reservation === "mine" ? (
-                                        <>
-                                          <Check size={14} />
-                                          Отменить бронь
-                                        </>
-                                      ) : (
-                                        <>
-                                          <Gift size={14} />
-                                          Подарю!
-                                        </>
-                                      )}
-                                    </button>
-                                  ) : (
-                                    <a
-                                      className="reserve-button"
-                                      href={telegramLink()}
-                                    >
-                                      Хочу подарить
-                                    </a>
-                                  )}
-                                </div>
-                              </div>
-                            </article>
-                          ))}
+                        <div className="present main-present">
+                          <div className="bow b1" />
+                          <div className="bow b2" />
+                          <i />
+                          <b />
                         </div>
-                      ) : (
-                        <div className="empty">
-                          <Gift size={34} />
-                          <h3>
-                            {search
-                              ? "Ничего не нашлось"
-                              : "У каждой мечты есть начало"}
-                          </h3>
-                          <p>
-                            {search
-                              ? "Попробуйте другое название."
+                        <span className="art-dot" />
+                      </div>
+                      <div className="wish-counter">
+                        <strong>{gifts.length}</strong>
+                        <span>
+                          маленьких
+                          <br />
+                          подсказок
+                        </span>
+                      </div>
+                    </section>
+                  )}
+                  {own && tab === "mine" && (
+                    <div className="privacy-note">
+                      <ShieldCheck size={16} />
+                      <span>
+                        Вы не видите бронирования своих подарков. Всё, чтобы
+                        сохранить волшебство.
+                      </span>
+                    </div>
+                  )}
+                  {guestToken && !user && (
+                    <div className="privacy-note guest-login">
+                      <ShieldCheck size={18} />
+                      <span>
+                        Для бронирования откройте этот список в Telegram.
+                        Добавляться в друзья не нужно.
+                      </span>
+                      <a className="button primary" href={telegramLink()}>
+                        Открыть <ArrowUpRight size={15} />
+                      </a>
+                    </div>
+                  )}
+                  <div className="list-toolbar">
+                    <h2>
+                      {tab === "archive"
+                        ? "Куплено и подарено"
+                        : own
+                          ? "Мои желания"
+                          : "Список желаний"}{" "}
+                      <span>{list.length}</span>
+                    </h2>
+                    <div className="list-controls">
+                      <label className="search">
+                        <Search size={16} />
+                        <input
+                          aria-label="Найти желание"
+                          placeholder="Найти желание"
+                          value={search}
+                          onChange={(e) => setSearch(e.target.value)}
+                        />
+                      </label>
+                      <label className="sort">
+                        <select
+                          aria-label="Сортировка"
+                          value={sort}
+                          onChange={(e) => setSort(e.target.value)}
+                        >
+                          <option value="priority">По приоритету</option>
+                          <option value="price">По валюте и цене</option>
+                        </select>
+                        <ChevronDown size={14} />
+                      </label>
+                      <button
+                        className="icon-button"
+                        aria-label="Обновить список"
+                        onClick={() => {
+                          if (demo) notice("Демонстрационные данные");
+                          else if (tab === "archive") void loadArchive();
+                          else if (owner) void loadList(owner.id);
+                        }}
+                      >
+                        <RefreshCw size={17} />
+                      </button>
+                    </div>
+                  </div>
+                  {loading ? (
+                    <div className="loading" role="status">
+                      <span />
+                      Собираем желания…
+                    </div>
+                  ) : shown.length ? (
+                    <div className="gift-grid">
+                      {shown.map((g) => (
+                        <GiftCard
+                          key={g.id}
+                          wish={g}
+                          mode={
+                            tab === "archive"
+                              ? "archive"
                               : own
-                                ? "Добавьте первое желание — близкие будут благодарны за подсказку."
-                                : "Здесь пока нет желаний. Загляните чуть позже."}
-                          </p>
-                        </div>
+                                ? "own"
+                                : user
+                                  ? "friend"
+                                  : "guest"
+                          }
+                          busy={busy}
+                          onEdit={() => {
+                            setEditing(g);
+                            setModal("gift");
+                          }}
+                          onBought={() => void markBought(g)}
+                          onRestore={() => void restore(g)}
+                          onDelete={() => remove(g, tab === "archive")}
+                          onReserve={() => void reserve(g)}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="empty">
+                      {tab === "archive" ? (
+                        <Archive size={34} />
+                      ) : (
+                        <Gift size={34} />
                       )}
-                    </>
+                      <h3>
+                        {search
+                          ? "Ничего не нашлось"
+                          : tab === "archive"
+                            ? "Архив пока пуст"
+                            : "У каждой мечты есть начало"}
+                      </h3>
+                      <p>
+                        {search
+                          ? "Попробуйте другое название."
+                          : tab === "archive"
+                            ? "Когда желание исполнится, нажмите «Куплено» — оно переедет сюда."
+                            : own
+                              ? "Добавьте первое желание — близкие будут благодарны за подсказку."
+                              : "Здесь пока нет желаний. Загляните чуть позже."}
+                      </p>
+                    </div>
                   )}
                 </>
               )}
@@ -722,14 +778,17 @@ function App() {
                           </span>
                           <div>
                             <h3>{b.title}</h3>
-                            <p>Вы подготовите этот сюрприз</p>
+                            <p>
+                              {b.archived
+                                ? "Владелец отметил желание как исполненное"
+                                : "Вы подготовите этот сюрприз"}
+                            </p>
                           </div>
                           <button
                             className="button secondary"
                             disabled={busy}
-                            onClick={async () => {
-                              setBusy(true);
-                              try {
+                            onClick={() =>
+                              void guarded(async () => {
                                 await api(
                                   `/api/gifts/${b.gift_id}/reservation`,
                                   "DELETE",
@@ -740,12 +799,8 @@ function App() {
                                   ),
                                 );
                                 notice("Бронь отменена");
-                              } catch (e) {
-                                notice((e as Error).message);
-                              } finally {
-                                setBusy(false);
-                              }
-                            }}
+                              }, "Бронирование доступно после подключения приложения.")
+                            }
                           >
                             Отменить бронь
                           </button>
@@ -761,9 +816,9 @@ function App() {
                         </p>
                         <button
                           className="button primary"
-                          onClick={() => void navigate("family")}
+                          onClick={() => void navigate("friends")}
                         >
-                          Посмотреть желания семьи
+                          Посмотреть желания друзей
                         </button>
                       </div>
                     )}
@@ -793,16 +848,18 @@ function App() {
       )}
       {modal && (
         <Modal
+          wide={modal === "import"}
           title={
-            modal === "gift"
-              ? editing
+            {
+              gift: editing
                 ? "Редактировать желание"
-                : "Новое маленькое желание"
-              : modal === "family"
-                ? "Добро пожаловать в семью"
-                : modal === "share"
-                  ? "Поделиться мечтами"
-                  : "Наша семья"
+                : "Новое маленькое желание",
+              share: "Поделиться мечтами",
+              "add-friend": "Добавить друга",
+              profile: "Мой профиль",
+              import: "Импорт вишлиста",
+              invite: "Приглашение в друзья",
+            }[modal]
           }
           onClose={() => setModal(null)}
         >
@@ -815,29 +872,192 @@ function App() {
                 notice("Желание сохранено");
               }}
             />
-          ) : modal === "family" ? (
-            <FamilyForm
-              onDone={async () => {
-                setModal(null);
-                await refresh();
-              }}
-            />
           ) : modal === "share" ? (
             <Share />
-          ) : (
-            <FamilySettings
-              family={family}
-              user={user}
-              members={members}
-              onChanged={async () => {
+          ) : modal === "add-friend" ? (
+            <AddFriend
+              onDone={async (message) => {
                 setModal(null);
-                await refresh();
+                notice(message);
+                await loadFriends().catch(() => undefined);
+              }}
+            />
+          ) : modal === "profile" ? (
+            <Profile
+              user={user}
+              friends={friends.length}
+              onAddFriend={() => setModal("add-friend")}
+            />
+          ) : modal === "import" ? (
+            <ImportDialog
+              activeCount={own ? gifts.length : 0}
+              onClose={() => setModal(null)}
+              onImported={async (message) => {
+                notice(message);
+                if (user) await loadList(user.id);
+              }}
+            />
+          ) : (
+            <AcceptInvite
+              token={friendInvite}
+              onDone={async (message) => {
+                setModal(null);
+                notice(message);
+                await loadFriends().catch(() => undefined);
+                void navigate("friends");
               }}
             />
           )}
         </Modal>
       )}
+      {confirmation && (
+        <Confirm
+          text={confirmation.text}
+          action={confirmation.action}
+          danger={confirmation.danger}
+          onCancel={() => setConfirmation(null)}
+          onConfirm={() => {
+            const c = confirmation;
+            setConfirmation(null);
+            void c.run();
+          }}
+        />
+      )}
     </div>
+  );
+}
+function GiftCard({
+  wish: g,
+  mode,
+  busy,
+  onEdit,
+  onBought,
+  onRestore,
+  onDelete,
+  onReserve,
+}: {
+  wish: Wish;
+  mode: "own" | "friend" | "guest" | "archive";
+  busy: boolean;
+  onEdit: () => void;
+  onBought: () => void;
+  onRestore: () => void;
+  onDelete: () => void;
+  onReserve: () => void;
+}) {
+  return (
+    <article className={`gift-card ${mode === "archive" ? "archived" : ""}`}>
+      <div className="photo-wrap">
+        <Photo wish={g} />
+        <span className={`priority p${g.priority}`}>
+          {g.priority === 3 ? <Sparkles size={12} /> : <Heart size={12} />}{" "}
+          {priorities[g.priority]}
+        </span>
+        {mode === "own" && (
+          <button
+            className="card-edit"
+            aria-label={`Редактировать ${g.title}`}
+            onClick={onEdit}
+          >
+            <Pencil size={15} />
+          </button>
+        )}
+        {mode === "archive" && (
+          <span className="archived-badge">
+            <Check size={12} /> Куплено
+            {g.archived_at
+              ? ` · ${new Date(g.archived_at * 1000).toLocaleDateString("ru-RU")}`
+              : ""}
+          </span>
+        )}
+      </div>
+      <div className="card-content">
+        <div className="gift-price">{money(g)}</div>
+        <h3>{g.title}</h3>
+        <p>{g.description || "Ещё одна маленькая мечта."}</p>
+        <div className="card-actions">
+          {g.shop_url ? (
+            <a
+              href={g.shop_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="shop-link"
+            >
+              В магазин <ArrowUpRight size={15} />
+            </a>
+          ) : (
+            <span className="card-hint">Выбрано с любовью</span>
+          )}
+          {mode === "own" ? (
+            <span className="owner-actions">
+              <button
+                className="bought-button"
+                disabled={busy}
+                onClick={onBought}
+                title="Отметить как купленное и убрать в архив"
+              >
+                <Archive size={14} />
+                Куплено
+              </button>
+              <button
+                className="icon-button delete-button"
+                aria-label={`Удалить ${g.title}`}
+                disabled={busy}
+                onClick={onDelete}
+              >
+                <Trash2 size={16} />
+              </button>
+            </span>
+          ) : mode === "archive" ? (
+            <span className="owner-actions">
+              <button
+                className="bought-button"
+                disabled={busy}
+                onClick={onRestore}
+              >
+                <ArchiveRestore size={14} />
+                Вернуть
+              </button>
+              <button
+                className="icon-button delete-button"
+                aria-label={`Удалить ${g.title}`}
+                disabled={busy}
+                onClick={onDelete}
+              >
+                <Trash2 size={16} />
+              </button>
+            </span>
+          ) : mode === "friend" ? (
+            <button
+              disabled={busy || g.reservation === "reserved"}
+              className={`reserve-button ${g.reservation === "mine" ? "mine" : ""}`}
+              onClick={onReserve}
+            >
+              {g.reservation === "reserved" ? (
+                <>
+                  <Bookmark size={13} />
+                  Уже выбрали
+                </>
+              ) : g.reservation === "mine" ? (
+                <>
+                  <Check size={14} />
+                  Отменить бронь
+                </>
+              ) : (
+                <>
+                  <Gift size={14} />
+                  Подарю!
+                </>
+              )}
+            </button>
+          ) : (
+            <a className="reserve-button" href={telegramLink()}>
+              Хочу подарить
+            </a>
+          )}
+        </div>
+      </div>
+    </article>
   );
 }
 function Photo({ wish }: { wish: Wish }) {
