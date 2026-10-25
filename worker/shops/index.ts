@@ -9,6 +9,7 @@ import type { ProductInfo, Shop, ShopContext } from "./types";
 import { wildberries } from "./wildberries";
 import { yandexMarket } from "./yandex-market";
 import { productLink } from "./link";
+import type { Namer } from "./naming";
 /** Order matters only for overlapping hosts; the generic parser is always last. */
 export const shops: Shop[] = [
   wildberries,
@@ -53,6 +54,8 @@ export interface LookupResult {
   shop: string | null;
   url: string;
   title: string;
+  /** Brand, model, colour, sizes moved out of a shortened title; for the hint. */
+  details: string;
   image_url: string;
   price: {
     min_minor: number | null;
@@ -65,6 +68,7 @@ export interface LookupResult {
 export async function lookupProduct(
   raw: unknown,
   ctx: ShopContext = liveContext(),
+  namer?: Namer,
 ): Promise<LookupResult> {
   const url = productLink(publicHttpsUrl(raw));
   const shop = findShop(url);
@@ -93,15 +97,26 @@ export async function lookupProduct(
           currency: info.price.currency,
         }
       : null;
+  const shopName =
+    info.source === "aliexpress-global"
+      ? "AliExpress (международный сайт)"
+      : shop === generic
+        ? null
+        : shop.name;
+  let title = info.title || "",
+    details = "";
+  const named = title && namer ? await namer(title, shopName) : null;
+  if (named && named.title !== title) {
+    // Nothing from the shop title is lost: it goes to the hint if the model
+    // did not list the details itself.
+    details = named.details || title;
+    title = named.title;
+  }
   return {
-    shop:
-      info.source === "aliexpress-global"
-        ? "AliExpress (международный сайт)"
-        : shop === generic
-          ? null
-          : shop.name,
+    shop: shopName,
     url: url.href,
-    title: info.title || "",
+    title,
+    details,
     image_url: info.image || "",
     price,
     unavailable: !!info.unavailable,
