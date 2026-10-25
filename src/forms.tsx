@@ -183,9 +183,11 @@ export function GiftForm({
     photoRequest = useRef(0);
   const photoIsLookup = useRef(false);
   const autoTitle = useRef(false),
+    autoDescription = useRef(false),
     autoPhoto = useRef(false);
   const draft = useRef({
     title,
+    description,
     priceTouched,
     priceMin,
     priceMax,
@@ -194,6 +196,7 @@ export function GiftForm({
   });
   draft.current = {
     title,
+    description,
     priceTouched,
     priceMin,
     priceMax,
@@ -270,6 +273,7 @@ export function GiftForm({
     const current = draft.current;
     const job = gate.current.begin({
       title: !current.title.trim(),
+      description: !current.description.trim(),
       price: !current.priceTouched || (!current.priceMin && !current.priceMax),
       photo: !current.photo && !current.photoLoading && !gift?.has_photo,
     });
@@ -280,6 +284,11 @@ export function GiftForm({
       if (r.title && job.canApply("title")) {
         setTitle(r.title.slice(0, 120));
         autoTitle.current = true;
+        // Brand, model, colour and sizes from the full shop title.
+        if (r.details && job.canApply("description")) {
+          setDescription(r.details.slice(0, 2000));
+          autoDescription.current = true;
+        }
       }
       if (r.price && job.canApply("price")) {
         const range = r.price.max_minor !== null;
@@ -440,6 +449,10 @@ export function GiftForm({
               if (autoTitle.current) {
                 setTitle("");
                 autoTitle.current = false;
+              }
+              if (autoDescription.current) {
+                setDescription("");
+                autoDescription.current = false;
               }
               if (!draft.current.priceTouched) {
                 setPriceMin("");
@@ -652,7 +665,11 @@ export function GiftForm({
           rows={3}
           maxLength={2000}
           value={description}
-          onChange={(e) => setDescription(e.target.value)}
+          onChange={(e) => {
+            gate.current.edit("description");
+            autoDescription.current = false;
+            setDescription(e.target.value);
+          }}
           placeholder="Цвет, размер или другие важные детали"
         />
       </label>

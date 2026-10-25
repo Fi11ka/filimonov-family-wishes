@@ -12,12 +12,15 @@ import {
 } from "./security";
 import { fetchBytes, imageType, publicHttpsUrl } from "./net";
 import { JWKS_URL, liveJwks, verifyIdToken, type Jwk } from "./oidc";
-import { lookupProduct } from "./shops";
+import { liveContext, lookupProduct } from "./shops";
+import { aiNamer, type AiBinding } from "./shops/naming";
 export interface Env {
   DB: D1Database;
   BOT_TOKEN: string;
   APP_ORIGIN: string;
   APP_URL: string;
+  /** Workers AI (optional): shortens shop titles into Russian wish names. */
+  AI?: AiBinding;
 }
 interface Gift {
   id: string;
@@ -815,7 +818,11 @@ async function route(req: Request, env: Env): Promise<unknown> {
   if (path === "/api/fetch/product" && method === "POST") {
     const b = await body(req);
     await rate(db, `fetch:${uid}`, 30);
-    return lookupProduct(text(b.url, 2048, true));
+    return lookupProduct(
+      text(b.url, 2048, true),
+      liveContext(),
+      env.AI ? aiNamer(env.AI) : undefined,
+    );
   }
   if (path === "/api/fetch/image" && method === "POST") {
     const b = await body(req);
