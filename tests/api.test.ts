@@ -203,6 +203,7 @@ before(async () => {
   ]);
   await migrate("migrations/0008_profile_and_sharing.sql");
   await migrate("migrations/0009_bot_notifications_group_gifts.sql");
+  await migrate("migrations/0010_birthday_reminders.sql");
   assert.equal(
     (
       await db
@@ -1732,4 +1733,66 @@ test("notifications can be switched off and a blocked chat is not retried", asyn
     telegram.filter((c) => c.body.chat_id === "403403").length,
     tries,
   );
+});
+
+test("birthday reminders reach friends a week and a day before, once, with a wishlist link", async () => {
+  await befriend(751, 752);
+  await befriend(753, 752);
+  await call("/me", 754);
+  const inDays = (n: number) =>
+    new Date(Date.now() + n * 86400000).toISOString().slice(5, 10);
+  await call("/me", 751, "PATCH", { birthday: inDays(7) });
+  await call("/me", 753, "PATCH", { birthday: inDays(3) });
+  await gift(751, { title: "Плед" });
+  await settle();
+  const worker = await mf.getWorker();
+  await worker.scheduled({ cron: "17 3 * * *" });
+  await worker.scheduled({ cron: "17 3 * * *" });
+  const sent = await messages(752);
+  await settle();
+  const reminders = (await messages(752, 0)).filter((m) =>
+    m.text.includes("день рождения"),
+  );
+  assert.equal(reminders.length, 1, JSON.stringify(sent));
+  assert.match(
+    reminders[0].text,
+    /Через 7 дней.*день рождения у .*User 751.*В вишлисте 1 желание/s,
+  );
+  assert.equal(
+    reminders[0].reply_markup.inline_keyboard[0][0].web_app.url,
+    "https://family.example/app/?open=l_751",
+  );
+  // Not a friend, and the person themself: nothing.
+  assert.equal((await messages(754, 0)).length, 0);
+  assert.equal(
+    (await messages(751, 0)).filter((m) => m.text.includes("день рождения"))
+      .length,
+    0,
+  );
+});
+
+test("bot setup sets the webhook, commands and the welcome text shown before Start", async () => {
+  const r = await call(
+    "/telegram/setup",
+    undefined,
+    "GET",
+    undefined,
+    undefined,
+    {
+      Origin: "",
+    },
+  );
+  assert.equal(r.status, 200, r.raw);
+  assert.equal(r.body.ok, true);
+  assert.equal(r.body.webhook, "https://api.example/api/telegram/webhook");
+  const last = (method: string) =>
+    telegram.filter((c) => c.method === method).at(-1)!.body;
+  assert.equal(
+    last("setWebhook").secret_token,
+    createHash("sha256").update(`webhook:${BOT}`).digest("hex"),
+  );
+  const description = last("setMyDescription").description;
+  assert.match(description, /Нажмите «Запустить»/);
+  assert.ok(description.length <= 512);
+  assert.ok(last("setMyShortDescription").short_description.length <= 120);
 });

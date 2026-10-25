@@ -37,6 +37,7 @@ import {
   type ArchiveReason,
 } from "./gifts";
 import { botRoute, cleanupBotStates } from "./bot";
+import { birthdayReminders } from "./birthdays";
 export type { Env } from "./core";
 interface Gift {
   id: string;
@@ -1247,7 +1248,10 @@ export default {
       if (out.jobs.length) ctx?.waitUntil(out.done());
     }
   },
-  async scheduled(_event: ScheduledEvent, env: Env) {
+  async scheduled(_event: ScheduledEvent, env: Env, ctx?: ExecutionContext) {
+    const out = new Outbox(env, env.DB);
+    await birthdayReminders(env, out);
+    ctx?.waitUntil(out.done());
     await env.DB.batch([
       stmt(
         env.DB,
@@ -1258,6 +1262,10 @@ export default {
       stmt(env.DB, "DELETE FROM login_nonces WHERE expires_at<?", now()),
       cleanupHelperJobs(env.DB),
       cleanupBotStates(env.DB),
+      stmt(
+        env.DB,
+        "DELETE FROM birthday_notices WHERE birthday_on<date('now','-30 days')",
+      ),
     ]);
   },
 };
