@@ -4,6 +4,7 @@ import { findShop, lookupProduct, shops } from "../worker/shops";
 import type { Page, ShopContext } from "../worker/shops/types";
 import { wbImage, wbPrice } from "../worker/shops/wildberries";
 import { publicHttpsUrl } from "../worker/net";
+import { productLink } from "../worker/shops/link";
 // Shops change markup often and block datacenter IPs, so these tests pin the
 // parsing logic on small synthetic pages in each shop's format.
 function ctx(
@@ -117,7 +118,7 @@ test("Ozon: widget states on the page, composer API fallback for short links", a
   );
   assert.equal(r.title, "Гель для волос");
   assert.deepEqual(r.price, {
-    min_minor: 119900,
+    min_minor: 129900,
     max_minor: null,
     currency: "RUB",
   });
@@ -319,4 +320,111 @@ test("URL policy rejects internal targets before any request", () => {
     publicHttpsUrl("https://shop.example/a#frag").href,
     "https://shop.example/a",
   );
+});
+test("supplied marketplace links keep product/variant identifiers and drop tracking", () => {
+  const cases = [
+    [
+      "https://www.amazon.es/dp/B0C9TP6DD5/ref=asc_df_B0C9TP6DD5?tag=ad&language=pt_PT&psc=1",
+      "https://www.amazon.es/dp/B0C9TP6DD5",
+    ],
+    [
+      "https://www.ozon.ru/search/?text=table&product_id=2402035826&from_global=true",
+      "https://www.ozon.ru/product/2402035826/",
+    ],
+    [
+      "https://www.wildberries.ru/catalog/212550828/detail.aspx?size=339839029&utm_source=ad",
+      "https://www.wildberries.ru/catalog/212550828/detail.aspx?size=339839029",
+    ],
+    [
+      "https://aliexpress.ru/item/1005002333850679.html?spm=ad&sku_id=12000031578956806",
+      "https://aliexpress.ru/item/1005002333850679.html?sku_id=12000031578956806",
+    ],
+    ["https://ozon.ru/t/4e69EZX", "https://ozon.ru/t/4e69EZX"],
+    [
+      "https://shop.example/item?variant=red",
+      "https://shop.example/item?variant=red",
+    ],
+  ];
+  for (const [raw, expected] of cases)
+    assert.equal(productLink(new URL(raw)).href, expected);
+  assert.throws(() =>
+    productLink(new URL("https://www.ozon.ru/search/?text=table")),
+  );
+  assert.equal(
+    productLink(new URL("https://notozon.ru/search/?text=table")).pathname,
+    "/search/",
+  );
+});
+test("Amazon.es imports the payable price and main photo, with either attribute order", async () => {
+  const r = await lookupProduct(
+    "https://www.amazon.es/dp/B0C9TP6DD5/ref=ad?tag=tracking",
+    ctx({
+      "https://www.amazon.es/dp/B0C9TP6DD5": {
+        html: `<img data-old-hires="https://m.media-amazon.com/images/I/accessory.jpg" id="recommendation">
+      <span id="productTitle">Набор спиц &amp; аксессуары</span>
+      <img src='https://m.media-amazon.com/images/I/main.jpg' id='landingImage'>
+      <div id='corePrice_feature_div'><span class='a-price a-text-price'><span class='a-offscreen'>99,00 €</span></span><span class='a-price'><span class='a-offscreen extra'>52,87&nbsp;€</span></span></div>
+      <div><span class='a-offscreen'>1,99 €</span></div>`,
+      },
+    }),
+  );
+  assert.equal(r.price?.min_minor, 5287);
+  assert.equal(r.price?.currency, "EUR");
+  assert.equal(r.image_url, "https://m.media-amazon.com/images/I/main.jpg");
+  assert.equal(r.title, "Набор спиц & аксессуары");
+  assert.equal(r.url, "https://www.amazon.es/dp/B0C9TP6DD5");
+  const empty = await lookupProduct(
+    "https://www.amazon.es/dp/B0C9TP6DD5",
+    ctx({
+      "https://www.amazon.es/": {
+        html: '<div id="corePrice_feature_div"><div>Unavailable</div></div><div id="recommendations"><span class="a-offscreen">1,99 €</span></div>',
+      },
+    }),
+  );
+  assert.equal(empty.price, null);
+});
+test("Ozon search product_id is looked up as a card, and card-only discounts are not imported", async () => {
+  const requested: string[] = [];
+  const r = await lookupProduct(
+    "https://www.ozon.ru/search/?text=table&product_id=2402035826",
+    {
+      async page(url) {
+        requested.push(url.href);
+        return {
+          url,
+          status: 200,
+          html: '<meta property="og:title" content="Столик"><div id="state-webPrice-1" data-state=\'{"price":"1 299 ₽","cardPrice":"1 199 ₽"}\'></div>',
+        };
+      },
+      async json() {
+        throw new Error("not expected");
+      },
+    },
+  );
+  assert.equal(requested[0], "https://www.ozon.ru/product/2402035826/");
+  assert.equal(r.price?.min_minor, 129900);
+  const cardOnly = await lookupProduct(
+    "https://www.ozon.ru/product/x-2402035826/",
+    ctx({
+      "https://www.ozon.ru/": {
+        html: '<div id="state-webPrice-1" data-state=\'{"cardPrice":"1 199 ₽"}\'></div>',
+      },
+    }),
+  );
+  assert.equal(cardOnly.price, null);
+});
+test("Wildberries prices respect selected size; an unknown variant does not receive another size's price", () => {
+  const p = {
+    sizes: [
+      { chrtId: 339839029, price: { product: 299000 } },
+      { chrtId: 339839030, price: { product: 349000 } },
+    ],
+  };
+  assert.deepEqual(wbPrice(p, "339839029"), {
+    min: 299000,
+    max: null,
+    currency: "RUB",
+  });
+  assert.equal(wbPrice(p, "missing"), null);
+  assert.equal(wbPrice({ salePriceU: 123400 }, "339839029"), null);
 });
