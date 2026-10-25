@@ -21,6 +21,7 @@ import {
 } from "./api";
 import { type Wish, priorities } from "./types";
 import { currencies } from "../shared/price";
+import { LookupState } from "./lookup-state";
 export function Modal({
   title,
   onClose,
@@ -172,40 +173,92 @@ export function GiftForm({
     ),
     [priceMin, setPriceMin] = useState(fromMinor(gift?.price_minor)),
     [priceMax, setPriceMax] = useState(fromMinor(gift?.price_max_minor)),
-    [priceTouched, setPriceTouched] = useState(false);
+    [priceTouched, setPriceTouched] = useState(
+      gift?.price_minor != null || gift?.price_max_minor != null,
+    );
   const [lookup, setLookup] = useState<"idle" | "loading">("idle"),
     [lookupNote, setLookupNote] = useState(""),
     lastLookup = useRef(gift?.shop_url || "");
+  const gate = useRef(new LookupState()),
+    photoRequest = useRef(0);
+  const photoIsLookup = useRef(false);
+  const autoTitle = useRef(false),
+    autoPhoto = useRef(false);
+  const draft = useRef({
+    title,
+    priceTouched,
+    priceMin,
+    priceMax,
+    photo,
+    photoLoading,
+  });
+  draft.current = {
+    title,
+    priceTouched,
+    priceMin,
+    priceMax,
+    photo,
+    photoLoading,
+  };
+  useEffect(
+    () => () => {
+      gate.current.invalidate();
+      ++photoRequest.current;
+    },
+    [],
+  );
   useEffect(() => {
     if (demo) {
       setPhoto(gift?.photo || "");
       setPhotoLoading(false);
       return;
     }
+    const photoId = photoRequest.current;
     if (gift?.has_photo)
       void api(`/api/gifts/${gift.id}/photo`)
-        .then((d) => setPhoto(d.photo))
+        .then((d) => {
+          if (photoId === photoRequest.current) setPhoto(d.photo);
+        })
         .catch((e) => {
+          if (photoId !== photoRequest.current) return;
           setError(e.message);
           setPhotoError(true);
         })
-        .finally(() => setPhotoLoading(false));
+        .finally(() => {
+          if (photoId === photoRequest.current) setPhotoLoading(false);
+        });
   }, [gift]);
-  async function applyPhoto(load: () => Promise<string>, failNote: string) {
+  async function applyPhoto(
+    load: () => Promise<string>,
+    failNote: string,
+    valid?: () => boolean,
+  ) {
+    if (!valid) {
+      gate.current.edit("photo");
+      autoPhoto.current = false;
+    }
+    const id = ++photoRequest.current;
+    photoIsLookup.current = !!valid;
     setPhotoLoading(true);
     try {
-      setPhoto(await load());
+      const value = await load();
+      if (id !== photoRequest.current || (valid && !valid())) return false;
+      setPhoto(value);
       setPhotoError(false);
       setPhotoNote("");
       return true;
     } catch (err) {
-      setPhotoNote((err as Error).message || failNote);
+      if (id === photoRequest.current && (!valid || valid()))
+        setPhotoNote((err as Error).message || failNote);
       return false;
     } finally {
-      setPhotoLoading(false);
+      if (id === photoRequest.current) {
+        photoIsLookup.current = false;
+        setPhotoLoading(false);
+      }
     }
   }
-  async function fillFromLink(url: string, force = false) {
+  async function fillFromLink(url: string) {
     if (!isHttps(url)) return;
     lastLookup.current = url;
     if (demo) {
@@ -214,12 +267,21 @@ export function GiftForm({
     }
     setLookup("loading");
     setLookupNote("");
+    const current = draft.current;
+    const job = gate.current.begin({
+      title: !current.title.trim(),
+      price: !current.priceTouched || (!current.priceMin && !current.priceMax),
+      photo: !current.photo && !current.photoLoading && !gift?.has_photo,
+    });
     try {
       const r = await api<ProductLookup>("/api/fetch/product", "POST", { url });
-      if (lastLookup.current !== url) return; // the link changed meanwhile
+      if (!job.current()) return;
       const notes: string[] = [];
-      if (r.title && !title.trim()) setTitle(r.title.slice(0, 120));
-      if (r.price && (force || !priceTouched || (!priceMin && !priceMax))) {
+      if (r.title && job.canApply("title")) {
+        setTitle(r.title.slice(0, 120));
+        autoTitle.current = true;
+      }
+      if (r.price && job.canApply("price")) {
         const range = r.price.max_minor !== null;
         setPriceMode(range ? "range" : "exact");
         setPriceMin(fromMinor(r.price.min_minor));
@@ -229,16 +291,19 @@ export function GiftForm({
         setPriceTouched(false);
       } else if (!r.price)
         notes.push("Цену получить не удалось — введите её вручную.");
-      if (r.image_url && (force || !photo)) {
+      if (r.image_url && job.canApply("photo")) {
         const ok = await applyPhoto(
           () => photoFromUrl(r.image_url),
           "Не удалось загрузить картинку.",
+          () => job.canApply("photo"),
         );
-        if (!ok)
+        if (!job.current()) return;
+        if (ok) autoPhoto.current = true;
+        if (!ok && job.canApply("photo"))
           setPhotoNote(
             "Картинку с сайта получить не удалось — добавьте фото вручную.",
           );
-      } else if (!r.image_url && !photo)
+      } else if (!r.image_url && job.canApply("photo"))
         setPhotoNote(
           "Картинку с сайта получить не удалось — добавьте фото вручную.",
         );
@@ -246,13 +311,19 @@ export function GiftForm({
         notes.unshift(`${r.shop || "Сайт"} не отдал данные автоматически.`);
       else if (r.price || r.image_url)
         notes.unshift(
-          `Нашли данные${r.shop ? ` на ${r.shop}` : ""}. Проверьте и поправьте, если нужно.`,
+          `Нашли данные${r.shop ? ` на ${r.shop}` : ""}. Проверьте цену и вариант товара: регион и скидки могут отличаться.`,
         );
+      if (!job.current()) return;
       setLookupNote(notes.join(" "));
+      lastLookup.current = r.url;
+      setShopUrl(r.url);
     } catch (err) {
-      setLookupNote(`${(err as Error).message} Заполните цену и фото вручную.`);
+      if (job.current())
+        setLookupNote(
+          `${(err as Error).message} Заполните цену и фото вручную.`,
+        );
     } finally {
-      setLookup("idle");
+      if (job.current()) setLookup("idle");
     }
   }
   // Look the link up shortly after it is pasted or typed.
@@ -354,8 +425,30 @@ export function GiftForm({
             type="url"
             maxLength={2048}
             value={shopUrl}
-            onChange={(e) => setShopUrl(e.target.value)}
-            placeholder="https://… — цена и фото подтянутся сами"
+            onChange={(e) => {
+              gate.current.invalidate();
+              setLookup("idle");
+              setLookupNote("");
+              if (photoIsLookup.current) {
+                ++photoRequest.current;
+                photoIsLookup.current = false;
+                setPhotoLoading(false);
+              }
+              if (autoTitle.current) {
+                setTitle("");
+                autoTitle.current = false;
+              }
+              if (!draft.current.priceTouched) {
+                setPriceMin("");
+                setPriceMax("");
+              }
+              if (autoPhoto.current) {
+                setPhoto("");
+                autoPhoto.current = false;
+              }
+              setShopUrl(e.target.value);
+            }}
+            placeholder="https://… — попробуем найти цену и фото"
           />
           <button
             type="button"
@@ -363,7 +456,7 @@ export function GiftForm({
             aria-label="Подтянуть данные по ссылке"
             title="Подтянуть данные по ссылке"
             disabled={!isHttps(shopUrl.trim()) || lookup === "loading"}
-            onClick={() => void fillFromLink(shopUrl.trim(), true)}
+            onClick={() => void fillFromLink(shopUrl.trim())}
           >
             <RefreshCw
               size={17}
@@ -430,7 +523,13 @@ export function GiftForm({
           <button
             type="button"
             className="text-link"
-            onClick={() => setPhoto("")}
+            onClick={() => {
+              gate.current.edit("photo");
+              ++photoRequest.current;
+              autoPhoto.current = false;
+              setPhotoLoading(false);
+              setPhoto("");
+            }}
           >
             Убрать фото
           </button>
@@ -465,7 +564,11 @@ export function GiftForm({
           required
           maxLength={120}
           value={title}
-          onChange={(e) => setTitle(e.target.value)}
+          onChange={(e) => {
+            gate.current.edit("title");
+            autoTitle.current = false;
+            setTitle(e.target.value);
+          }}
           placeholder="О чём вы мечтаете?"
         />
       </label>
@@ -477,7 +580,11 @@ export function GiftForm({
               type="button"
               className={priceMode === "exact" ? "selected" : ""}
               aria-pressed={priceMode === "exact"}
-              onClick={() => setPriceMode("exact")}
+              onClick={() => {
+                gate.current.edit("price");
+                setPriceTouched(true);
+                setPriceMode("exact");
+              }}
             >
               Точная
             </button>
@@ -485,7 +592,11 @@ export function GiftForm({
               type="button"
               className={priceMode === "range" ? "selected" : ""}
               aria-pressed={priceMode === "range"}
-              onClick={() => setPriceMode("range")}
+              onClick={() => {
+                gate.current.edit("price");
+                setPriceTouched(true);
+                setPriceMode("range");
+              }}
             >
               От – до
             </button>
@@ -497,6 +608,7 @@ export function GiftForm({
             inputMode="decimal"
             value={priceMin}
             onChange={(e) => {
+              gate.current.edit("price");
               setPriceMin(e.target.value);
               setPriceTouched(true);
             }}
@@ -508,6 +620,7 @@ export function GiftForm({
               inputMode="decimal"
               value={priceMax}
               onChange={(e) => {
+                gate.current.edit("price");
                 setPriceMax(e.target.value);
                 setPriceTouched(true);
               }}
@@ -517,7 +630,11 @@ export function GiftForm({
           <select
             aria-label="Валюта"
             value={currency}
-            onChange={(e) => setCurrency(e.target.value)}
+            onChange={(e) => {
+              gate.current.edit("price");
+              setPriceTouched(true);
+              setCurrency(e.target.value);
+            }}
           >
             {currencies.map((c) => (
               <option key={c}>{c}</option>
@@ -557,7 +674,7 @@ export function GiftForm({
       )}
       <button
         className="button primary full-width"
-        disabled={saving || photoLoading || photoError}
+        disabled={saving || lookup === "loading" || photoLoading || photoError}
       >
         {saving ? (
           "Сохраняем…"
