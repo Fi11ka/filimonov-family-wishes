@@ -290,7 +290,11 @@ export function GiftForm({
           setCurrency(r.price.currency);
         setPriceTouched(false);
       } else if (!r.price)
-        notes.push("Цену получить не удалось — введите её вручную.");
+        notes.push(
+          r.unavailable
+            ? "Товара нет в наличии — магазин не вернул цену."
+            : "Цену получить не удалось — введите её вручную.",
+        );
       if (r.image_url && job.canApply("photo")) {
         const ok = await applyPhoto(
           () => photoFromUrl(r.image_url),
@@ -299,16 +303,15 @@ export function GiftForm({
         );
         if (!job.current()) return;
         if (ok) autoPhoto.current = true;
-        if (!ok && job.canApply("photo"))
-          setPhotoNote(
-            "Картинку с сайта получить не удалось — добавьте фото вручную.",
-          );
+        // applyPhoto keeps the actual network/decoder/compression error visible.
       } else if (!r.image_url && job.canApply("photo"))
         setPhotoNote(
           "Картинку с сайта получить не удалось — добавьте фото вручную.",
         );
       if (r.blocked)
-        notes.unshift(`${r.shop || "Сайт"} не отдал данные автоматически.`);
+        notes.unshift(
+          `${r.shop || "Сайт"} ограничил автоматическое чтение. Можно добавить фото и цену вручную.`,
+        );
       else if (r.price || r.image_url)
         notes.unshift(
           `Нашли данные${r.shop ? ` на ${r.shop}` : ""}. Проверьте цену и вариант товара: регион и скидки могут отличаться.`,
