@@ -208,6 +208,7 @@ export function merge(...parts: ProductInfo[]): ProductInfo {
     if (!out.image && p.image) out.image = p.image;
     if (!out.price && p.price) out.price = p.price;
     if (p.blocked) out.blocked = true;
+    if (p.unavailable) out.unavailable = true;
   }
   return out;
 }
