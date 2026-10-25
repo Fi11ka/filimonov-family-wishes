@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Gift,
   Heart,
@@ -8,28 +8,33 @@ import {
   ImagePlus,
   Link as LinkIcon,
   RefreshCw,
-  LogOut,
+  ClipboardPaste,
+  Sparkles,
+  ImageOff,
 } from "lucide-react";
-import { api, compressPhoto, demo } from "./api";
 import {
-  type Wish,
-  type Family,
-  type User,
-  type Member,
-  priorities,
-  initials,
-} from "./types";
+  api,
+  compressPhoto,
+  demo,
+  photoFromUrl,
+  type ProductLookup,
+} from "./api";
+import { type Wish, priorities } from "./types";
+import { currencies } from "../shared/price";
 export function Modal({
   title,
   onClose,
   children,
+  wide,
 }: {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
+  wide?: boolean;
 }) {
+  const ref = useRef<HTMLElement>(null);
   useEffect(() => {
-    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    const dialog = ref.current;
     const previous = document.activeElement as HTMLElement;
     dialog?.focus();
     const old = document.body.style.overflow;
@@ -73,7 +78,8 @@ export function Modal({
       }}
     >
       <section
-        className="modal"
+        ref={ref}
+        className={`modal ${wide ? "modal-wide" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-title"
@@ -94,6 +100,54 @@ export function Modal({
     </div>
   );
 }
+/** In-app confirmation: window.confirm is unreliable inside Telegram WebViews. */
+export function Confirm({
+  text,
+  action,
+  danger,
+  onConfirm,
+  onCancel,
+}: {
+  text: string;
+  action: string;
+  danger?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <Modal title="Вы уверены?" onClose={onCancel}>
+      <p className="muted">{text}</p>
+      <div className="confirm-actions">
+        <button className="button secondary" onClick={onCancel}>
+          Отмена
+        </button>
+        <button
+          className={`button primary ${danger ? "danger-fill" : ""}`}
+          onClick={onConfirm}
+        >
+          {action}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+const amountRe = /^\d{1,9}([.,]\d{1,2})?$/;
+function toMinor(value: string, label: string) {
+  const v = value.trim().replace(/\s/g, "");
+  if (!v) return null;
+  if (!amountRe.test(v))
+    throw new Error(`${label}: укажите число, до двух знаков после запятой.`);
+  return Math.round(Number(v.replace(",", ".")) * 100);
+}
+const fromMinor = (v: number | null | undefined) =>
+  v === null || v === undefined ? "" : String(v / 100);
+function isHttps(v: string) {
+  try {
+    return new URL(v).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 export function GiftForm({
   gift,
   onSaved,
@@ -104,9 +158,30 @@ export function GiftForm({
   const [photo, setPhoto] = useState(""),
     [photoLoading, setPhotoLoading] = useState(!!gift?.has_photo),
     [photoError, setPhotoError] = useState(false),
+    [photoNote, setPhotoNote] = useState(""),
+    [imageUrl, setImageUrl] = useState(""),
     [saving, setSaving] = useState(false),
     [error, setError] = useState("");
+  const [title, setTitle] = useState(gift?.title || ""),
+    [shopUrl, setShopUrl] = useState(gift?.shop_url || ""),
+    [description, setDescription] = useState(gift?.description || ""),
+    [priority, setPriority] = useState(gift?.priority || 2),
+    [currency, setCurrency] = useState(gift?.currency || "EUR");
+  const [priceMode, setPriceMode] = useState<"exact" | "range">(
+      gift?.price_range ? "range" : "exact",
+    ),
+    [priceMin, setPriceMin] = useState(fromMinor(gift?.price_minor)),
+    [priceMax, setPriceMax] = useState(fromMinor(gift?.price_max_minor)),
+    [priceTouched, setPriceTouched] = useState(false);
+  const [lookup, setLookup] = useState<"idle" | "loading">("idle"),
+    [lookupNote, setLookupNote] = useState(""),
+    lastLookup = useRef(gift?.shop_url || "");
   useEffect(() => {
+    if (demo) {
+      setPhoto(gift?.photo || "");
+      setPhotoLoading(false);
+      return;
+    }
     if (gift?.has_photo)
       void api(`/api/gifts/${gift.id}/photo`)
         .then((d) => setPhoto(d.photo))
@@ -116,29 +191,150 @@ export function GiftForm({
         })
         .finally(() => setPhotoLoading(false));
   }, [gift]);
+  async function applyPhoto(load: () => Promise<string>, failNote: string) {
+    setPhotoLoading(true);
+    try {
+      setPhoto(await load());
+      setPhotoError(false);
+      setPhotoNote("");
+      return true;
+    } catch (err) {
+      setPhotoNote((err as Error).message || failNote);
+      return false;
+    } finally {
+      setPhotoLoading(false);
+    }
+  }
+  async function fillFromLink(url: string, force = false) {
+    if (!isHttps(url)) return;
+    lastLookup.current = url;
+    if (demo) {
+      setLookupNote("В демо данные по ссылке не загружаются.");
+      return;
+    }
+    setLookup("loading");
+    setLookupNote("");
+    try {
+      const r = await api<ProductLookup>("/api/fetch/product", "POST", { url });
+      if (lastLookup.current !== url) return; // the link changed meanwhile
+      const notes: string[] = [];
+      if (r.title && !title.trim()) setTitle(r.title.slice(0, 120));
+      if (r.price && (force || !priceTouched || (!priceMin && !priceMax))) {
+        const range = r.price.max_minor !== null;
+        setPriceMode(range ? "range" : "exact");
+        setPriceMin(fromMinor(r.price.min_minor));
+        setPriceMax(range ? fromMinor(r.price.max_minor) : "");
+        if ((currencies as readonly string[]).includes(r.price.currency))
+          setCurrency(r.price.currency);
+        setPriceTouched(false);
+      } else if (!r.price)
+        notes.push("Цену получить не удалось — введите её вручную.");
+      if (r.image_url && (force || !photo)) {
+        const ok = await applyPhoto(
+          () => photoFromUrl(r.image_url),
+          "Не удалось загрузить картинку.",
+        );
+        if (!ok)
+          setPhotoNote(
+            "Картинку с сайта получить не удалось — добавьте фото вручную.",
+          );
+      } else if (!r.image_url && !photo)
+        setPhotoNote(
+          "Картинку с сайта получить не удалось — добавьте фото вручную.",
+        );
+      if (r.blocked)
+        notes.unshift(`${r.shop || "Сайт"} не отдал данные автоматически.`);
+      else if (r.price || r.image_url)
+        notes.unshift(
+          `Нашли данные${r.shop ? ` на ${r.shop}` : ""}. Проверьте и поправьте, если нужно.`,
+        );
+      setLookupNote(notes.join(" "));
+    } catch (err) {
+      setLookupNote(`${(err as Error).message} Заполните цену и фото вручную.`);
+    } finally {
+      setLookup("idle");
+    }
+  }
+  // Look the link up shortly after it is pasted or typed.
+  useEffect(() => {
+    const url = shopUrl.trim();
+    if (!isHttps(url) || url === lastLookup.current) return;
+    const t = setTimeout(() => void fillFromLink(url), 700);
+    return () => clearTimeout(t);
+  }, [shopUrl]);
+  async function pastedImage(files: FileList | File[]) {
+    const file = Array.from(files).find((f) => f.type.startsWith("image/"));
+    if (!file) return false;
+    await applyPhoto(
+      () => compressPhoto(file),
+      "Не удалось вставить картинку.",
+    );
+    return true;
+  }
+  async function pasteFromClipboard() {
+    try {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const type = item.types.find((t) => t.startsWith("image/"));
+        if (type) {
+          const blob = await item.getType(type);
+          await applyPhoto(
+            () => compressPhoto(blob),
+            "Не удалось вставить картинку.",
+          );
+          return;
+        }
+      }
+      const text = (await navigator.clipboard.readText()).trim();
+      if (isHttps(text)) {
+        setImageUrl(text);
+        await applyPhoto(
+          () => photoFromUrl(text),
+          "Не удалось загрузить картинку.",
+        );
+      } else setPhotoNote("В буфере обмена нет картинки.");
+    } catch {
+      setPhotoNote("Браузер не дал доступ к буферу. Нажмите Ctrl+V в форме.");
+    }
+  }
   return (
     <form
+      onPaste={(e) => {
+        if (e.clipboardData.files.length) {
+          e.preventDefault();
+          void pastedImage(e.clipboardData.files);
+        }
+      }}
       onSubmit={async (e) => {
         e.preventDefault();
+        if (demo) {
+          setError(
+            "Это демо: форму можно попробовать, но желание не сохранится.",
+          );
+          return;
+        }
         setSaving(true);
         setError("");
-        const d = new FormData(e.currentTarget);
         try {
-          const amount = String(d.get("price")).trim().replace(",", ".");
-          if (amount && !/^\d{1,9}(\.\d{1,2})?$/.test(amount))
-            throw new Error(
-              "Укажите цену с точностью до двух знаков после запятой.",
-            );
+          const min = toMinor(
+              priceMin,
+              priceMode === "range" ? "Цена «от»" : "Цена",
+            ),
+            max = priceMode === "range" ? toMinor(priceMax, "Цена «до»") : null;
+          if (min !== null && max !== null && max < min)
+            throw new Error("Цена «до» должна быть больше цены «от».");
           await api(
             gift ? `/api/gifts/${gift.id}` : "/api/gifts",
             gift ? "PUT" : "POST",
             {
-              title: d.get("title"),
-              price_minor: amount ? Math.round(Number(amount) * 100) : null,
-              currency: d.get("currency"),
-              shop_url: d.get("shop_url"),
-              description: d.get("description"),
-              priority: Number(d.get("priority")),
+              title,
+              price_minor: min,
+              price_max_minor: max,
+              price_range: priceMode === "range",
+              currency,
+              shop_url: shopUrl.trim(),
+              description,
+              priority: Number(priority),
               photo,
             },
           );
@@ -150,16 +346,54 @@ export function GiftForm({
         }
       }}
     >
+      <label>
+        Ссылка на магазин
+        <div className="input-with-action">
+          <input
+            name="shop_url"
+            type="url"
+            maxLength={2048}
+            value={shopUrl}
+            onChange={(e) => setShopUrl(e.target.value)}
+            placeholder="https://… — цена и фото подтянутся сами"
+          />
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Подтянуть данные по ссылке"
+            title="Подтянуть данные по ссылке"
+            disabled={!isHttps(shopUrl.trim()) || lookup === "loading"}
+            onClick={() => void fillFromLink(shopUrl.trim(), true)}
+          >
+            <RefreshCw
+              size={17}
+              className={lookup === "loading" ? "spin" : ""}
+            />
+          </button>
+        </div>
+      </label>
+      {(lookup === "loading" || lookupNote) && (
+        <p className="lookup-note" role="status">
+          <Sparkles size={14} />
+          {lookup === "loading" ? "Ищем цену и картинку…" : lookupNote}
+        </p>
+      )}
       <label className="photo-upload">
         {photo ? (
           <img src={photo} alt="Фото подарка" />
+        ) : photoNote && !photoLoading ? (
+          <span className="photo-fallback">
+            <ImageOff size={27} />
+            <strong>Нет картинки</strong>
+            <span>Выберите файл, вставьте Ctrl+V или ссылку на картинку</span>
+          </span>
         ) : (
           <>
             <ImagePlus size={27} />
             <strong>
               {photoLoading ? "Готовим фото…" : "Добавить фотографию"}
             </strong>
-            <span>JPEG, PNG или WebP · сожмём автоматически</span>
+            <span>Файл, Ctrl+V или ссылка · сожмём автоматически</span>
           </>
         )}
         <input
@@ -170,96 +404,145 @@ export function GiftForm({
           onChange={async (e) => {
             const file = e.target.files?.[0];
             if (!file) return;
-            setPhotoLoading(true);
-            try {
-              setPhoto(await compressPhoto(file));
-              setError("");
-              setPhotoError(false);
-            } catch (err) {
-              setError((err as Error).message);
-            } finally {
-              setPhotoLoading(false);
-            }
+            await applyPhoto(
+              () => compressPhoto(file),
+              "Не удалось открыть фото.",
+            );
           }}
         />
       </label>
-      {photo && (
+      {photoNote && (
+        <p className="photo-note" role="status">
+          {photoNote}
+        </p>
+      )}
+      <div className="photo-tools">
         <button
           type="button"
           className="text-link"
-          onClick={() => setPhoto("")}
+          disabled={photoLoading}
+          onClick={() => void pasteFromClipboard()}
         >
-          Убрать фото
+          <ClipboardPaste size={15} />
+          Вставить из буфера
         </button>
-      )}
+        {photo && (
+          <button
+            type="button"
+            className="text-link"
+            onClick={() => setPhoto("")}
+          >
+            Убрать фото
+          </button>
+        )}
+      </div>
+      <div className="input-with-action">
+        <input
+          aria-label="Ссылка на картинку"
+          type="url"
+          value={imageUrl}
+          onChange={(e) => setImageUrl(e.target.value)}
+          placeholder="Или ссылка на картинку: https://…/photo.jpg"
+        />
+        <button
+          type="button"
+          className="button secondary"
+          disabled={!isHttps(imageUrl.trim()) || photoLoading}
+          onClick={() =>
+            void applyPhoto(
+              () => photoFromUrl(imageUrl.trim()),
+              "Не удалось загрузить картинку.",
+            )
+          }
+        >
+          Загрузить
+        </button>
+      </div>
       <label>
         Название желания
         <input
           name="title"
           required
           maxLength={120}
-          defaultValue={gift?.title}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
           placeholder="О чём вы мечтаете?"
         />
       </label>
-      <div className="form-row">
-        <label>
-          Цена
+      <div className="price-field">
+        <div className="price-heading">
+          <span>Цена</span>
+          <div className="segmented small" role="group" aria-label="Тип цены">
+            <button
+              type="button"
+              className={priceMode === "exact" ? "selected" : ""}
+              aria-pressed={priceMode === "exact"}
+              onClick={() => setPriceMode("exact")}
+            >
+              Точная
+            </button>
+            <button
+              type="button"
+              className={priceMode === "range" ? "selected" : ""}
+              aria-pressed={priceMode === "range"}
+              onClick={() => setPriceMode("range")}
+            >
+              От – до
+            </button>
+          </div>
+        </div>
+        <div className="form-row price-row">
           <input
-            name="price"
+            aria-label={priceMode === "range" ? "Цена от" : "Цена"}
             inputMode="decimal"
-            defaultValue={
-              gift?.price_minor === null
-                ? ""
-                : gift?.price_minor !== undefined
-                  ? gift.price_minor / 100
-                  : ""
-            }
-            placeholder="Необязательно"
+            value={priceMin}
+            onChange={(e) => {
+              setPriceMin(e.target.value);
+              setPriceTouched(true);
+            }}
+            placeholder={priceMode === "range" ? "от" : "Необязательно"}
           />
-        </label>
-        <label>
-          Валюта
-          <select name="currency" defaultValue={gift?.currency || "EUR"}>
-            {[
-              "EUR",
-              "USD",
-              "RUB",
-              "GBP",
-              "GEL",
-              "TRY",
-              "KZT",
-              "UAH",
-              "BYN",
-            ].map((c) => (
+          {priceMode === "range" && (
+            <input
+              aria-label="Цена до"
+              inputMode="decimal"
+              value={priceMax}
+              onChange={(e) => {
+                setPriceMax(e.target.value);
+                setPriceTouched(true);
+              }}
+              placeholder="до"
+            />
+          )}
+          <select
+            aria-label="Валюта"
+            value={currency}
+            onChange={(e) => setCurrency(e.target.value)}
+          >
+            {currencies.map((c) => (
               <option key={c}>{c}</option>
             ))}
           </select>
-        </label>
+        </div>
       </div>
-      <label>
-        Ссылка на магазин
-        <input
-          name="shop_url"
-          type="url"
-          maxLength={2048}
-          defaultValue={gift?.shop_url}
-          placeholder="https://…"
-        />
-      </label>
       <label>
         Подсказка близким
         <textarea
           name="description"
           rows={3}
           maxLength={2000}
-          defaultValue={gift?.description}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
           placeholder="Цвет, размер или другие важные детали"
         />
       </label>
       <label>
         Как сильно хочется?
-        <select name="priority" defaultValue={gift?.priority || 2}>
+        <select
+          name="priority"
+          value={priority}
+          onChange={(e) => setPriority(Number(e.target.value))}
+        >
           {[3, 2, 1].map((p) => (
             <option key={p} value={p}>
               {priorities[p]}
@@ -288,100 +571,7 @@ export function GiftForm({
     </form>
   );
 }
-export function FamilyForm({ onDone }: { onDone: () => void }) {
-  const [mode, setMode] = useState<"create" | "join">("create"),
-    [error, setError] = useState(""),
-    [saving, setSaving] = useState(false),
-    [invite, setInvite] = useState("");
-  return (
-    <>
-      <div className="segmented">
-        <button
-          className={mode === "create" ? "selected" : ""}
-          onClick={() => setMode("create")}
-        >
-          Создать семью
-        </button>
-        <button
-          className={mode === "join" ? "selected" : ""}
-          onClick={() => setMode("join")}
-        >
-          У меня есть код
-        </button>
-      </div>
-      {invite ? (
-        <div className="share-result">
-          <Heart size={30} />
-          <h3>Ваша семья создана!</h3>
-          <p>Передайте код близким. Его обладатели смогут вступить в семью.</p>
-          <CopyValue value={invite} />
-          <button className="button primary full-width" onClick={onDone}>
-            К желаниям
-          </button>
-        </div>
-      ) : (
-        <form
-          onSubmit={async (e) => {
-            e.preventDefault();
-            if (demo) {
-              setError("Создание семьи доступно после подключения.");
-              return;
-            }
-            setSaving(true);
-            setError("");
-            const d = new FormData(e.currentTarget);
-            try {
-              const r = await api(
-                mode === "create" ? "/api/family" : "/api/family/join",
-                "POST",
-                mode === "create"
-                  ? { name: d.get("value") }
-                  : { code: d.get("value") },
-              );
-              if (r.invite_code) setInvite(r.invite_code);
-              else onDone();
-            } catch (err) {
-              setError((err as Error).message);
-            } finally {
-              setSaving(false);
-            }
-          }}
-        >
-          <p className="muted">
-            {mode === "create"
-              ? "Уютное место для желаний всех ваших близких."
-              : "Попросите код у создателя семьи. Его можно получить в настройках."}
-          </p>
-          <label>
-            {mode === "create" ? "Название семьи" : "Код приглашения"}
-            <input
-              key={mode}
-              name="value"
-              required
-              maxLength={80}
-              placeholder={
-                mode === "create" ? "Семья Филимоновых" : "Вставьте код"
-              }
-            />
-          </label>
-          {error && (
-            <div className="error" role="alert">
-              {error}
-            </div>
-          )}
-          <button className="button primary full-width" disabled={saving}>
-            {saving
-              ? "Подождите…"
-              : mode === "create"
-                ? "Создать семью"
-                : "Присоединиться"}
-          </button>
-        </form>
-      )}
-    </>
-  );
-}
-function CopyValue({ value }: { value: string }) {
+export function CopyValue({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <div className="copy-value">
@@ -439,7 +629,7 @@ export function Share() {
       </div>
       <p>
         По ссылке гости увидят только ваш список и смогут бронировать подарки
-        через Telegram, не вступая в семью.
+        через Telegram, не добавляясь в друзья.
       </p>
       <p className="small-text">
         Ссылка действует 30 дней. Новая ссылка заменяет предыдущую. Уже
@@ -506,115 +696,5 @@ export function Share() {
           </div>
         ))}
     </div>
-  );
-}
-export function FamilySettings({
-  family,
-  user,
-  members,
-  onChanged,
-}: {
-  family: Family | null;
-  user: User | null;
-  members: Member[];
-  onChanged: () => void;
-}) {
-  const [code, setCode] = useState(""),
-    [error, setError] = useState(""),
-    [busy, setBusy] = useState(false);
-  const own = family?.owner_id === user?.id;
-  return (
-    <>
-      <h3>{family?.name || "Вы пока не в семье"}</h3>
-      <p className="muted">
-        Семейные списки доступны только участникам. Гостевой доступ выдаётся
-        отдельно владельцем списка.
-      </p>
-      {own && (
-        <>
-          <button
-            className="button secondary full-width"
-            disabled={busy}
-            onClick={async () => {
-              if (demo) {
-                setError("Настройка доступна после подключения.");
-                return;
-              }
-              setBusy(true);
-              try {
-                setCode((await api("/api/family/invite", "POST")).invite_code);
-              } catch (e) {
-                setError((e as Error).message);
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            <RefreshCw size={16} />
-            Создать новый код приглашения
-          </button>
-          <p className="small-text">
-            Предыдущий код перестанет работать. Действующие участники останутся
-            в семье.
-          </p>
-          {code && <CopyValue value={code} />}
-        </>
-      )}
-      {members.map((m) => (
-        <div className="settings-member" key={m.id}>
-          <span className="avatar small">{initials(m.name)}</span>
-          <span>{m.name}</span>
-          {own && m.id !== user?.id && (
-            <button
-              className="icon-button danger"
-              aria-label={`Удалить из семьи ${m.name}`}
-              disabled={busy}
-              onClick={async () => {
-                if (demo) return;
-                if (!confirm(`Убрать ${m.name} из семьи?`)) return;
-                setBusy(true);
-                try {
-                  await api(`/api/family/members/${m.id}`, "DELETE");
-                  onChanged();
-                } catch (e) {
-                  setError((e as Error).message);
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              <X size={17} />
-            </button>
-          )}
-        </div>
-      ))}
-      {family && !own && (
-        <button
-          className="button secondary full-width danger"
-          disabled={busy}
-          onClick={async () => {
-            if (!confirm("Выйти из семьи? Список ваших желаний сохранится."))
-              return;
-            setBusy(true);
-            try {
-              await api("/api/family/leave", "POST");
-              onChanged();
-            } catch (e) {
-              setError((e as Error).message);
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          <LogOut size={16} />
-          Выйти из семьи
-        </button>
-      )}
-      {error && (
-        <div className="error" role="alert">
-          {error}
-        </div>
-      )}
-    </>
   );
 }

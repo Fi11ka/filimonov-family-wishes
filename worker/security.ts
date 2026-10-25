@@ -40,6 +40,8 @@ async function hmac(key: Uint8Array<ArrayBuffer>, value: string) {
 export interface Identity {
   id: string;
   name: string;
+  /** Telegram @username, lowercase, from the signed payload only. */
+  username: string | null;
 }
 export async function validateInitData(
   raw: string,
@@ -84,6 +86,7 @@ export async function validateInitData(
     id?: number;
     first_name?: string;
     last_name?: string;
+    username?: string;
     is_bot?: boolean;
   };
   try {
@@ -109,7 +112,13 @@ export async function validateInitData(
         .filter(Boolean)
         .join(" ")
         .slice(0, 160) || "Участник",
+    username: usernameOf(user.username),
   };
+}
+/** Telegram usernames: 4–32 latin letters, digits and underscores. */
+export function usernameOf(value: unknown) {
+  const v = typeof value === "string" ? value.trim().replace(/^@/, "") : "";
+  return /^[A-Za-z][A-Za-z0-9_]{3,31}$/.test(v) ? v.toLowerCase() : null;
 }
 export function text(value: unknown, max: number, required = false): string {
   if (typeof value !== "string")
@@ -140,14 +149,21 @@ export function giftInput(b: Record<string, unknown>) {
     )
   )
     fail(400, "VALIDATION", "Выберите валюту.");
-  const price = b.price_minor;
-  if (
-    price !== null &&
-    (!Number.isSafeInteger(price) ||
-      Number(price) < 0 ||
-      Number(price) > 100000000000)
-  )
+  const amount = (v: unknown) => {
+    if (v === null || v === undefined) return null;
+    if (!Number.isSafeInteger(v) || Number(v) < 0 || Number(v) > 100000000000)
+      fail(400, "VALIDATION", "Некорректная цена.");
+    return v as number;
+  };
+  if (b.price_minor === undefined)
     fail(400, "VALIDATION", "Некорректная цена.");
+  const price = amount(b.price_minor),
+    range = b.price_range === true,
+    max = range ? amount(b.price_max_minor) : null;
+  if (!range && b.price_max_minor !== undefined && b.price_max_minor !== null)
+    fail(400, "VALIDATION", "Некорректная цена.");
+  if (price !== null && max !== null && max < price)
+    fail(400, "VALIDATION", "Цена «до» должна быть больше цены «от».");
   if (![1, 2, 3].includes(Number(b.priority)) || typeof b.priority !== "number")
     fail(400, "VALIDATION", "Выберите приоритет.");
   const photo = text(b.photo ?? "", 220000);
@@ -160,7 +176,9 @@ export function giftInput(b: Record<string, unknown>) {
     title,
     description,
     currency,
-    price_minor: price as number | null,
+    price_minor: price,
+    price_max_minor: max,
+    price_range: range && (price !== null || max !== null) ? 1 : 0,
     priority: b.priority as number,
     shop_url: https(b.shop_url),
     photo,

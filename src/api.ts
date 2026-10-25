@@ -21,6 +21,8 @@ const start =
 export const guestToken =
   new URLSearchParams(location.hash.slice(1)).get("guest") ||
   (start.startsWith("g_") ? start.slice(2) : "");
+/** Friend invitation opened from t.me/…?startapp=f_<token> */
+export const friendInvite = start.startsWith("f_") ? start.slice(2) : "";
 export const demo = new URLSearchParams(location.search).get("demo") === "1";
 export const apiConfigured = !!import.meta.env.VITE_API_URL;
 export class RequestError extends Error {
@@ -31,11 +33,12 @@ export class RequestError extends Error {
     super(message);
   }
 }
-export async function api<T = any>(
+async function request(
   path: string,
-  method = "GET",
-  data?: unknown,
-): Promise<T> {
+  method: string,
+  data: unknown,
+  timeout: number,
+): Promise<Response> {
   if (!apiConfigured)
     throw new Error(
       "Адрес API ещё не настроен. Завершите подключение Cloudflare по инструкции DEPLOY.md.",
@@ -54,7 +57,7 @@ export async function api<T = any>(
         body: data === undefined ? undefined : JSON.stringify(data),
         credentials: "omit",
         cache: "no-store",
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(timeout),
       },
     );
   } catch {
@@ -62,21 +65,32 @@ export async function api<T = any>(
       "Нет связи с приложением. Проверьте интернет и попробуйте ещё раз.",
     );
   }
-  const value: any = await res.json().catch(() => ({}));
-  if (!res.ok)
+  if (!res.ok) {
+    const value: any = await res.json().catch(() => ({}));
     throw new RequestError(
       res.status,
       value.error?.message || "Не удалось выполнить запрос.",
     );
-  return value;
+  }
+  return res;
+}
+export async function api<T = any>(
+  path: string,
+  method = "GET",
+  data?: unknown,
+): Promise<T> {
+  const res = await request(path, method, data, 20000);
+  return (await res.json().catch(() => ({}))) as T;
+}
+/** Binary answers (images fetched by link, spreadsheets). */
+export async function apiBlob(path: string, data: unknown, timeout = 30000) {
+  return (await request(path, "POST", data, timeout)).blob();
 }
 export const telegramLink = () =>
   `https://t.me/${BOT}?startapp${guestToken ? `=g_${guestToken}` : ""}`;
-export async function compressPhoto(file: File): Promise<string> {
-  if (
-    !/^image\/(jpeg|png|webp|heic|heif)$/.test(file.type) ||
-    file.size > 20 * 1024 * 1024
-  )
+const PHOTO_TYPES = /^image\/(jpeg|png|webp|gif|avif|heic|heif)$/;
+export async function compressPhoto(file: Blob): Promise<string> {
+  if (!PHOTO_TYPES.test(file.type) || file.size > 20 * 1024 * 1024)
     throw new Error("Выберите фотографию JPEG, PNG или WebP до 20 МБ.");
   const source = URL.createObjectURL(file);
   try {
@@ -104,4 +118,21 @@ export async function compressPhoto(file: File): Promise<string> {
   } finally {
     URL.revokeObjectURL(source);
   }
+}
+/** Downloads a picture through the API (shops forbid direct cross-site reads) and compresses it. */
+export async function photoFromUrl(url: string) {
+  if (demo) throw new Error("В демо картинки по ссылке не загружаются.");
+  return compressPhoto(await apiBlob("/api/fetch/image", { url }, 25000));
+}
+export interface ProductLookup {
+  shop: string | null;
+  url: string;
+  title: string;
+  image_url: string;
+  price: {
+    min_minor: number | null;
+    max_minor: number | null;
+    currency: string;
+  } | null;
+  blocked: boolean;
 }
