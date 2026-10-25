@@ -102,37 +102,8 @@ export async function apiBlob(path: string, data: unknown, timeout = 30000) {
 }
 export const telegramLink = () =>
   `https://t.me/${BOT}?startapp${guestToken ? `=g_${guestToken}` : ""}`;
-const PHOTO_TYPES = /^image\/(jpeg|png|webp|gif|avif|heic|heif)$/;
-export async function compressPhoto(file: Blob): Promise<string> {
-  if (!PHOTO_TYPES.test(file.type) || file.size > 20 * 1024 * 1024)
-    throw new Error("Выберите фотографию JPEG, PNG или WebP до 20 МБ.");
-  const source = URL.createObjectURL(file);
-  try {
-    const image = new Image();
-    image.src = source;
-    await image.decode().catch(() => {
-      throw new Error(
-        "Не удалось открыть фото. Для HEIC выберите экспорт в JPEG.",
-      );
-    });
-    const canvas = document.createElement("canvas"),
-      ratio = Math.min(1, 900 / Math.max(image.width, image.height));
-    canvas.width = Math.round(image.width * ratio);
-    canvas.height = Math.round(image.height * ratio);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("Не удалось обработать фото.");
-    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-    for (const quality of [0.82, 0.66, 0.5, 0.35]) {
-      const result = canvas.toDataURL("image/webp", quality);
-      if (result.length < 215000) return result;
-    }
-    throw new Error(
-      "Фото слишком детальное. Выберите фотографию меньшего размера.",
-    );
-  } finally {
-    URL.revokeObjectURL(source);
-  }
-}
+export { compressPhoto } from "./photo";
+import { compressPhoto } from "./photo";
 /** Downloads a picture through the API (shops forbid direct cross-site reads) and compresses it. */
 export async function photoFromUrl(url: string) {
   if (demo) throw new Error("В демо картинки по ссылке не загружаются.");
@@ -149,4 +120,5 @@ export interface ProductLookup {
     currency: string;
   } | null;
   blocked: boolean;
+  unavailable?: boolean;
 }
