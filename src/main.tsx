@@ -1,5 +1,5 @@
 import { nextBirthday } from "../shared/birthday";
-import { GuestBookings, ArchiveWish } from "./forms";
+import { ArchiveWish, ReserveDialog } from "./forms";
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -26,6 +26,8 @@ import {
   UserMinus,
   Maximize2,
   Minimize2,
+  Bell,
+  BellOff,
 } from "lucide-react";
 import { useFullscreen } from "./fullscreen";
 import {
@@ -33,7 +35,11 @@ import {
   apiConfigured,
   demo,
   friendInvite,
+  guestCodes,
   guestToken,
+  openBot,
+  openTarget,
+  setGuestCode,
   authShare,
   setSessionToken,
   signedIn,
@@ -52,6 +58,7 @@ import { GiftForm, Share, Modal, Confirm } from "./forms";
 import { AcceptInvite, AddFriend, Profile, Requests } from "./friends";
 import { ImportDialog } from "./import/ImportDialog";
 import {
+  type Booking,
   type User,
   type Friend,
   type Wish,
@@ -64,13 +71,7 @@ import {
 import "./style.css";
 type Tab = "mine" | "friends" | "bookings" | "archive";
 type ModalKind =
-  | "guest-bookings"
-  | "gift"
-  | "share"
-  | "add-friend"
-  | "profile"
-  | "import"
-  | "invite";
+  "gift" | "share" | "add-friend" | "profile" | "import" | "invite";
 interface Confirmation {
   text: string;
   action: string;
@@ -96,9 +97,7 @@ function App() {
     [editing, setEditing] = useState<Wish | null>(null),
     [search, setSearch] = useState(""),
     [sort, setSort] = useState("priority");
-  const [bookings, setBookings] = useState<
-      { gift_id: string; title: string; archived?: number }[]
-    >([]),
+  const [bookings, setBookings] = useState<Booking[]>([]),
     [busy, setBusy] = useState(false),
     [menu, setMenu] = useState(false),
     [webSession, setWebSession] = useState(false);
@@ -134,6 +133,12 @@ function App() {
     return () => window.removeEventListener("beforeunload", handler);
   }, [giftDirty, modal]);
   const [guestGift, setGuestGift] = useState<Wish | null>(null);
+  const [reserving, setReserving] = useState<{
+    gift: { id: string; title: string };
+    ownerId: string;
+    exclude?: string[];
+    invite?: boolean;
+  } | null>(null);
   const [guestName, setGuestName] = useState("");
   const own =
     !!user &&
@@ -242,7 +247,14 @@ function App() {
       telegram.setHeaderColor("#f8f6fc");
       telegram.setBackgroundColor("#f8f6fc");
     }
-    void refresh();
+    void refresh().then(async () => {
+      // Buttons in bot messages open a friend's list or «Мои брони».
+      if (demo || !signedIn() || guestToken) return;
+      if (/^l_\d+$/.test(openTarget)) {
+        setTab("friends");
+        await loadList(openTarget.slice(2));
+      } else if (openTarget === "b") await navigate("bookings");
+    });
   }, []);
   async function navigate(next: Tab) {
     setMenu(false);
@@ -273,15 +285,16 @@ function App() {
       }
     }
     if (next === "archive") await loadArchive();
-    if (next === "bookings") {
-      setLoading(true);
-      try {
-        setBookings((await api("/api/reservations")).reservations);
-      } catch (e) {
-        setError((e as Error).message);
-      } finally {
-        setLoading(false);
-      }
+    if (next === "bookings") await loadBookings();
+  }
+  async function loadBookings() {
+    setLoading(true);
+    try {
+      setBookings((await api("/api/reservations")).reservations);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
     }
   }
   function openFriend(f: Friend) {
@@ -314,23 +327,82 @@ function App() {
   }
   async function reserve(g: Wish) {
     if (guestToken && !authShare) {
-      setGuestGift(g);
+      if (g.reservation === "reserved" && guestCodes()[g.id])
+        await guarded(async () => {
+          try {
+            await api(`/api/guest-reservations/${g.id}/cancel`, "POST", {
+              code: guestCodes()[g.id],
+            });
+            notice("Бронь отменена");
+          } finally {
+            // Cancelled now or earlier by someone else: the code is no longer needed.
+            setGuestCode(g.id, null);
+            await refresh();
+          }
+        }, "");
+      else setGuestGift(g);
+      return;
+    }
+    if (g.reservation !== "mine") {
+      // Friends are needed to offer «Подарить вместе»; a shared link may come without them.
+      if (!friends.length) await loadFriends().catch(() => undefined);
+      setReserving({ gift: g, ownerId: g.owner_id });
       return;
     }
     await guarded(async () => {
       try {
-        await api(
-          `/api/gifts/${g.id}/reservation`,
-          g.reservation === "mine" ? "DELETE" : "POST",
-        );
-        telegram?.HapticFeedback?.notificationOccurred("success");
-        notice(
-          g.reservation === "mine" ? "Бронь отменена" : "Подарок забронирован",
-        );
+        await api(`/api/gifts/${g.id}/reservation`, "DELETE");
+        notice("Бронь отменена");
       } finally {
         if (owner) await loadList(owner.id);
       }
     }, "Бронирование доступно после подключения приложения.");
+  }
+  async function answerInvite(giftId: string, join: boolean) {
+    await guarded(async () => {
+      try {
+        await api(
+          `/api/gifts/${giftId}/reservation/${join ? "join" : "decline"}`,
+          "POST",
+        );
+        telegram?.HapticFeedback?.notificationOccurred("success");
+        notice(join ? "Вы участвуете в подарке" : "Приглашение отклонено");
+      } finally {
+        if (tab === "bookings") await loadBookings();
+        else if (owner) await loadList(owner.id);
+      }
+    }, "В демо брони не меняются.");
+  }
+  async function cancelBooking(b: Booking) {
+    await guarded(async () => {
+      await api(`/api/gifts/${b.gift_id}/reservation`, "DELETE");
+      setBookings(bookings.filter((x) => x.gift_id !== b.gift_id));
+      notice(b.role === "organizer" ? "Бронь отменена" : "Вы вышли из подарка");
+    }, "Бронирование доступно после подключения приложения.");
+  }
+  async function toggleSubscription(f: Friend) {
+    await guarded(async () => {
+      const r = await api(
+        `/api/subscriptions/${f.id}`,
+        f.subscribed ? "DELETE" : "PUT",
+      );
+      setFriends((list) =>
+        list.map((x) =>
+          x.id === f.id ? { ...x, subscribed: r.subscribed } : x,
+        ),
+      );
+      if (r.subscribed && !r.notifications.bot_connected) {
+        notice("Подписка оформлена. Откройте бота и нажмите «Запустить»");
+        openBot(r.notifications.bot_url);
+      } else if (r.subscribed && !r.notifications.enabled)
+        notice("Подписка оформлена, но уведомления выключены в профиле");
+      else
+        notice(
+          r.subscribed
+            ? `Бот напишет, когда ${f.name.split(" ")[0]} изменит вишлист`
+            : "Подписка отменена",
+        );
+    }, "В демо подписки не сохраняются.");
   }
   async function markBought(g: Wish) {
     setArchiveGift(g);
@@ -700,12 +772,6 @@ function App() {
                         <LinkIcon size={16} />
                         Поделиться
                       </button>
-                      <button
-                        className="text-link"
-                        onClick={() => setModal("guest-bookings")}
-                      >
-                        Брони без регистрации
-                      </button>
                     </div>
                   )}
                   {user &&
@@ -732,15 +798,39 @@ function App() {
                     )}
                   {viewingFriend &&
                     owner &&
-                    friends.some((f) => f.id === owner.id) && (
-                      <button
-                        className="text-link danger remove-friend"
-                        onClick={() => unfriend(owner)}
-                      >
-                        <UserMinus size={15} />
-                        Удалить из друзей
-                      </button>
-                    )}
+                    friends.some((f) => f.id === owner.id) &&
+                    (() => {
+                      const friend = friends.find((f) => f.id === owner.id)!;
+                      return (
+                        <div className="friend-actions">
+                          <button
+                            className="button secondary"
+                            disabled={busy}
+                            onClick={() => void toggleSubscription(friend)}
+                            title="Уведомления в Telegram о новых и удалённых желаниях"
+                          >
+                            {friend.subscribed ? (
+                              <>
+                                <BellOff size={16} />
+                                Отписаться
+                              </>
+                            ) : (
+                              <>
+                                <Bell size={16} />
+                                Подписаться на обновления
+                              </>
+                            )}
+                          </button>
+                          <button
+                            className="text-link danger remove-friend"
+                            onClick={() => unfriend(owner)}
+                          >
+                            <UserMinus size={15} />
+                            Удалить из друзей
+                          </button>
+                        </div>
+                      );
+                    })()}
                   {guestToken && !authShare && (
                     <p className="list-help">
                       Нажмите «Забронировать» у подарка, который хотите купить.
@@ -819,6 +909,7 @@ function App() {
                           onRestore={() => void restore(g)}
                           onDelete={() => remove(g, tab === "archive")}
                           onReserve={() => void reserve(g)}
+                          onAnswer={(join) => void answerInvite(g.id, join)}
                         />
                       ))}
                     </div>
@@ -863,36 +954,101 @@ function App() {
                       bookings.map((b) => (
                         <div className="booking" key={b.gift_id}>
                           <span className="booking-icon">
-                            <Gift />
+                            {b.members.length || b.role !== "organizer" ? (
+                              <Users />
+                            ) : (
+                              <Gift />
+                            )}
                           </span>
                           <div>
                             <h3>{b.title}</h3>
                             <p>
-                              {b.archived
-                                ? "В архиве"
-                                : "Вы забронировали этот подарок"}
+                              {`Для ${b.owner_name}`}
+                              {b.price_minor !== null ||
+                              (b.price_max_minor ?? null) !== null
+                                ? ` · ${money(b as unknown as Wish)}`
+                                : ""}
+                              {b.archived ? " · в архиве" : ""}
                             </p>
+                            <p className="small-text">
+                              {b.role === "invited"
+                                ? `${b.organizer_name || "Друг"} предлагает скинуться на этот подарок`
+                                : b.role === "joined"
+                                  ? `Совместный подарок, организует ${b.organizer_name || "друг"}`
+                                  : b.members.length
+                                    ? "Вы организуете совместный подарок"
+                                    : "Вы забронировали этот подарок"}
+                            </p>
+                            {b.members.length > 0 && (
+                              <ul className="booking-members">
+                                {b.members.map((m) => (
+                                  <li key={m.id}>
+                                    {m.name}
+                                    {m.status === "joined"
+                                      ? " — участвует"
+                                      : " — ждём ответа"}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
                           </div>
-                          <button
-                            className="button secondary"
-                            disabled={busy}
-                            onClick={() =>
-                              void guarded(async () => {
-                                await api(
-                                  `/api/gifts/${b.gift_id}/reservation`,
-                                  "DELETE",
-                                );
-                                setBookings(
-                                  bookings.filter(
-                                    (x) => x.gift_id !== b.gift_id,
-                                  ),
-                                );
-                                notice("Бронь отменена");
-                              }, "Бронирование доступно после подключения приложения.")
-                            }
-                          >
-                            Отменить бронь
-                          </button>
+                          <div className="booking-actions">
+                            {b.role === "invited" ? (
+                              <>
+                                <button
+                                  className="button primary"
+                                  disabled={busy}
+                                  onClick={() =>
+                                    void answerInvite(b.gift_id, true)
+                                  }
+                                >
+                                  Участвую
+                                </button>
+                                <button
+                                  className="button secondary"
+                                  disabled={busy}
+                                  onClick={() =>
+                                    void answerInvite(b.gift_id, false)
+                                  }
+                                >
+                                  Не могу
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                {b.role === "organizer" && !b.archived && (
+                                  <button
+                                    className="button secondary"
+                                    disabled={busy}
+                                    onClick={async () => {
+                                      if (!friends.length)
+                                        await loadFriends().catch(
+                                          () => undefined,
+                                        );
+                                      setReserving({
+                                        gift: { id: b.gift_id, title: b.title },
+                                        ownerId: b.owner_id,
+                                        exclude: b.members.map((m) => m.id),
+                                        invite: true,
+                                      });
+                                    }}
+                                  >
+                                    <UserPlus size={15} />
+                                    Пригласить
+                                  </button>
+                                )}
+                                <button
+                                  className="button secondary"
+                                  disabled={busy}
+                                  onClick={() => void cancelBooking(b)}
+                                >
+                                  {b.role === "organizer"
+                                    ? "Отменить бронь"
+                                    : "Выйти"}
+                                </button>
+                              </>
+                            )}
+                          </div>
                         </div>
                       ))
                     ) : (
@@ -940,9 +1096,12 @@ function App() {
               e.preventDefault();
               void guarded(async () => {
                 try {
-                  await api(`/api/guest-reservations/${guestGift.id}`, "POST", {
-                    name: guestName,
-                  });
+                  const r = await api(
+                    `/api/guest-reservations/${guestGift.id}`,
+                    "POST",
+                    { name: guestName },
+                  );
+                  setGuestCode(guestGift.id, r.code);
                   setGuestGift(null);
                   notice("Подарок забронирован!");
                 } finally {
@@ -964,7 +1123,8 @@ function App() {
               />
             </label>
             <p>
-              Чтобы исправить или отменить бронь, обратитесь к владельцу списка.
+              Владелец списка не увидит, кто выбрал подарок. Отменить бронь
+              можно будет с этого устройства.
             </p>
             <button
               className="button primary"
@@ -974,6 +1134,23 @@ function App() {
             </button>
           </form>
         </Modal>
+      )}
+      {reserving && (
+        <ReserveDialog
+          gift={reserving.gift}
+          ownerId={reserving.ownerId}
+          exclude={reserving.exclude}
+          invite={reserving.invite}
+          friends={friends}
+          onClose={() => setReserving(null)}
+          onDone={async (message) => {
+            setReserving(null);
+            telegram?.HapticFeedback?.notificationOccurred("success");
+            notice(message);
+            if (tab === "bookings") await loadBookings();
+            else if (owner) await loadList(owner.id);
+          }}
+        />
       )}
       {archiveGift && (
         <ArchiveWish
@@ -992,7 +1169,6 @@ function App() {
           title={
             {
               gift: editing ? "Редактировать желание" : "Добавить желание",
-              "guest-bookings": "Брони без регистрации",
               share: "Поделиться вишлистом",
               "add-friend": "Добавить друга",
               profile: "Мой профиль",
@@ -1015,8 +1191,6 @@ function App() {
                 notice("Желание сохранено");
               }}
             />
-          ) : modal === "guest-bookings" ? (
-            <GuestBookings />
           ) : modal === "share" ? (
             <Share ownerId={owner?.id} own={own} />
           ) : modal === "add-friend" ? (
@@ -1105,6 +1279,7 @@ function GiftCard({
   onRestore,
   onDelete,
   onReserve,
+  onAnswer,
 }: {
   wish: Wish;
   mode: "own" | "friend" | "guest" | "archive";
@@ -1114,7 +1289,9 @@ function GiftCard({
   onRestore: () => void;
   onDelete: () => void;
   onReserve: () => void;
+  onAnswer: (join: boolean) => void;
 }) {
+  const guestCode = mode === "guest" && !!guestCodes()[g.id];
   return (
     <article className={`gift-card ${mode === "archive" ? "archived" : ""}`}>
       <div className="photo-wrap">
@@ -1150,10 +1327,9 @@ function GiftCard({
         <div className="gift-price">{money(g)}</div>
         <h3>{g.title}</h3>
         {g.description && <p>{g.description}</p>}
-        {mode === "archive" && g.gifted_by_name && (
-          <p className="archive-donor">
-            Подарил(а): {g.gifted_by_name}
-            {g.gifted_by_username ? ` · @${g.gifted_by_username}` : ""}
+        {g.reservation === "mine" && !!g.group_joined && (
+          <p className="small-text">
+            Совместный подарок · участников: {g.group_joined + 1}
           </p>
         )}
         <div className="card-actions">
@@ -1206,6 +1382,34 @@ function GiftCard({
                 <Trash2 size={16} />
               </button>
             </span>
+          ) : g.reservation === "invited" ? (
+            <span className="owner-actions">
+              <button
+                className="reserve-button"
+                disabled={busy}
+                onClick={() => onAnswer(true)}
+                title="Вас пригласили скинуться на этот подарок"
+              >
+                <Users size={14} />
+                Участвую
+              </button>
+              <button
+                className="bought-button"
+                disabled={busy}
+                onClick={() => onAnswer(false)}
+              >
+                Не могу
+              </button>
+            </span>
+          ) : guestCode && g.reservation === "reserved" ? (
+            <button
+              disabled={busy}
+              className="reserve-button mine"
+              onClick={onReserve}
+            >
+              <Check size={14} />
+              Отменить бронь
+            </button>
           ) : mode === "friend" || mode === "guest" ? (
             <button
               disabled={busy || g.reservation === "reserved"}

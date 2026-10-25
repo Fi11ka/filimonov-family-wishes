@@ -1,7 +1,9 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { Miniflare, createFetchMock } from "miniflare";
 import { idToken, makeKey } from "./oidc-helpers";
 import { validateInitData } from "../worker/security";
@@ -18,6 +20,52 @@ fetchMock
     headers: { "content-type": "application/json" },
   })
   .persist();
+// Telegram Bot API: a local server records every call; chat 403403 has blocked the bot.
+type TelegramCall = { method: string; body: any };
+const telegram: TelegramCall[] = [];
+const telegramServer = createServer((req, res) => {
+  let raw = "";
+  req.on("data", (chunk) => (raw += chunk));
+  req.on("end", () => {
+    const body = raw ? JSON.parse(raw) : {};
+    telegram.push({ method: String(req.url).split("/").pop()!, body });
+    const blocked = body.chat_id === "403403";
+    res.writeHead(blocked ? 403 : 200, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify(
+        blocked
+          ? { ok: false, error_code: 403 }
+          : { ok: true, result: { message_id: 1 } },
+      ),
+    );
+  });
+});
+/** Messages sent to a chat, waiting briefly for ones sent after the HTTP answer. */
+async function messages(chat: number, count = 1) {
+  for (let i = 0; i < 100; i++) {
+    const found = telegram.filter(
+      (c) =>
+        (c.method === "sendMessage" || c.method === "editMessageText") &&
+        c.body.chat_id === String(chat),
+    );
+    if (found.length >= count) return found.map((c) => c.body);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return telegram
+    .filter((c) => c.body.chat_id === String(chat))
+    .map((c) => c.body);
+}
+async function befriend(x: number, y: number) {
+  for (const id of [x, y]) await call("/me", id);
+  const [a, b] = [String(x), String(y)].sort();
+  await db
+    .prepare(
+      "INSERT OR REPLACE INTO friendships(user_a,user_b,status,requested_by,accepted_at) VALUES(?,?,'accepted',?,unixepoch())",
+    )
+    .bind(a, b, a)
+    .run();
+}
+const settle = () => new Promise((r) => setTimeout(r, 150));
 let db: Awaited<ReturnType<Miniflare["getD1Database"]>>;
 function signed(
   id: number,
@@ -102,12 +150,19 @@ async function migrate(file: string) {
   await db.batch(statements.map((sql) => db.prepare(sql)));
 }
 before(async () => {
+  await new Promise<void>((r) => telegramServer.listen(0, "127.0.0.1", r));
+  const telegramApi = `http://127.0.0.1:${(telegramServer.address() as AddressInfo).port}`;
   mf = new Miniflare({
     modules: true,
     scriptPath: ".test/worker.mjs",
     compatibilityDate: "2026-07-01",
     d1Databases: { DB: "test" },
-    bindings: { BOT_TOKEN: BOT, APP_ORIGIN: origin, APP_URL: `${origin}/app/` },
+    bindings: {
+      BOT_TOKEN: BOT,
+      APP_ORIGIN: origin,
+      APP_URL: `${origin}/app/`,
+      TELEGRAM_API: telegramApi,
+    },
     fetchMock,
     log: undefined,
   });
@@ -147,6 +202,7 @@ before(async () => {
     ),
   ]);
   await migrate("migrations/0008_profile_and_sharing.sql");
+  await migrate("migrations/0009_bot_notifications_group_gifts.sql");
   assert.equal(
     (
       await db
@@ -168,6 +224,7 @@ before(async () => {
 });
 after(async () => {
   await mf?.dispose();
+  telegramServer.close();
 });
 test("Telegram: valid HMAC including signature field", async () => {
   const me = await validateInitData(
@@ -290,12 +347,12 @@ test("owner response remains byte-identical before/after reservation; no identit
       .reservation,
     "mine",
   );
-  // The main list hides reservations; explicit archive actions now block booked gifts.
+  // Archiving answers the same whether a gift is booked or not.
   const free = await gift();
   const a = await call(`/gifts/${g}/archive`, 1, "POST"),
     b = await call(`/gifts/${free}/archive`, 1, "POST");
-  assert.equal(a.status, 409);
-  assert.equal(b.status, 200);
+  assert.equal(a.status, 200);
+  assert.equal(a.raw, b.raw);
   const archive = await call("/archive", 1);
   assert.ok(!archive.raw.includes("reservation"));
   assert.equal((await call(`/gifts/${g}/restore`, 1, "POST")).status, 200);
@@ -989,61 +1046,36 @@ test("guest reservations require names, reveal status only, and share the atomic
   assert.ok(!own.raw.includes("Бабушка"));
 });
 
-test("only owner can manage guest bookings and Telegram bookings stay hidden", async () => {
-  const g = await gift(25),
-    registered = await gift(25);
+test("guests cancel only with their own code; owners have no view of guest bookings", async () => {
+  const g = await gift(25);
   const raw = (await call("/guest-links", 25, "POST")).body.token;
-  await call(
+  const booked = await call(
     `/guest-reservations/${g}`,
     undefined,
     "POST",
     { name: "Бабушка" },
     raw,
   );
-  await call(`/gifts/${registered}/reservation`, 26, "POST", undefined, raw);
-  const rows = await call("/guest-bookings", 25);
-  assert.deepEqual(
-    rows.body.reservations.map((r: any) => r.gift_id),
-    [g],
-  );
-  await call(`/guest-bookings/${g}`, 26, "DELETE");
-  assert.equal((await call("/guest-bookings", 25)).body.reservations.length, 1);
-  assert.equal(
-    (await call(`/guest-bookings/${g}`, 25, "PATCH", { name: "Дедушка" }))
-      .status,
-    200,
-  );
-  assert.equal(
-    (await call("/guest-bookings", 25)).body.reservations[0].guest_name,
-    "Дедушка",
-  );
-  await call(`/guest-bookings/${registered}`, 25, "DELETE");
-  assert.equal((await call("/reservations", 26)).body.reservations.length, 1);
-  await call(`/guest-bookings/${g}`, 25, "DELETE");
+  assert.equal(booked.status, 200);
+  assert.match(booked.body.code, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal((await call("/guest-bookings", 25)).status, 404);
+  assert.ok(!(await call("/lists/25", 25)).raw.includes("Бабушка"));
+  const cancel = (code: string) =>
+    call(`/guest-reservations/${g}/cancel`, undefined, "POST", { code }, raw);
+  assert.equal((await cancel("x".repeat(43))).status, 404);
+  assert.equal((await cancel(booked.body.code)).status, 200);
+  assert.equal((await cancel(booked.body.code)).status, 404);
   assert.equal(
     (
       await call(
         `/guest-reservations/${g}`,
         undefined,
         "POST",
-        { name: "Бабушка" },
+        { name: "Дедушка" },
         raw,
       )
     ).status,
     200,
-  );
-  const another = await gift(26);
-  assert.equal(
-    (
-      await call(
-        `/guest-reservations/${another}`,
-        undefined,
-        "POST",
-        { name: "Гость" },
-        raw,
-      )
-    ).status,
-    409,
   );
 });
 
@@ -1070,144 +1102,47 @@ test("guest and Telegram bookings racing for one gift have exactly one winner", 
   assert.deepEqual(results.map((r) => r.status).sort(), [200, 409, 409]);
 });
 
-test("guest booking editing is allowed by browser CORS preflight", async () => {
+test("subscription changes are allowed by browser CORS preflight", async () => {
   const result = await call(
-    "/guest-bookings/00000000-0000-0000-0000-000000000000",
+    "/subscriptions/2",
     undefined,
     "OPTIONS",
     undefined,
     undefined,
-    { "Access-Control-Request-Method": "PATCH" },
+    { "Access-Control-Request-Method": "PUT" },
   );
   assert.equal(result.status, 204);
   assert.ok(
-    result.headers.get("Access-Control-Allow-Methods")?.includes("PATCH"),
+    result.headers.get("Access-Control-Allow-Methods")?.includes("PUT"),
   );
 });
 
-test("archive blocks booked gifts except a confirmed received gift and keeps donor private otherwise", async () => {
-  const g = await gift(31);
-  const link = (await call("/guest-links", 31, "POST")).body.token;
-  await call(`/gifts/${g}/reservation`, 32, "POST", undefined, link);
-  assert.deepEqual((await call(`/gifts/${g}/archive-status`, 31)).body, {
-    reserved: true,
-  });
-  for (const reason of ["changed_mind", "bought_self"]) {
-    const response = await call(`/gifts/${g}/archive`, 31, "POST", { reason });
-    assert.equal(response.status, 409);
-    assert.equal(response.body.error.code, "ARCHIVE_RESERVED");
-  }
-  assert.equal((await call(`/gifts/${g}/archive-donor`, 32)).status, 404);
-  assert.equal(
-    (await call(`/gifts/${g}/archive-donor`, undefined, "GET", undefined, link))
-      .status,
-    401,
-  );
-  assert.equal(
-    (await call(`/gifts/${g}/archive`, 31, "POST", { reason: "gifted" }))
-      .status,
-    409,
-  );
-  const preview = await call(`/gifts/${g}/archive-donor`, 31);
-  assert.deepEqual(preview.body.donor, {
-    name: "User 32",
-    username: "user_32",
-    is_guest: false,
-  });
-  assert.ok(!(await call("/lists/31", 31)).raw.includes("User 32"));
-  assert.equal(
-    (
-      await call(`/gifts/${g}/archive`, 31, "POST", {
-        reason: "gifted",
-        confirmation: preview.body.confirmation,
-      })
-    ).status,
-    200,
-  );
-  const archived = (await call("/archive", 31)).body.gifts.find(
-    (x: any) => x.id === g,
-  );
-  assert.equal(archived.archive_reason, "gifted");
-  assert.equal(archived.gifted_by_name, "User 32");
-  assert.equal(archived.gifted_by_username, "user_32");
-  await call(`/gifts/${g}/restore`, 31, "POST");
-  assert.ok(!(await call("/lists/31", 31)).raw.includes("User 32"));
-});
-
-test("archive confirms the current buyer without Telegram and rejects stale confirmation", async () => {
-  const g = await gift(33);
-  const raw = (await call("/guest-links", 33, "POST")).body.token;
-  await call(
-    `/guest-reservations/${g}`,
-    undefined,
-    "POST",
-    { name: "Бабушка" },
-    raw,
-  );
-  const first = (await call(`/gifts/${g}/archive-donor`, 33)).body;
-  assert.deepEqual(first.donor, {
-    name: "Бабушка",
-    username: null,
-    is_guest: true,
-  });
-  await call(`/guest-bookings/${g}`, 33, "PATCH", { name: "Дедушка" });
-  assert.equal(
-    (
-      await call(`/gifts/${g}/archive`, 33, "POST", {
-        reason: "gifted",
-        confirmation: first.confirmation,
-      })
-    ).status,
-    409,
-  );
-  const current = (await call(`/gifts/${g}/archive-donor`, 33)).body;
-  assert.equal(
-    (
-      await call(`/gifts/${g}/archive`, 33, "POST", {
-        reason: "gifted",
-        confirmation: current.confirmation,
-      })
-    ).status,
-    200,
-  );
-});
-
-test("unbooked archive stores each reason and a booking made after preview blocks archiving", async () => {
+test("booked gifts can be archived for any reason without revealing the buyer", async () => {
   for (const reason of ["changed_mind", "bought_self", "gifted"]) {
-    const g = await gift(34);
+    const booked = await gift(31),
+      free = await gift(31);
+    const link = (await call("/guest-links", 31, "POST")).body.token;
+    await call(`/gifts/${booked}/reservation`, 32, "POST", undefined, link);
+    const a = await call(`/gifts/${booked}/archive`, 31, "POST", { reason }),
+      b = await call(`/gifts/${free}/archive`, 31, "POST", { reason });
+    assert.equal(a.status, 200);
+    assert.equal(a.raw, b.raw);
+    const archive = await call("/archive", 31);
     assert.equal(
-      (await call(`/gifts/${g}/archive`, 34, "POST", { reason })).status,
-      200,
-    );
-    assert.equal(
-      (await call("/archive", 34)).body.gifts.find((x: any) => x.id === g)
-        .archive_reason,
+      archive.body.gifts.find((x: any) => x.id === booked).archive_reason,
       reason,
     );
+    assert.ok(!archive.raw.includes("User 32"));
+    assert.ok(!archive.raw.includes("gifted_by"));
   }
-  const g = await gift(34);
+  const g = await gift(31);
   assert.equal(
-    (await call(`/gifts/${g}/archive`, 34, "POST", { reason: "unknown" }))
+    (await call(`/gifts/${g}/archive`, 31, "POST", { reason: "unknown" }))
       .status,
     400,
   );
-  assert.equal(
-    (await call(`/gifts/${g}/archive-status`, 34)).body.reserved,
-    false,
-  );
-  const raw = (await call("/guest-links", 34, "POST")).body.token;
-  await call(
-    `/guest-reservations/${g}`,
-    undefined,
-    "POST",
-    { name: "Бабушка" },
-    raw,
-  );
-  assert.equal(
-    (await call(`/gifts/${g}/archive`, 34, "POST", { reason: "bought_self" }))
-      .status,
-    409,
-  );
+  assert.equal((await call(`/gifts/${g}/archive-status`, 31)).status, 404);
+  assert.equal((await call(`/gifts/${g}/archive-donor`, 31)).status, 404);
 });
 
 test("home helper endpoints stay hidden until HELPER_TOKEN is configured", async () => {
@@ -1452,5 +1387,349 @@ test("disabled resharing is rechecked on access and booking even for an unrevoke
   assert.equal(
     (await call("/guest", undefined, "GET", undefined, original)).status,
     200,
+  );
+});
+
+test("subscribers of a friend hear about added and removed wishes; bookers learn their gift is gone", async () => {
+  await befriend(701, 702);
+  await befriend(701, 703);
+  await call("/me", 704);
+  assert.equal((await call("/subscriptions/701", 704, "PUT")).status, 403);
+  const sub = await call("/subscriptions/701", 702, "PUT");
+  assert.equal(sub.status, 200);
+  assert.equal(sub.body.subscribed, true);
+  assert.equal(
+    (await call("/friends", 702)).body.friends.find((f: any) => f.id === "701")
+      .subscribed,
+    true,
+  );
+  const g = await gift(701, {
+    title: "Велосипед",
+    price_minor: 1500000,
+    currency: "RUB",
+  });
+  const added = await messages(702);
+  assert.match(added[0].text, /добавил\(а\) желание «Велосипед»/);
+  assert.equal(
+    added[0].reply_markup.inline_keyboard[0][0].web_app.url,
+    "https://family.example/app/?open=l_701",
+  );
+  // Not subscribed: no message. The owner gets nothing either.
+  await settle();
+  assert.equal((await messages(703, 0)).length, 0);
+  assert.equal((await messages(701, 0)).length, 0);
+  // A quiet import is announced in one message.
+  const quiet = [
+    await gift(701, { title: "Книга", quiet: true }),
+    await gift(701, { title: "Плед", quiet: true }),
+  ];
+  await settle();
+  assert.equal((await messages(702)).length, 1);
+  await call("/gifts/announce", 701, "POST", { ids: quiet });
+  assert.match(
+    (await messages(702, 2))[1].text,
+    /желания \(2\):\n• Плед|желания \(2\):\n• Книга/,
+  );
+  // 703 books it; the owner deletes it: 703 is told, 702 hears it was removed.
+  assert.equal(
+    (await call(`/gifts/${g}/reservation`, 703, "POST")).status,
+    200,
+  );
+  const before = await call(`/gifts/${quiet[0]}`, 701, "DELETE");
+  const after = await call(`/gifts/${g}`, 701, "DELETE");
+  assert.equal(before.raw, after.raw);
+  const booker = await messages(703);
+  assert.match(
+    booker[0].text,
+    /удалил\(а\) из вишлиста «Велосипед» — подарок, который вы забронировали/,
+  );
+  const removed = await messages(702, 4);
+  assert.ok(
+    removed.some((m) =>
+      /убрал\(а\) из вишлиста желание «Велосипед»/.test(m.text),
+    ),
+  );
+  assert.equal((await call("/reservations", 703)).body.reservations.length, 0);
+  // Archiving tells the booker too; unfriending ends the subscription.
+  const h = await gift(701, { title: "Самокат" });
+  await call(`/gifts/${h}/reservation`, 703, "POST");
+  await call(`/gifts/${h}/archive`, 701, "POST", { reason: "gifted" });
+  assert.match(
+    (await messages(703, 2))[1].text,
+    /отметил\(а\) «Самокат» как подаренный/,
+  );
+  await call("/friends/701", 702, "DELETE");
+  assert.equal(
+    (
+      await db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM subscriptions WHERE subscriber_id='702'",
+        )
+        .first()
+    )?.n,
+    0,
+  );
+  assert.equal((await call("/subscriptions/701", 702, "DELETE")).status, 200);
+});
+
+test("friend requests, accepted invitations and accepted requests are announced in the bot", async () => {
+  for (const id of [711, 712, 713]) await call("/me", id);
+  await call("/friends/requests", 711, "POST", { username: "user_712" });
+  const request = (await messages(712))[0];
+  assert.match(request.text, /User 711.*хочет добавить вас в друзья/);
+  assert.equal(
+    request.reply_markup.inline_keyboard[0][0].callback_data,
+    "fa:711",
+  );
+  await call("/friends/711/accept", 712, "POST");
+  assert.match(
+    (await messages(711))[0].text,
+    /User 712.*теперь у вас в друзьях/,
+  );
+  const invite = await call("/friend-invites", 713, "POST");
+  const tokenValue = invite.body.telegram_url.split("startapp=f_")[1];
+  await call("/friend-invites/accept", 711, "POST", { token: tokenValue });
+  assert.match(
+    (await messages(713))[0].text,
+    /User 711.*теперь у вас в друзьях/,
+  );
+});
+
+test("group gifts: invite friends, answer from the site or the bot, owner sees nothing", async () => {
+  await befriend(721, 722);
+  await befriend(721, 723);
+  await befriend(722, 723);
+  await befriend(722, 724);
+  await call("/me", 725);
+  const g = await gift(721, { title: "Палатка" });
+  const ownerBefore = await call("/lists/721", 721);
+  // 725 is not a friend of the organizer and the owner can never be invited: both skipped.
+  const r = await call(`/gifts/${g}/reservation`, 722, "POST", {
+    friends: ["723", "724", "725", "721"],
+  });
+  assert.equal(r.status, 200, r.raw);
+  assert.deepEqual(r.body.invited.sort(), ["723", "724"]);
+  const invite = (await messages(723))[0];
+  assert.match(
+    invite.text,
+    /предлагает скинуться на подарок для .*User 721.*«Палатка»/,
+  );
+  assert.equal(
+    invite.reply_markup.inline_keyboard[0][0].callback_data,
+    `gj:${g}`,
+  );
+  assert.equal(
+    (await call("/lists/721", 723)).body.gifts.find((x: any) => x.id === g)
+      .reservation,
+    "invited",
+  );
+  // 724 cannot see the owner's list but sees the invitation in «Мои брони».
+  const invited = (await call("/reservations", 724)).body.reservations[0];
+  assert.equal(invited.role, "invited");
+  assert.equal(invited.title, "Палатка");
+  assert.deepEqual(invited.members, []);
+  assert.equal(
+    (await call(`/gifts/${g}/reservation/join`, 723, "POST")).status,
+    200,
+  );
+  assert.match((await messages(722))[0].text, /User 723.*участвует/);
+  assert.equal(
+    (await call("/lists/721", 723)).body.gifts.find((x: any) => x.id === g)
+      .reservation,
+    "mine",
+  );
+  const organizer = (await call("/reservations", 722)).body.reservations[0];
+  assert.equal(organizer.role, "organizer");
+  assert.deepEqual(
+    organizer.members.map((m: any) => [m.id, m.status]),
+    [
+      ["723", "joined"],
+      ["724", "invited"],
+    ],
+  );
+  assert.equal(
+    (
+      await call(`/gifts/${g}/reservation/invite`, 723, "POST", {
+        friends: ["724"],
+      })
+    ).status,
+    403,
+  );
+  // Others still see it simply as booked; the owner's answer is unchanged and nobody tells the owner.
+  assert.equal((await call("/lists/721", 723)).status, 200);
+  const ownerAfter = await call("/lists/721", 721);
+  assert.equal(ownerBefore.raw, ownerAfter.raw);
+  await settle();
+  assert.equal((await messages(721, 0)).length, 0);
+  // 724 declines in the bot.
+  const secret = createHash("sha256").update(`webhook:${BOT}`).digest("hex");
+  const update = (data: string, from = 724) =>
+    call(
+      "/telegram/webhook",
+      undefined,
+      "POST",
+      {
+        callback_query: {
+          id: "q",
+          from: { id: from, first_name: `User ${from}` },
+          data,
+          message: { message_id: 5, chat: { id: from, type: "private" } },
+        },
+      },
+      undefined,
+      { "X-Telegram-Bot-Api-Secret-Token": secret, Origin: "" },
+    );
+  assert.equal((await update(`gd:${g}`)).status, 200);
+  assert.match((await messages(722, 2))[1].text, /User 724.*не участвует/);
+  assert.equal((await call("/reservations", 724)).body.reservations.length, 0);
+  // The organizer cancels: the joined friend is told.
+  await call(`/gifts/${g}/reservation`, 722, "DELETE");
+  assert.match(
+    (await messages(723, 2))[1].text,
+    /отменил\(а\) бронь совместного подарка «Палатка»/,
+  );
+  assert.equal((await call("/reservations", 723)).body.reservations.length, 0);
+  assert.equal(
+    (await call("/lists/721", 723)).body.gifts.find((x: any) => x.id === g)
+      .reservation,
+    "available",
+  );
+});
+
+test("bot webhook: secret required, menu, adding and editing one's own wishes", async () => {
+  const secret = createHash("sha256").update(`webhook:${BOT}`).digest("hex");
+  const hook = (update: unknown, key = secret) =>
+    call("/telegram/webhook", undefined, "POST", update, undefined, {
+      "X-Telegram-Bot-Api-Secret-Token": key,
+      Origin: "",
+    });
+  // Updates are handled after the 200 answer: wait for the bot's reply before the next one.
+  const replied = async (from: number, send: () => Promise<unknown>) => {
+    const count = (await messages(from, 0)).length;
+    await send();
+    await messages(from, count + 1);
+  };
+  const text = (t: string, from = 731) =>
+    replied(from, () =>
+      hook({
+        message: {
+          message_id: 1,
+          from: { id: from, first_name: "Анна", username: "anna_bot_test" },
+          chat: { id: from, type: "private" },
+          text: t,
+        },
+      }),
+    );
+  const press = (data: string, from = 731) =>
+    replied(from, () =>
+      hook({
+        callback_query: {
+          id: "q",
+          from: { id: from, first_name: "Анна" },
+          data,
+          message: { message_id: 9, chat: { id: from, type: "private" } },
+        },
+      }),
+    );
+  assert.equal((await hook({ message: {} }, "wrong")).status, 401);
+  await text("/start");
+  const welcome = (await messages(731))[0];
+  assert.deepEqual(
+    welcome.reply_markup.keyboard.flat().map((b: any) => b.text),
+    ["➕ Добавить в вишлист", "📋 Мои желания", "🎁 Открыть вишлист"],
+  );
+  await text("🎁 Открыть вишлист");
+  assert.equal(
+    (await messages(731, 2))[1].reply_markup.inline_keyboard[0][0].web_app.url,
+    "https://family.example/app/",
+  );
+  // The user now exists and the bot can reach them.
+  assert.equal((await call("/me", 731)).body.notifications.bot_connected, true);
+  await text("➕ Добавить в вишлист");
+  await text("Настольная игра");
+  const card = (await messages(731, 4))[3];
+  assert.match(card.text, /Добавлено в вишлист/);
+  const row: any = await db
+    .prepare("SELECT id,title,priority FROM gifts WHERE owner_id='731'")
+    .first();
+  assert.equal(row.title, "Настольная игра");
+  // Price, then priority, through the buttons.
+  await press(`e:price:${row.id}`);
+  await text("1000-3000");
+  await press(`p:3:${row.id}`);
+  const saved: any = await db
+    .prepare(
+      "SELECT price_minor,price_max_minor,price_range,priority FROM gifts WHERE id=?",
+    )
+    .bind(row.id)
+    .first();
+  assert.deepEqual(
+    { ...saved },
+    {
+      price_minor: 100000,
+      price_max_minor: 300000,
+      price_range: 1,
+      priority: 3,
+    },
+  );
+  // Somebody else's wish cannot be edited by guessing its ID.
+  const other = await gift(1);
+  await press(`p:1:${other}`, 731);
+  assert.equal(
+    (
+      await db
+        .prepare("SELECT priority FROM gifts WHERE id=?")
+        .bind(other)
+        .first()
+    )?.priority,
+    3,
+  );
+  await press(`xx:${row.id}`);
+  assert.equal(
+    (
+      await db
+        .prepare("SELECT COUNT(*) AS n FROM gifts WHERE owner_id='731'")
+        .first()
+    )?.n,
+    0,
+  );
+  // Answering a friend request from the bot.
+  await call("/me", 732);
+  await replied(731, () =>
+    call("/friends/requests", 732, "POST", { user_id: "731" }),
+  );
+  await press("fa:732");
+  assert.equal(
+    (await call("/friends", 731)).body.friends.some((f: any) => f.id === "732"),
+    true,
+  );
+});
+
+test("notifications can be switched off and a blocked chat is not retried", async () => {
+  await befriend(741, 742);
+  await befriend(741, 403403);
+  await call("/subscriptions/741", 742, "PUT");
+  await call("/subscriptions/741", 403403, "PUT");
+  assert.equal(
+    (await call("/me", 742, "PATCH", { notify: false })).body.notifications
+      .enabled,
+    false,
+  );
+  await gift(741);
+  await settle();
+  assert.equal((await messages(742, 0)).length, 0);
+  assert.ok(
+    (
+      await db
+        .prepare("SELECT bot_blocked_at FROM users WHERE id='403403'")
+        .first()
+    )?.bot_blocked_at,
+  );
+  const tries = telegram.filter((c) => c.body.chat_id === "403403").length;
+  await gift(741);
+  await settle();
+  assert.equal(
+    telegram.filter((c) => c.body.chat_id === "403403").length,
+    tries,
   );
 });

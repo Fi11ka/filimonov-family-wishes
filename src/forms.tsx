@@ -11,6 +11,7 @@ import {
   ClipboardPaste,
   Sparkles,
   ImageOff,
+  Users,
 } from "lucide-react";
 import {
   api,
@@ -19,7 +20,7 @@ import {
   photoFromUrl,
   type ProductLookup,
 } from "./api";
-import { type Wish, priorities } from "./types";
+import { type Friend, type Wish, priorities } from "./types";
 import { currencies } from "../shared/price";
 import { LookupState } from "./lookup-state";
 const modalStack: symbol[] = [];
@@ -913,88 +914,6 @@ export function Share({
     </div>
   );
 }
-export function GuestBookings() {
-  const [rows, setRows] = useState<
-    { gift_id: string; title: string; guest_name: string }[]
-  >([]);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  async function reload() {
-    setRows((await api("/api/guest-bookings")).reservations);
-  }
-  useEffect(() => {
-    reload().catch((e) => setError(e.message));
-  }, []);
-  async function change(id: string, name?: string) {
-    setBusy(true);
-    setError("");
-    try {
-      await api(
-        `/api/guest-bookings/${id}`,
-        name === undefined ? "DELETE" : "PATCH",
-        name === undefined ? undefined : { name },
-      );
-      await reload();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <div className="share-result">
-      <p>
-        Брони по ссылке «Для близких без регистрации». Здесь можно исправить имя
-        или отменить бронь.
-      </p>
-      {error && <p role="alert">{error}</p>}
-      {!rows.length && <p>Броней без регистрации пока нет.</p>}
-      {rows.map((row) => (
-        <form
-          key={row.gift_id}
-          onSubmit={(e) => {
-            e.preventDefault();
-            void change(row.gift_id, row.guest_name);
-          }}
-        >
-          <h3>{row.title}</h3>
-          <label>
-            Кто покупает
-            <input
-              required
-              maxLength={80}
-              value={row.guest_name}
-              onChange={(e) =>
-                setRows(
-                  rows.map((r) =>
-                    r.gift_id === row.gift_id
-                      ? { ...r, guest_name: e.target.value }
-                      : r,
-                  ),
-                )
-              }
-            />
-          </label>
-          <button className="button secondary" disabled={busy}>
-            Сохранить имя
-          </button>
-          <button
-            type="button"
-            className="button secondary"
-            disabled={busy}
-            onClick={() => {
-              if (window.confirm("Отменить выбор этого подарка?"))
-                void change(row.gift_id);
-            }}
-          >
-            Отменить бронь
-          </button>
-        </form>
-      ))}
-    </div>
-  );
-}
-
 export function ArchiveWish({
   gift,
   onClose,
@@ -1005,52 +924,8 @@ export function ArchiveWish({
   onArchived: () => Promise<void>;
 }) {
   const [reason, setReason] = useState("");
-  const [status, setStatus] = useState<{ reserved: boolean } | null>(null);
-  const [donor, setDonor] = useState<{
-    name: string;
-    username: string | null;
-    is_guest: boolean;
-  } | null>(null);
-  const [confirmation, setConfirmation] = useState<string | null>(null);
-  const [donorLoaded, setDonorLoaded] = useState(false);
-  const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  useEffect(() => {
-    if (demo) {
-      setStatus({ reserved: false });
-      return;
-    }
-    api(`/api/gifts/${gift.id}/archive-status`)
-      .then(setStatus)
-      .catch((e) => setError(e.message));
-  }, [gift.id]);
-  useEffect(() => {
-    setConfirmed(false);
-    setDonorLoaded(false);
-    setDonor(null);
-    setConfirmation(null);
-    if (reason !== "gifted") return;
-    if (demo) {
-      setDonorLoaded(true);
-      return;
-    }
-    let active = true;
-    api(`/api/gifts/${gift.id}/archive-donor`)
-      .then((d) => {
-        if (active) {
-          setDonor(d.donor);
-          setConfirmation(d.confirmation);
-          setDonorLoaded(true);
-        }
-      })
-      .catch((e) => {
-        if (active) setError(e.message);
-      });
-    return () => {
-      active = false;
-    };
-  }, [reason, gift.id]);
   return (
     <Modal
       title="Отправить желание в архив"
@@ -1070,10 +945,7 @@ export function ArchiveWish({
           setBusy(true);
           setError("");
           try {
-            await api(`/api/gifts/${gift.id}/archive`, "POST", {
-              reason,
-              confirmation,
-            });
+            await api(`/api/gifts/${gift.id}/archive`, "POST", { reason });
             await onArchived();
           } catch (e) {
             setError((e as Error).message);
@@ -1084,9 +956,6 @@ export function ArchiveWish({
       >
         <h3>{gift.title}</h3>
         <p>Почему убираете желание из списка?</p>
-        {!status && !error && (
-          <p role="status">Проверяем возможность переноса…</p>
-        )}
         <div className="archive-reasons">
           {[
             ["changed_mind", "Передумал"],
@@ -1099,9 +968,7 @@ export function ArchiveWish({
                 name="archive-reason"
                 value={value}
                 checked={reason === value}
-                disabled={
-                  busy || !status || (status.reserved && value !== "gifted")
-                }
+                disabled={busy}
                 onChange={() => {
                   setReason(value);
                   setError("");
@@ -1111,39 +978,10 @@ export function ArchiveWish({
             </label>
           ))}
         </div>
-        {status?.reserved && (
-          <p>
-            Подарок забронирован. Доступен только вариант «Подарили» с
-            подтверждением дарителя.
-          </p>
-        )}
-        {reason === "gifted" &&
-          (donorLoaded ? (
-            donor ? (
-              <div className="donor-confirmation">
-                <p>
-                  Подарок выбрал(а): <strong>{donor.name}</strong>
-                  {donor.username
-                    ? ` · @${donor.username}`
-                    : donor.is_guest
-                      ? " · без входа в Telegram"
-                      : " · ник в Telegram не указан"}
-                </p>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={confirmed}
-                    onChange={(e) => setConfirmed(e.target.checked)}
-                  />
-                  Подтверждаете, что подарок подарил этот человек?
-                </label>
-              </div>
-            ) : (
-              <p>Брони нет. Можно перенести в архив.</p>
-            )
-          ) : (
-            <p role="status">Загружаем имя дарителя…</p>
-          ))}
+        <p className="small-text">
+          Если кто-то из друзей выбрал этот подарок, бот сообщит ему. Кто это,
+          вы не узнаете.
+        </p>
         {error && (
           <p className="error" role="alert">
             {error}
@@ -1151,17 +989,169 @@ export function ArchiveWish({
         )}
         <button
           className="button primary full-width"
-          disabled={
-            busy ||
-            !reason ||
-            !status ||
-            (status.reserved && reason !== "gifted") ||
-            (reason === "gifted" && (!donorLoaded || (!!donor && !confirmed)))
-          }
+          disabled={busy || !reason}
         >
           {busy ? "Переносим…" : "Перенести в архив"}
         </button>
       </form>
+    </Modal>
+  );
+}
+/**
+ * «Забронировать»: give alone or together with friends. With `invite` the
+ * organizer adds more friends to a booking that already exists.
+ */
+export function ReserveDialog({
+  gift,
+  ownerId,
+  friends,
+  exclude = [],
+  invite = false,
+  onClose,
+  onDone,
+}: {
+  gift: { id: string; title: string };
+  ownerId: string;
+  friends: Friend[];
+  exclude?: string[];
+  invite?: boolean;
+  onClose: () => void;
+  onDone: (message: string) => Promise<void>;
+}) {
+  const [together, setTogether] = useState(invite);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const candidates = friends.filter(
+    (f) => f.id !== ownerId && !exclude.includes(f.id),
+  );
+  async function submit(withFriends: string[]) {
+    if (demo) {
+      setError("Бронирование доступно после подключения приложения.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      if (invite)
+        await api(`/api/gifts/${gift.id}/reservation/invite`, "POST", {
+          friends: withFriends,
+        });
+      else
+        await api(
+          `/api/gifts/${gift.id}/reservation`,
+          "POST",
+          withFriends.length ? { friends: withFriends } : {},
+        );
+      await onDone(
+        withFriends.length
+          ? invite
+            ? "Приглашения отправлены в Telegram"
+            : "Подарок забронирован, друзьям ушли приглашения"
+          : "Подарок забронирован",
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal
+      title={invite ? "Пригласить друзей" : "Забронировать подарок"}
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+    >
+      <div className="share-result">
+        <h3>{gift.title}</h3>
+        {!together ? (
+          <div className="reserve-choice">
+            <button
+              className="button primary full-width"
+              disabled={busy}
+              onClick={() => void submit([])}
+            >
+              <Gift size={17} /> Подарю сам(а)
+            </button>
+            <button
+              className="button secondary full-width"
+              disabled={busy}
+              onClick={() => setTogether(true)}
+            >
+              <Users size={17} /> Подарить вместе с друзьями
+            </button>
+            <p className="small-text">
+              Владелец вишлиста не узнает, кто забронировал подарок.
+            </p>
+          </div>
+        ) : (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void submit(picked);
+            }}
+          >
+            <p>
+              Кого позвать скинуться? Бот пришлёт им приглашение, а они ответят
+              «Участвую» или «Не могу».
+            </p>
+            {candidates.length ? (
+              <div className="friend-picker">
+                {candidates.map((f) => (
+                  <label key={f.id} className="setting-toggle">
+                    <input
+                      type="checkbox"
+                      checked={picked.includes(f.id)}
+                      disabled={
+                        busy || (!picked.includes(f.id) && picked.length >= 10)
+                      }
+                      onChange={(e) =>
+                        setPicked(
+                          e.target.checked
+                            ? [...picked, f.id]
+                            : picked.filter((id) => id !== f.id),
+                        )
+                      }
+                    />
+                    {f.name}
+                    {f.username ? ` · @${f.username}` : ""}
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <p className="small-text">
+                Пока некого позвать: добавьте друзей во вкладке «Друзья».
+              </p>
+            )}
+            <button
+              className="button primary full-width"
+              disabled={busy || !picked.length}
+            >
+              {busy
+                ? "Отправляем…"
+                : invite
+                  ? "Пригласить"
+                  : "Забронировать и пригласить"}
+            </button>
+            {!invite && (
+              <button
+                type="button"
+                className="text-link"
+                disabled={busy}
+                onClick={() => setTogether(false)}
+              >
+                Назад
+              </button>
+            )}
+          </form>
+        )}
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
     </Modal>
   );
 }

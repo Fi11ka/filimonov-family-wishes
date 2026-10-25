@@ -213,6 +213,8 @@ export function ImportDialog({
       archived = 0,
       noPhoto = 0;
     const failed: string[] = [];
+    // Friends subscribed to this wishlist get one message about the whole import.
+    const added: string[] = [];
     for (let i = 0; i < payloads.length; i++) {
       const row = included[i];
       let photo = "";
@@ -223,7 +225,12 @@ export function ImportDialog({
       }
       if (row.image && !photo) noPhoto++;
       try {
-        await api("/api/gifts", "POST", { ...payloads[i], photo });
+        const { id } = await api<{ id: string }>("/api/gifts", "POST", {
+          ...payloads[i],
+          photo,
+          quiet: true,
+        });
+        if (!row.archived) added.push(id);
         saved++;
         if (row.archived) archived++;
       } catch (e) {
@@ -236,6 +243,10 @@ export function ImportDialog({
       }
       setProgress({ done: i + 1, total: payloads.length });
     }
+    if (added.length)
+      await api("/api/gifts/announce", "POST", { ids: added }).catch(
+        () => undefined,
+      );
     setSummary([
       `Добавлено желаний: ${saved - archived}${archived ? `, в архив: ${archived}` : ""}.`,
       ...(noPhoto
