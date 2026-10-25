@@ -41,6 +41,11 @@ export function productLink(input: URL): URL {
     const size = u.searchParams.get("size");
     u.search = "";
     if (size && /^\d{1,20}$/.test(size)) u.searchParams.set("size", size);
+  } else if (
+    /(^|\.)dns-shop\.(ru|kz)$/.test(u.hostname) &&
+    /^\/product\/[0-9a-f]{8,32}\//.test(u.pathname)
+  ) {
+    u.search = "";
   }
   return u;
 }

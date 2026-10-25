@@ -14,6 +14,7 @@ import { fetchBytes, imageType, publicHttpsUrl } from "./net";
 import { JWKS_URL, liveJwks, verifyIdToken, type Jwk } from "./oidc";
 import { liveContext, lookupProduct } from "./shops";
 import { aiNamer, type AiBinding } from "./shops/naming";
+import { cleanupHelperJobs, helperRoute, homeHelper } from "./helper";
 export interface Env {
   DB: D1Database;
   BOT_TOKEN: string;
@@ -21,6 +22,8 @@ export interface Env {
   APP_URL: string;
   /** Workers AI (optional): shortens shop titles into Russian wish names. */
   AI?: AiBinding;
+  /** Secret shared with the home helper program (optional). */
+  HELPER_TOKEN?: string;
 }
 interface Gift {
   id: string;
@@ -259,6 +262,9 @@ async function route(req: Request, env: Env): Promise<unknown> {
     db = env.DB;
   if (path === "/api/health" && method === "GET")
     return { ok: true, service: "Filimonov Family Wishes" };
+  // The home helper authenticates with its own secret, not as a Telegram user.
+  if (path.startsWith("/api/helper/"))
+    return helperRoute(req, db, env.HELPER_TOKEN);
   if (!env.BOT_TOKEN)
     fail(503, "NOT_CONFIGURED", "Приложение ещё настраивается.");
   const auth = req.headers.get("authorization");
@@ -913,26 +919,45 @@ async function route(req: Request, env: Env): Promise<unknown> {
     await rate(db, `fetch:${uid}`, 30);
     return lookupProduct(
       text(b.url, 2048, true),
-      liveContext(),
+      liveContext(env.HELPER_TOKEN ? homeHelper(db) : null),
       env.AI ? aiNamer(env.AI) : undefined,
     );
   }
   if (path === "/api/fetch/image" && method === "POST") {
     const b = await body(req);
     await rate(db, `fetch:${uid}`, 30);
-    const f = await fetchBytes(publicHttpsUrl(text(b.url, 4096, true)), {
-      timeoutMs: 10000,
-      maxBytes: 12_000_000,
-      accept: "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8",
-    });
-    const type = f.status === 200 ? imageType(f.bytes) : "";
+    const target = publicHttpsUrl(text(b.url, 4096, true));
+    let bytes: Uint8Array = new Uint8Array(),
+      type = "";
+    try {
+      const f = await fetchBytes(target, {
+        timeoutMs: 10000,
+        maxBytes: 12_000_000,
+        accept: "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8",
+      });
+      bytes = f.bytes;
+      type = f.status === 200 ? imageType(f.bytes) : "";
+    } catch (e) {
+      if (!env.HELPER_TOKEN) throw e;
+    }
+    // Photo hosts of shops that block servers: ask the home helper instead.
+    if (!type && env.HELPER_TOKEN) {
+      const helper = homeHelper(db);
+      const got = helper.handlesImage(target)
+        ? await helper.image(target)
+        : null;
+      if (got?.status === 200 && imageType(got.bytes)) {
+        bytes = got.bytes;
+        type = imageType(got.bytes);
+      }
+    }
     if (!type)
       fail(
         422,
         "NOT_AN_IMAGE",
         "По ссылке не нашлось картинки. Загрузите фото вручную.",
       );
-    return binary(f.bytes, type);
+    return binary(bytes, type);
   }
   if (path === "/api/fetch/sheet" && method === "POST") {
     const b = await body(req);
@@ -1041,6 +1066,7 @@ export default {
       ),
       stmt(env.DB, "DELETE FROM sessions WHERE expires_at<?", now()),
       stmt(env.DB, "DELETE FROM login_nonces WHERE expires_at<?", now()),
+      cleanupHelperJobs(env.DB),
     ]);
   },
 };

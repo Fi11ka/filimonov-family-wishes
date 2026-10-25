@@ -24,6 +24,10 @@ export interface Page {
 export interface ShopContext {
   page(url: URL, accept?: string): Promise<Page>;
   json(url: URL, headers?: Record<string, string>): Promise<unknown>;
+  /** Overall time for one lookup; longer when pages go through the home helper. */
+  budgetMs?: number;
+  /** Whether the home helper was used, or was needed but offline. */
+  helperStatus?: () => "unused" | "offline" | "used";
 }
 /**
  * A shop module. To support a new shop, add a file exporting a Shop and list it

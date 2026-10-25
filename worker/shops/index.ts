@@ -9,6 +9,8 @@ import type { ProductInfo, Shop, ShopContext } from "./types";
 import { wildberries } from "./wildberries";
 import { yandexMarket } from "./yandex-market";
 import { productLink } from "./link";
+import { dns } from "./dns";
+import type { HomeHelper } from "../helper";
 import type { Namer } from "./naming";
 /** Order matters only for overlapping hosts; the generic parser is always last. */
 export const shops: Shop[] = [
@@ -18,18 +20,30 @@ export const shops: Shop[] = [
   amazon,
   aliexpressRu,
   aliexpressCom,
+  dns,
 ];
 export function findShop(url: URL) {
   return shops.find((s) => s.matches(url)) || generic;
 }
 const TOTAL_MS = 12000;
-/** Real network access with the SSRF and size limits from net.ts. */
-export function liveContext(): ShopContext {
+/** Pages through the home helper: its wait plus one direct attempt. */
+const HELPER_TOTAL_MS = 32000;
+/**
+ * Real network access with the SSRF and size limits from net.ts. Shops that
+ * block servers are first asked through the home helper when it is configured.
+ */
+export function liveContext(helper?: HomeHelper | null): ShopContext {
   return {
+    budgetMs: helper ? HELPER_TOTAL_MS : TOTAL_MS,
+    helperStatus: helper ? () => helper.status() : undefined,
     async page(
       url,
       accept = "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5",
     ) {
+      if (helper?.handlesPage(url)) {
+        const p = await helper.page(url);
+        if (p) return p;
+      }
       const f = await fetchBytes(url, {
         timeoutMs: 8000,
         maxBytes: 2_000_000,
@@ -64,6 +78,8 @@ export interface LookupResult {
   } | null;
   blocked: boolean;
   unavailable: boolean;
+  /** The shop needs the home helper, and it is not running right now. */
+  helper_offline: boolean;
 }
 export async function lookupProduct(
   raw: unknown,
@@ -78,7 +94,10 @@ export async function lookupProduct(
       return await Promise.race<ProductInfo>([
         s.parse(url, ctx).catch(() => ({ blocked: true })),
         new Promise((resolve) => {
-          timer = setTimeout(() => resolve({ blocked: true }), TOTAL_MS);
+          timer = setTimeout(
+            () => resolve({ blocked: true }),
+            ctx.budgetMs ?? TOTAL_MS,
+          );
         }),
       ]);
     } finally {
@@ -121,5 +140,6 @@ export async function lookupProduct(
     price,
     unavailable: !!info.unavailable,
     blocked: !!info.blocked && !price && !info.image,
+    helper_offline: ctx.helperStatus?.() === "offline",
   };
 }

@@ -133,6 +133,7 @@ before(async () => {
   await migrate("migrations/0003_web_sessions.sql");
   await migrate("migrations/0004_oidc_login.sql");
   await migrate("migrations/0005_permanent_sharing.sql");
+  await migrate("migrations/0006_home_helper.sql");
   for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9])
     assert.equal((await call("/me", id)).status, 200);
 });
@@ -1047,4 +1048,17 @@ test("guest booking editing is allowed by browser CORS preflight", async () => {
   assert.ok(
     result.headers.get("Access-Control-Allow-Methods")?.includes("PATCH"),
   );
+});
+
+test("home helper endpoints stay hidden until HELPER_TOKEN is configured", async () => {
+  const r = await mf.dispatchFetch("https://api.example/api/helper/next", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer anything",
+      "Content-Type": "application/json",
+    },
+    body: "{}",
+  });
+  assert.equal(r.status, 404);
+  await r.text();
 });
