@@ -33,9 +33,12 @@ import {
   demo,
   friendInvite,
   guestToken,
+  setSessionToken,
+  signedIn,
   telegram,
   telegramLink,
 } from "./api";
+import { WebLogin } from "./login";
 import {
   demoArchive,
   demoFriends,
@@ -89,7 +92,8 @@ function App() {
       { gift_id: string; title: string; archived?: number }[]
     >([]),
     [busy, setBusy] = useState(false),
-    [menu, setMenu] = useState(false);
+    [menu, setMenu] = useState(false),
+    [webSession, setWebSession] = useState(false);
   const own = !!user && owner?.id === user.id;
   const notice = (message: string) => {
     setToast(message);
@@ -137,10 +141,15 @@ function App() {
         const d = await api("/api/guest");
         setOwner(d.owner);
         setGifts(d.gifts);
-        if (telegram?.initData) setUser((await api("/api/me")).user);
-      } else if (telegram?.initData) {
+        if (signedIn()) {
+          const me = await api("/api/me");
+          setUser(me.user);
+          setWebSession(!!me.web_session);
+        }
+      } else if (signedIn()) {
         const me = await api("/api/me");
         setUser(me.user);
+        setWebSession(!!me.web_session);
         if (tab === "mine" || !owner) {
           const d = await api(`/api/lists/${me.user.id}`);
           setOwner(d.owner);
@@ -150,9 +159,35 @@ function App() {
       }
     } catch (e) {
       setError((e as Error).message);
+      // A revoked website session is cleared by api(); show the sign-in screen.
+      if (!signedIn()) setUser(null);
     } finally {
       setLoading(false);
     }
+  }
+  async function logout(everywhere: boolean) {
+    try {
+      await api(
+        everywhere ? "/api/auth/logout-all" : "/api/auth/logout",
+        "POST",
+        {},
+      );
+    } catch {
+      // Signing out locally still works when the network is down.
+    }
+    setModal(null);
+    if (!webSession) {
+      notice("Входы на сайте завершены на всех устройствах");
+      return;
+    }
+    setSessionToken(null);
+    setWebSession(false);
+    setUser(null);
+    setOwner(null);
+    setGifts([]);
+    setFriends([]);
+    setTab("mine");
+    notice("Вы вышли из аккаунта");
   }
   useEffect(() => {
     telegram?.ready();
@@ -426,9 +461,18 @@ function App() {
               <p>
                 Мечтайте, сохраняйте подарки и готовьте друг другу сюрпризы.
               </p>
-              <a className="button primary" href={telegramLink()}>
-                Открыть в Telegram <ArrowUpRight size={18} />
-              </a>
+              {apiConfigured && !telegram?.initData ? (
+                <>
+                  <WebLogin onSignedIn={() => void refresh()} />
+                  <a className="text-link" href={telegramLink()}>
+                    Открыть в Telegram <ArrowUpRight size={15} />
+                  </a>
+                </>
+              ) : (
+                <a className="button primary" href={telegramLink()}>
+                  Открыть в Telegram <ArrowUpRight size={18} />
+                </a>
+              )}
               {error && (
                 <div className="error" role="alert">
                   {error}
@@ -674,9 +718,13 @@ function App() {
                     <div className="privacy-note guest-login">
                       <ShieldCheck size={18} />
                       <span>
-                        Для бронирования откройте этот список в Telegram.
-                        Добавляться в друзья не нужно.
+                        Чтобы забронировать подарок, войдите через Telegram или
+                        откройте список в Telegram. Добавляться в друзья не
+                        нужно.
                       </span>
+                      {apiConfigured && (
+                        <WebLogin compact onSignedIn={() => void refresh()} />
+                      )}
                       <a className="button primary" href={telegramLink()}>
                         Открыть <ArrowUpRight size={15} />
                       </a>
@@ -908,7 +956,9 @@ function App() {
             <Profile
               user={user}
               friends={friends.length}
+              webSession={webSession}
               onAddFriend={() => setModal("add-friend")}
+              onLogout={(everywhere) => void logout(everywhere)}
             />
           ) : modal === "import" ? (
             <ImportDialog

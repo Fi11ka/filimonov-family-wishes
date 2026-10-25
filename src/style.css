@@ -1818,6 +1818,39 @@ footer svg {
     gap: 1px;
   }
 }
+/* ---- Website sign-in with Telegram ---- */
+.web-login {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin: 8px 0;
+}
+.web-login.compact {
+  margin: 0;
+}
+.button.telegram-login {
+  background: #2aabee;
+  border-color: #2aabee;
+  color: white;
+}
+.button.telegram-login:hover:not(:disabled) {
+  background: #229ed9;
+}
+.web-login .small-text {
+  max-width: 340px;
+  text-align: center;
+}
+.profile-logout {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #f0eaf5;
+}
 /* ---- Profiles, friends, archive, link lookup, import ---- */
 .title-actions {
   display: flex;
