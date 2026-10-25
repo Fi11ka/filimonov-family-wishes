@@ -203,6 +203,7 @@ before(async () => {
   ]);
   await migrate("migrations/0008_profile_and_sharing.sql");
   await migrate("migrations/0009_bot_notifications_group_gifts.sql");
+  await migrate("migrations/0010_birthday_reminders.sql");
   assert.equal(
     (
       await db
