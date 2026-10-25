@@ -37,6 +37,19 @@ export const guestToken =
   new URLSearchParams(location.hash.slice(1)).get("guest") ||
   (start.startsWith("g_") || start.startsWith("s_") ? start.slice(2) : "");
 export const authShare = start.startsWith("s_");
+/** Screen to open from a bot button: ?open=l_<user id> (a friend's list) or ?open=b («Мои брони»). */
+export const openTarget =
+  new URLSearchParams(location.search).get("open") || "";
+export interface Notifications {
+  enabled: boolean;
+  bot_connected: boolean;
+  bot_url: string;
+}
+/** Opens the bot chat: inside Telegram without leaving the Mini App, elsewhere in a new tab. */
+export function openBot(url: string) {
+  if (telegram?.initData) telegram.openTelegramLink(url);
+  else window.open(url, "_blank", "noopener");
+}
 /** Friend invitation opened from t.me/…?startapp=f_<token> */
 export const friendInvite = start.startsWith("f_") ? start.slice(2) : "";
 export const demo = new URLSearchParams(location.search).get("demo") === "1";
@@ -57,6 +70,25 @@ export function setSessionToken(value: string | null) {
     else localStorage.removeItem(SESSION_KEY);
   } catch {
     // Without storage the website cannot stay signed in; the Mini App is unaffected.
+  }
+}
+// Guests cancel their booking with the code the API returned; it stays in this browser only.
+const GUEST_CODES_KEY = "fw:guest-codes";
+export function guestCodes(): Record<string, string> {
+  try {
+    return JSON.parse(localStorage.getItem(GUEST_CODES_KEY) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+export function setGuestCode(giftId: string, code: string | null) {
+  const codes = guestCodes();
+  if (code) codes[giftId] = code;
+  else delete codes[giftId];
+  try {
+    localStorage.setItem(GUEST_CODES_KEY, JSON.stringify(codes));
+  } catch {
+    // Without storage the guest cannot cancel later; the booking itself is saved.
   }
 }
 export const signedIn = () => !!telegram?.initData || !!sessionToken();

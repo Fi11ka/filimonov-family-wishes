@@ -9,7 +9,7 @@ import {
   Heart,
   LogOut,
 } from "lucide-react";
-import { api, demo } from "./api";
+import { api, demo, openBot, type Notifications } from "./api";
 import { CopyValue } from "./forms";
 import { type User, handle, initials } from "./types";
 export function AddFriend({ onDone }: { onDone: (message: string) => void }) {
@@ -334,6 +334,19 @@ export function Profile({
   const [month, setMonth] = useState(user?.birthday?.slice(0, 2) || "");
   const [day, setDay] = useState(user?.birthday?.slice(3) || "");
   const [allow, setAllow] = useState(user?.allow_resharing !== 0);
+  const [notifications, setNotifications] = useState<Notifications | null>(
+    null,
+  );
+  const [notify, setNotify] = useState(true);
+  useEffect(() => {
+    if (demo) return;
+    api("/api/me")
+      .then((me) => {
+        setNotifications(me.notifications);
+        setNotify(me.notifications.enabled);
+      })
+      .catch(() => undefined);
+  }, []);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
@@ -385,6 +398,7 @@ export function Profile({
             const values = {
               birthday: day && month ? `${month}-${day}` : null,
               allow_resharing: allow,
+              ...(notifications ? { notify } : {}),
             };
             if (demo) {
               onUpdated({
@@ -395,6 +409,7 @@ export function Profile({
             } else {
               const result = await api("/api/me", "PATCH", values);
               onUpdated(result.user);
+              setNotifications(result.notifications);
             }
             setSaved(true);
           } catch (e) {
@@ -444,6 +459,35 @@ export function Profile({
         <p className="small-text">
           Отключает ссылки, созданные другими. Ваши ссылки остаются рабочими.
         </p>
+        {notifications && (
+          <>
+            <label className="setting-toggle">
+              <input
+                type="checkbox"
+                checked={notify}
+                onChange={(e) => setNotify(e.target.checked)}
+              />
+              Уведомления в Telegram
+            </label>
+            <p className="small-text">
+              Бот напишет о заявках в друзья, новых желаниях друзей, на которых
+              вы подписаны, приглашениях скинуться и об удалённых подарках из
+              ваших броней.
+            </p>
+            {notify && !notifications.bot_connected && (
+              <p className="small-text">
+                Чтобы бот мог писать вам, откройте его и нажмите «Запустить».{" "}
+                <button
+                  type="button"
+                  className="text-link"
+                  onClick={() => openBot(notifications.bot_url)}
+                >
+                  Открыть бота
+                </button>
+              </p>
+            )}
+          </>
+        )}
         {error && (
           <p className="error" role="alert">
             {error}

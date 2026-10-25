@@ -14,18 +14,30 @@ import {
 import { fetchBytes, imageType, publicHttpsUrl } from "./net";
 import { JWKS_URL, liveJwks, verifyIdToken, type Jwk } from "./oidc";
 import { liveContext, lookupProduct } from "./shops";
-import { aiNamer, type AiBinding } from "./shops/naming";
+import { aiNamer } from "./shops/naming";
 import { cleanupHelperJobs, helperRoute, homeHelper } from "./helper";
-export interface Env {
-  DB: D1Database;
-  BOT_TOKEN: string;
-  APP_ORIGIN: string;
-  APP_URL: string;
-  /** Workers AI (optional): shortens shop titles into Russian wish names. */
-  AI?: AiBinding;
-  /** Secret shared with the home helper program (optional). */
-  HELPER_TOKEN?: string;
-}
+import {
+  FRIEND_OF,
+  bookers,
+  friendship,
+  giftInfo,
+  now,
+  pair,
+  saveUser,
+  stmt,
+  type Env,
+} from "./core";
+import { Outbox } from "./notify";
+import {
+  archiveGift,
+  archiveReasons,
+  createGift,
+  deleteGift,
+  restoreGift,
+  type ArchiveReason,
+} from "./gifts";
+import { botRoute, cleanupBotStates } from "./bot";
+export type { Env } from "./core";
 interface Gift {
   id: string;
   owner_id: string;
@@ -42,14 +54,8 @@ interface Gift {
   updated_at: number;
 }
 const BOT_LINK = "https://t.me/FilimonovFamilyWishes_bot";
-const ACTIVE_LIMIT = 100,
-  ARCHIVE_LIMIT = 300;
 const giftColumns =
   "g.id,g.owner_id,g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.shop_url,g.description,g.priority,CASE WHEN g.photo='' THEN 0 ELSE 1 END AS has_photo,g.created_at,g.updated_at";
-// Accepted friendship between ?1 and the gift owner column, in either order.
-const FRIEND_OF = (owner: string) =>
-  `EXISTS(SELECT 1 FROM friendships f WHERE f.status='accepted' AND ((f.user_a=?1 AND f.user_b=${owner}) OR (f.user_b=?1 AND f.user_a=${owner})))`;
-const now = () => Math.floor(Date.now() / 1000);
 function missing(): never {
   return fail(404, "NOT_FOUND", "Список или подарок недоступен.");
 }
@@ -87,9 +93,6 @@ async function body(req: Request): Promise<Record<string, unknown>> {
     fail(400, "VALIDATION", "Некорректный JSON.");
   }
 }
-function stmt(db: D1Database, sql: string, ...args: unknown[]) {
-  return db.prepare(sql).bind(...args);
-}
 async function rate(db: D1Database, key: string, max: number) {
   const window = Math.floor(now() / 60);
   const r = await stmt(
@@ -100,17 +103,6 @@ async function rate(db: D1Database, key: string, max: number) {
   ).first<{ count: number }>();
   if ((r?.count || 0) > max)
     fail(429, "RATE_LIMIT", "Слишком много запросов. Подождите минуту.");
-}
-/** Friendship rows store the pair ordered (user_a < user_b). */
-const pair = (x: string, y: string) => (x < y ? [x, y] : [y, x]);
-async function friendship(db: D1Database, x: string, y: string) {
-  const [a, b] = pair(x, y);
-  return stmt(
-    db,
-    "SELECT status,requested_by FROM friendships WHERE user_a=? AND user_b=?",
-    a,
-    b,
-  ).first<{ status: "pending" | "accepted"; requested_by: string }>();
 }
 async function canView(
   db: D1Database,
@@ -149,24 +141,87 @@ async function list(
     ).results;
   const r = await stmt(
     db,
-    `SELECT ${giftColumns},CASE WHEN r.gift_id IS NULL THEN 'available' WHEN r.user_id=? THEN 'mine' ELSE 'reserved' END AS reservation FROM gifts g LEFT JOIN reservations r ON r.gift_id=g.id WHERE g.owner_id=? AND g.archived_at IS NULL ORDER BY g.priority DESC,g.created_at DESC,g.id`,
+    `SELECT ${giftColumns},CASE WHEN r.gift_id IS NULL THEN 'available'
+      WHEN r.user_id=?1 OR EXISTS(SELECT 1 FROM reservation_members m WHERE m.gift_id=g.id AND m.user_id=?1 AND m.status='joined') THEN 'mine'
+      WHEN EXISTS(SELECT 1 FROM reservation_members m WHERE m.gift_id=g.id AND m.user_id=?1) THEN 'invited'
+      ELSE 'reserved' END AS reservation,
+      CASE WHEN r.user_id=?1 OR EXISTS(SELECT 1 FROM reservation_members m WHERE m.gift_id=g.id AND m.user_id=?1) THEN (SELECT COUNT(*) FROM reservation_members m WHERE m.gift_id=g.id AND m.status='joined') END AS group_joined
+      FROM gifts g LEFT JOIN reservations r ON r.gift_id=g.id WHERE g.owner_id=?2 AND g.archived_at IS NULL ORDER BY g.priority DESC,g.created_at DESC,g.id`,
     guestView ? "" : user?.id || "",
     owner,
   ).all();
   return r.results;
 }
-async function reservationDetails(db: D1Database, id: string) {
-  return stmt(
+/** Whether the bot can write to the user: they pressed Start and did not block it. */
+async function notifications(db: D1Database, uid: string) {
+  const r = await stmt(
     db,
-    `SELECT r.user_id,r.guest_name,r.created_at,COALESCE(u.name,r.guest_name) AS name,u.username FROM reservations r LEFT JOIN users u ON u.id=r.user_id WHERE r.gift_id=?`,
-    id,
+    "SELECT notify,bot_chat_at,bot_blocked_at FROM users WHERE id=?",
+    uid,
   ).first<{
-    user_id: string | null;
-    guest_name: string | null;
-    created_at: number;
-    name: string;
-    username: string | null;
+    notify: number;
+    bot_chat_at: number | null;
+    bot_blocked_at: number | null;
   }>();
+  return {
+    enabled: r?.notify === 1,
+    bot_connected: !!r?.bot_chat_at && !r.bot_blocked_at,
+    bot_url: `${BOT_LINK}?start=notify`,
+  };
+}
+const GROUP_LIMIT = 10;
+/** Invites the organizer's friends (never the owner) to share a booked gift. */
+async function inviteFriends(
+  db: D1Database,
+  out: Outbox,
+  user: Identity,
+  giftId: string,
+  value: unknown,
+) {
+  if (
+    !Array.isArray(value) ||
+    value.length > GROUP_LIMIT ||
+    !value.every((v) => typeof v === "string" && /^\d+$/.test(v))
+  )
+    fail(400, "VALIDATION", `Выберите до ${GROUP_LIMIT} друзей.`);
+  const info = await giftInfo(db, giftId);
+  if (!info) missing();
+  const wanted = [...new Set(value as string[])].filter(
+    (id) => id !== user.id && id !== info.owner.id,
+  );
+  if (!wanted.length) return [];
+  const present =
+    (
+      await stmt(
+        db,
+        "SELECT COUNT(*) AS n FROM reservation_members WHERE gift_id=?",
+        giftId,
+      ).first<{ n: number }>()
+    )?.n || 0;
+  if (present + wanted.length > GROUP_LIMIT)
+    fail(
+      400,
+      "VALIDATION",
+      `В совместном подарке может быть до ${GROUP_LIMIT} друзей.`,
+    );
+  // Only accepted friends of the organizer; the insert itself checks friendship.
+  const inserted = await db.batch(
+    wanted.map((id) =>
+      stmt(
+        db,
+        `INSERT INTO reservation_members(gift_id,user_id,status)
+        SELECT ?2,?3,'invited' WHERE ${FRIEND_OF("?3")} ON CONFLICT DO NOTHING RETURNING user_id`,
+        user.id,
+        giftId,
+        id,
+      ),
+    ),
+  );
+  const invited = inserted.flatMap((r) =>
+    (r.results as { user_id: string }[]).map((x) => x.user_id),
+  );
+  out.groupInvite(user, info.owner, info.gift, invited);
+  return invited;
 }
 const SESSION_DAYS = 30,
   SESSION_LIMIT = 10;
@@ -219,28 +274,6 @@ const telegramKeys = liveJwks(async () => {
   return keys;
 });
 const NONCE_TTL = 600;
-async function saveUser(db: D1Database, user: Identity) {
-  await db.batch([
-    // A Telegram username can move to another account; the newest owner keeps it.
-    ...(user.username
-      ? [
-          stmt(
-            db,
-            "UPDATE users SET username=NULL WHERE username=? AND id<>?",
-            user.username,
-            user.id,
-          ),
-        ]
-      : []),
-    stmt(
-      db,
-      `INSERT INTO users(id,name,username) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,username=excluded.username WHERE name<>excluded.name OR username IS NOT excluded.username`,
-      user.id,
-      user.name,
-      user.username,
-    ),
-  ]);
-}
 function profile(db: D1Database, id: string) {
   return stmt(
     db,
@@ -255,17 +288,6 @@ function profile(db: D1Database, id: string) {
     wishlist_updated_at: number | null;
   }>();
 }
-async function activeCount(db: D1Database, uid: string, archived: boolean) {
-  return (
-    (
-      await stmt(
-        db,
-        `SELECT COUNT(*) AS n FROM gifts WHERE owner_id=? AND archived_at IS ${archived ? "NOT " : ""}NULL`,
-        uid,
-      ).first<{ n: number }>()
-    )?.n || 0
-  );
-}
 /** Binary passthrough for images and spreadsheets. Never rendered by the API origin. */
 function binary(bytes: Uint8Array, type: string) {
   return new Response(bytes as Uint8Array<ArrayBuffer>, {
@@ -276,7 +298,7 @@ function binary(bytes: Uint8Array, type: string) {
     },
   });
 }
-async function route(req: Request, env: Env): Promise<unknown> {
+async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   const url = new URL(req.url),
     path = url.pathname,
     method = req.method,
@@ -288,6 +310,8 @@ async function route(req: Request, env: Env): Promise<unknown> {
     return helperRoute(req, db, env.HELPER_TOKEN);
   if (!env.BOT_TOKEN)
     fail(503, "NOT_CONFIGURED", "Приложение ещё настраивается.");
+  // Updates from Telegram (checked by the webhook secret) and the one-time webhook setup.
+  if (path.startsWith("/api/telegram/")) return botRoute(req, env, out, rate);
   const auth = req.headers.get("authorization");
   // Mini App: signed initData on every request. Website: a session token issued
   // after Telegram Login (OpenID Connect), looked up by its SHA-256.
@@ -341,7 +365,7 @@ async function route(req: Request, env: Env): Promise<unknown> {
     !user &&
     !(
       (method === "POST" &&
-        /^\/api\/guest-reservations\/[a-f0-9-]{36}$/.test(path)) ||
+        /^\/api\/guest-reservations\/[a-f0-9-]{36}(\/cancel)?$/.test(path)) ||
       (method === "GET" &&
         (path === "/api/guest" ||
           /^\/api\/gifts\/[a-f0-9-]{36}\/photo$/.test(path)))
@@ -374,21 +398,37 @@ async function route(req: Request, env: Env): Promise<unknown> {
     };
   }
   const guestReservation = path.match(
-    /^\/api\/guest-reservations\/([a-f0-9-]{36})$/,
+    /^\/api\/guest-reservations\/([a-f0-9-]{36})(\/cancel)?$/,
   );
+  if (guestReservation?.[2] && method === "POST") {
+    // Guests cancel with the code their browser got when booking; the owner never manages guest bookings.
+    const b = await body(req);
+    const code = typeof b.code === "string" ? b.code : "";
+    if (!/^[A-Za-z0-9_-]{43}$/.test(code)) missing();
+    const r = await stmt(
+      db,
+      "DELETE FROM reservations WHERE gift_id=? AND user_id IS NULL AND guest_code_hash=? RETURNING gift_id",
+      guestReservation[1],
+      await hash(code),
+    ).first();
+    if (!r) missing();
+    return { ok: true };
+  }
   if (guestReservation && method === "POST") {
     const b = await body(req);
     const name = text(b.name, 80);
     if (!name)
       fail(400, "VALIDATION", "Введите имя того, кто покупает подарок.");
     if (!guest || !/^[A-Za-z0-9_-]{43}$/.test(guest)) missing();
+    const code = token();
     const result = await stmt(
       db,
-      `INSERT INTO reservations(gift_id,guest_name)
-      SELECT g.id,? FROM gifts g JOIN guest_links l ON l.owner_id=g.owner_id
+      `INSERT INTO reservations(gift_id,guest_name,guest_code_hash)
+      SELECT g.id,?,? FROM gifts g JOIN guest_links l ON l.owner_id=g.owner_id
       WHERE g.id=? AND g.archived_at IS NULL AND l.token_hash=? AND l.kind='guest'
       AND l.revoked_at IS NULL AND (l.created_by=l.owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=l.owner_id AND share_owner.allow_resharing=1)) AND l.expires_at>? ON CONFLICT(gift_id) DO NOTHING RETURNING gift_id`,
       name,
+      await hash(code),
       guestReservation[1],
       await hash(guest),
       now(),
@@ -399,7 +439,7 @@ async function route(req: Request, env: Env): Promise<unknown> {
         "UNAVAILABLE",
         "Подарок уже забронирован или ссылка недоступна.",
       );
-    return { ok: true };
+    return { ok: true, code };
   }
   if (!user && method === "GET" && path.endsWith("/photo")) {
     const match = path.match(/^\/api\/gifts\/([a-f0-9-]{36})\/photo$/);
@@ -419,6 +459,7 @@ async function route(req: Request, env: Env): Promise<unknown> {
     return {
       user: await profile(db, uid),
       web_session: !!session,
+      notifications: await notifications(db, uid),
     };
   if (path === "/api/me" && method === "PATCH") {
     const b = await body(req);
@@ -433,7 +474,13 @@ async function route(req: Request, env: Env): Promise<unknown> {
       typeof b.allow_resharing !== "boolean"
     )
       fail(400, "VALIDATION", "Проверьте настройку доступа.");
+    if (b.notify !== undefined && typeof b.notify !== "boolean")
+      fail(400, "VALIDATION", "Проверьте настройку уведомлений.");
     const updates = [];
+    if (b.notify !== undefined)
+      updates.push(
+        stmt(db, "UPDATE users SET notify=? WHERE id=?", b.notify ? 1 : 0, uid),
+      );
     if (b.birthday !== undefined)
       updates.push(
         stmt(db, "UPDATE users SET birthday=? WHERE id=?", b.birthday, uid),
@@ -458,7 +505,10 @@ async function route(req: Request, env: Env): Promise<unknown> {
         );
     }
     if (updates.length) await db.batch(updates);
-    return { user: await profile(db, uid) };
+    return {
+      user: await profile(db, uid),
+      notifications: await notifications(db, uid),
+    };
   }
   if (path === "/api/auth/logout" && method === "POST") {
     if (session)
@@ -479,7 +529,8 @@ async function route(req: Request, env: Env): Promise<unknown> {
       await stmt(
         db,
         `SELECT u.id,u.name,u.username,f.status,f.requested_by,
-          (SELECT COUNT(*) FROM gifts g WHERE g.owner_id=u.id AND g.archived_at IS NULL) AS gift_count
+          (SELECT COUNT(*) FROM gifts g WHERE g.owner_id=u.id AND g.archived_at IS NULL) AS gift_count,
+          EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscriber_id=?1 AND s.target_id=u.id) AS subscribed
         FROM friendships f JOIN users u ON u.id=CASE WHEN f.user_a=?1 THEN f.user_b ELSE f.user_a END
         WHERE f.user_a=?1 OR f.user_b=?1 ORDER BY u.name,u.id`,
         uid,
@@ -490,6 +541,7 @@ async function route(req: Request, env: Env): Promise<unknown> {
         status: string;
         requested_by: string;
         gift_count: number;
+        subscribed: number;
       }>()
     ).results;
     const view = ({
@@ -497,11 +549,13 @@ async function route(req: Request, env: Env): Promise<unknown> {
       name,
       username,
       gift_count,
+      subscribed,
     }: (typeof rows)[number]) => ({
       id,
       name,
       username,
       gift_count,
+      subscribed: !!subscribed,
     });
     return {
       friends: rows.filter((r) => r.status === "accepted").map(view),
@@ -552,15 +606,17 @@ async function route(req: Request, env: Env): Promise<unknown> {
         a,
         bId,
       ).run();
+      out.friendAdded(user, target.id);
       return { status: "accepted" };
     }
-    await stmt(
+    const created = await stmt(
       db,
-      "INSERT INTO friendships(user_a,user_b,status,requested_by) VALUES(?,?,'pending',?) ON CONFLICT DO NOTHING",
+      "INSERT INTO friendships(user_a,user_b,status,requested_by) VALUES(?,?,'pending',?) ON CONFLICT DO NOTHING RETURNING user_a",
       a,
       bId,
       uid,
-    ).run();
+    ).first();
+    if (created) out.friendRequest(user, target.id);
     return { status: "pending" };
   }
   const friendMatch = path.match(/^\/api\/friends\/(\d+)(\/accept)?$/);
@@ -575,18 +631,45 @@ async function route(req: Request, env: Env): Promise<unknown> {
         uid,
       ).first();
       if (!r) fail(404, "NOT_FOUND", "Заявка не найдена.");
+      out.friendAdded(user, friendMatch[1]);
       return { ok: true };
     }
     if (!friendMatch[2] && method === "DELETE") {
       // Decline, cancel or unfriend. Their reservations stay; they can cancel them.
-      await stmt(
-        db,
-        "DELETE FROM friendships WHERE user_a=? AND user_b=?",
-        a,
-        b,
-      ).run();
+      await db.batch([
+        stmt(db, "DELETE FROM friendships WHERE user_a=? AND user_b=?", a, b),
+        stmt(
+          db,
+          "DELETE FROM subscriptions WHERE (subscriber_id=?1 AND target_id=?2) OR (subscriber_id=?2 AND target_id=?1)",
+          a,
+          b,
+        ),
+      ]);
       return { ok: true };
     }
+  }
+  // Subscriptions: news about a friend's wishlist in the bot.
+  const subscriptionMatch = path.match(/^\/api\/subscriptions\/(\d+)$/);
+  if (subscriptionMatch && (method === "PUT" || method === "DELETE")) {
+    const target = subscriptionMatch[1];
+    if (method === "DELETE") {
+      await stmt(
+        db,
+        "DELETE FROM subscriptions WHERE subscriber_id=? AND target_id=?",
+        uid,
+        target,
+      ).run();
+      return { subscribed: false, notifications: await notifications(db, uid) };
+    }
+    if ((await friendship(db, uid, target))?.status !== "accepted")
+      fail(403, "NOT_FRIENDS", "Подписаться можно только на друзей.");
+    await stmt(
+      db,
+      "INSERT OR IGNORE INTO subscriptions(subscriber_id,target_id) VALUES(?,?)",
+      uid,
+      target,
+    ).run();
+    return { subscribed: true, notifications: await notifications(db, uid) };
   }
   if (path === "/api/friend-invites" && method === "GET")
     return {
@@ -665,6 +748,7 @@ async function route(req: Request, env: Env): Promise<unknown> {
       };
     // The inviter agreed by creating the link; the visitor agrees by confirming.
     const [a, bId] = pair(uid, invite.owner_id);
+    if (existing?.status !== "accepted") out.friendAdded(user, invite.owner_id);
     await stmt(
       db,
       `INSERT INTO friendships(user_a,user_b,status,requested_by,accepted_at) VALUES(?,?,'accepted',?,unixepoch())
@@ -695,47 +779,54 @@ async function route(req: Request, env: Env): Promise<unknown> {
       gifts: (
         await stmt(
           db,
-          `SELECT ${giftColumns},g.archived_at,g.archive_reason,g.gifted_by_name,g.gifted_by_username FROM gifts g WHERE g.owner_id=? AND g.archived_at IS NOT NULL ORDER BY g.archived_at DESC,g.id`,
+          `SELECT ${giftColumns},g.archived_at,g.archive_reason FROM gifts g WHERE g.owner_id=? AND g.archived_at IS NOT NULL ORDER BY g.archived_at DESC,g.id`,
           uid,
         ).all()
       ).results,
     };
   if (path === "/api/gifts" && method === "POST") {
     const b = await body(req);
-    const g = giftInput(b),
-      archived = b.archived === true;
-    if (
-      (await activeCount(db, uid, archived)) >=
-      (archived ? ARCHIVE_LIMIT : ACTIVE_LIMIT)
-    )
-      fail(
-        409,
-        "GIFT_LIMIT",
-        archived
-          ? `В архиве может быть не больше ${ARCHIVE_LIMIT} подарков.`
-          : `В списке может быть не больше ${ACTIVE_LIMIT} желаний.`,
-      );
-    const id = crypto.randomUUID();
-    await stmt(
-      db,
-      "INSERT INTO gifts(id,owner_id,title,price_minor,price_max_minor,price_range,currency,shop_url,description,priority,photo,archived_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-      id,
-      uid,
-      g.title,
-      g.price_minor,
-      g.price_max_minor,
-      g.price_range,
-      g.currency,
-      g.shop_url,
-      g.description,
-      g.priority,
-      g.photo,
-      archived ? now() : null,
-    ).run();
-    return { id };
+    return {
+      id: await createGift(db, out, user, giftInput(b), {
+        archived: b.archived === true,
+        quiet: b.quiet === true,
+      }),
+    };
+  }
+  if (path === "/api/gifts/announce" && method === "POST") {
+    // After an import: one message to subscribers about all wishes added quietly.
+    const b = await body(req);
+    const ids = Array.isArray(b.ids)
+      ? b.ids
+          .filter(
+            (v): v is string =>
+              typeof v === "string" && /^[a-f0-9-]{36}$/.test(v),
+          )
+          .slice(0, 100)
+      : [];
+    if (!ids.length) return { ok: true };
+    await rate(db, `announce:${uid}`, 5);
+    const rows = (
+      await stmt(
+        db,
+        `SELECT id,title,price_minor,price_max_minor,price_range,currency FROM gifts WHERE owner_id=? AND archived_at IS NULL AND created_at>? AND id IN (${ids.map(() => "?").join(",")}) ORDER BY priority DESC,created_at`,
+        uid,
+        now() - 3600,
+        ...ids,
+      ).all<{
+        id: string;
+        title: string;
+        price_minor: number | null;
+        price_max_minor: number | null;
+        price_range: number;
+        currency: string;
+      }>()
+    ).results;
+    await out.wishesAdded(user, rows);
+    return { ok: true };
   }
   const giftMatch = path.match(
-    /^\/api\/gifts\/([a-f0-9-]{36})(\/reservation|\/photo|\/archive|\/restore|\/archive-status|\/archive-donor)?$/,
+    /^\/api\/gifts\/([a-f0-9-]{36})(\/reservation(?:\/invite|\/join|\/decline)?|\/photo|\/archive|\/restore)?$/,
   );
   if (giftMatch) {
     const id = giftMatch[1];
@@ -757,108 +848,23 @@ async function route(req: Request, env: Env): Promise<unknown> {
           )?.photo || "",
       };
     }
-    if (
-      (giftMatch[2] === "/archive-status" ||
-        giftMatch[2] === "/archive-donor") &&
-      method === "GET"
-    ) {
-      if (g.owner_id !== uid || g.archived_at !== null) missing();
-      const reservation = await reservationDetails(db, id);
-      if (giftMatch[2] === "/archive-status")
-        return { reserved: !!reservation };
-      return {
-        donor: reservation
-          ? {
-              name: reservation.name,
-              username: reservation.username,
-              is_guest: reservation.user_id === null,
-            }
-          : null,
-        confirmation: reservation
-          ? await hash(JSON.stringify({ gift_id: id, ...reservation }))
-          : null,
-      };
-    }
-    if (
-      (giftMatch[2] === "/archive" || giftMatch[2] === "/restore") &&
-      method === "POST"
-    ) {
+    if (giftMatch[2] === "/restore" && method === "POST") {
       if (g.owner_id !== uid) missing();
-      const toArchive = giftMatch[2] === "/archive";
-      if (
-        (g.archived_at !== null) !== toArchive &&
-        (await activeCount(db, uid, toArchive)) >=
-          (toArchive ? ARCHIVE_LIMIT : ACTIVE_LIMIT)
-      )
-        fail(
-          409,
-          "GIFT_LIMIT",
-          toArchive
-            ? `В архиве может быть не больше ${ARCHIVE_LIMIT} подарков.`
-            : `В списке может быть не больше ${ACTIVE_LIMIT} желаний.`,
-        );
-      if (!toArchive) {
-        await stmt(
-          db,
-          "UPDATE gifts SET archived_at=NULL,archive_reason=NULL,gifted_by_name=NULL,gifted_by_username=NULL,updated_at=unixepoch() WHERE id=? AND owner_id=?",
-          id,
-          uid,
-        ).run();
-        return { ok: true };
-      }
+      await restoreGift(db, out, user, id);
+      return { ok: true };
+    }
+    if (giftMatch[2] === "/archive" && method === "POST") {
+      if (g.owner_id !== uid) missing();
       const b = req.headers.get("content-type")?.startsWith("application/json")
         ? await body(req)
         : {};
       const reason = b.reason ?? "bought_self";
-      if (!["changed_mind", "gifted", "bought_self"].includes(String(reason)))
+      if (!archiveReasons.includes(reason as ArchiveReason))
         fail(400, "VALIDATION", "Выберите причину переноса в архив.");
-      if (g.archived_at !== null) return { ok: true };
-      const reservation = await reservationDetails(db, id);
-      if (reservation && reason !== "gifted")
-        fail(
-          409,
-          "ARCHIVE_RESERVED",
-          "Этот подарок уже выбран. Подтвердите получение в варианте «Подарили» или сначала попросите отменить бронь.",
-        );
-      if (
-        reservation &&
-        b.confirmation !==
-          (await hash(JSON.stringify({ gift_id: id, ...reservation })))
-      )
-        fail(
-          409,
-          "DONOR_CONFIRMATION",
-          "Подтвердите имя дарителя. Если данные изменились, откройте подтверждение заново.",
-        );
-      // Recheck the exact reservation inside the archive write so a new booking cannot race it.
-      const filter = reservation
-        ? "EXISTS(SELECT 1 FROM reservations WHERE gift_id=gifts.id AND user_id IS ? AND guest_name IS ? AND created_at=?)"
-        : "NOT EXISTS(SELECT 1 FROM reservations WHERE gift_id=gifts.id)";
-      const result = await stmt(
-        db,
-        `UPDATE gifts SET archived_at=unixepoch(),archive_reason=?,gifted_by_name=?,gifted_by_username=?,updated_at=unixepoch() WHERE id=? AND owner_id=? AND archived_at IS NULL AND ${filter} RETURNING id`,
-        reason,
-        reason === "gifted" ? reservation?.name || null : null,
-        reason === "gifted" ? reservation?.username || null : null,
-        id,
-        uid,
-        ...(reservation
-          ? [
-              reservation.user_id,
-              reservation.guest_name,
-              reservation.created_at,
-            ]
-          : []),
-      ).first();
-      if (!result)
-        fail(
-          409,
-          "ARCHIVE_CHANGED",
-          "Бронь изменилась. Откройте перенос в архив заново.",
-        );
+      // Booked or not, the answer is the same: the owner never learns about bookings.
+      await archiveGift(db, out, user, id, reason as ArchiveReason);
       return { ok: true };
     }
-
     if (!giftMatch[2] && (method === "PUT" || method === "DELETE")) {
       if (g.owner_id !== uid) missing();
       if (method === "PUT") {
@@ -878,19 +884,10 @@ async function route(req: Request, env: Env): Promise<unknown> {
           id,
           uid,
         ).run();
-      } else
-        await stmt(
-          db,
-          "DELETE FROM gifts WHERE id=? AND owner_id=?",
-          id,
-          uid,
-        ).run();
+      } else await deleteGift(db, out, user, id);
       return { ok: true }; // Identical response whether reserved or available. No reservation-dependent errors.
     }
-    if (
-      giftMatch[2] === "/reservation" &&
-      (method === "POST" || method === "DELETE")
-    ) {
+    if (giftMatch[2]?.startsWith("/reservation")) {
       // Reject owner BEFORE any reservation read, including cancel attempts.
       if (g.owner_id === uid)
         fail(
@@ -898,21 +895,83 @@ async function route(req: Request, env: Env): Promise<unknown> {
           "SELF_RESERVATION",
           "Нельзя бронировать собственные подарки.",
         );
-      // Cancelling one's own reservation is allowed even after a link expires or unfriending.
-      if (method === "DELETE") {
-        await stmt(
+      const action = giftMatch[2].slice("/reservation".length);
+      const info = () => giftInfo(db, id);
+      // Cancelling or leaving is allowed even after a link expires or unfriending.
+      if (!action && method === "DELETE") {
+        const organizer = await stmt(
           db,
-          "DELETE FROM reservations WHERE gift_id=? AND user_id=?",
+          "SELECT 1 AS ok FROM reservations WHERE gift_id=? AND user_id=?",
           id,
           uid,
-        ).run();
+        ).first();
+        if (organizer) {
+          const members = (await bookers(db, id)).filter((m) => m !== uid);
+          await stmt(
+            db,
+            "DELETE FROM reservations WHERE gift_id=? AND user_id=?",
+            id,
+            uid,
+          ).run();
+          if (members.length) {
+            const i = await info();
+            if (i) out.groupCancelled(user, i.gift, members);
+          }
+        } else {
+          const left = await stmt(
+            db,
+            "DELETE FROM reservation_members WHERE gift_id=? AND user_id=? RETURNING status",
+            id,
+            uid,
+          ).first<{ status: string }>();
+          const i = left?.status === "joined" ? await info() : null;
+          if (i?.organizer)
+            out.memberAnswered(user, i.organizer, i.gift, false);
+        }
         return { ok: true };
       }
+      if ((action === "/join" || action === "/decline") && method === "POST") {
+        const r = await stmt(
+          db,
+          action === "/join"
+            ? "UPDATE reservation_members SET status='joined' WHERE gift_id=? AND user_id=? AND status='invited' RETURNING status"
+            : "DELETE FROM reservation_members WHERE gift_id=? AND user_id=? AND status='invited' RETURNING status",
+          id,
+          uid,
+        ).first();
+        if (!r) fail(404, "NOT_FOUND", "Приглашение уже неактуально.");
+        const i = await info();
+        if (i?.organizer)
+          out.memberAnswered(user, i.organizer, i.gift, action === "/join");
+        return { ok: true };
+      }
+      if (action === "/invite" && method === "POST") {
+        const b = await body(req);
+        await rate(db, `ginvite:${uid}`, 20);
+        if (
+          !(await stmt(
+            db,
+            "SELECT 1 AS ok FROM reservations WHERE gift_id=? AND user_id=?",
+            id,
+            uid,
+          ).first())
+        )
+          fail(
+            403,
+            "NOT_ORGANIZER",
+            "Приглашать может только тот, кто забронировал подарок.",
+          );
+        return { invited: await inviteFriends(db, out, user, id, b.friends) };
+      }
+      if (action || method !== "POST") missing();
       if (
         g.archived_at !== null ||
         !(await canView(db, g.owner_id, user, guest))
       )
         missing();
+      const b = req.headers.get("content-type")?.startsWith("application/json")
+        ? await body(req)
+        : {};
       // Access is rechecked INSIDE the atomic write; revocation/unfriending cannot race this insert.
       const guestHash =
         guest && /^[A-Za-z0-9_-]{43}$/.test(guest) ? await hash(guest) : "";
@@ -934,56 +993,67 @@ async function route(req: Request, env: Env): Promise<unknown> {
           "UNAVAILABLE",
           "Подарок уже забронирован или доступ изменился. Обновите список.",
         );
-      return { ok: true };
+      // «Подарить вместе»: invite friends right away.
+      const invited = b.friends
+        ? await inviteFriends(db, out, user, id, b.friends)
+        : [];
+      return { ok: true, invited };
     }
   }
   if (path === "/api/reservations" && method === "GET") {
-    // Metadata available only while the viewer still has access. Cancellation needs only gift ID.
-    const r = await stmt(
-      db,
-      `SELECT r.gift_id,
-        CASE WHEN ${FRIEND_OF("g.owner_id")} OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=g.owner_id AND l.revoked_at IS NULL AND (l.created_by=l.owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=l.owner_id AND share_owner.allow_resharing=1)) AND l.expires_at>?2) THEN g.title ELSE 'Подарок из закрытого списка' END AS title,
+    // Metadata available only while the viewer still has access (or was invited). Cancellation needs only gift ID.
+    const rows = (
+      await stmt(
+        db,
+        `SELECT r.gift_id,
+        CASE WHEN r.user_id=?1 THEN 'organizer' ELSE m.status END AS role,
+        CASE WHEN m.user_id IS NOT NULL OR ${FRIEND_OF("g.owner_id")} OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=g.owner_id AND l.revoked_at IS NULL AND (l.created_by=l.owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=l.owner_id AND share_owner.allow_resharing=1)) AND l.expires_at>?2) THEN 1 ELSE 0 END AS visible,
+        g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.owner_id,ou.name AS owner_name,org.name AS organizer_name,
         CASE WHEN g.archived_at IS NULL THEN 0 ELSE 1 END AS archived
-      FROM reservations r JOIN gifts g ON g.id=r.gift_id WHERE r.user_id=?1 AND g.owner_id<>?1`,
-      uid,
-      now(),
-    ).all();
-    return { reservations: r.results };
-  }
-  if (path === "/api/guest-bookings" && method === "GET") {
+      FROM reservations r JOIN gifts g ON g.id=r.gift_id JOIN users ou ON ou.id=g.owner_id
+      LEFT JOIN users org ON org.id=r.user_id
+      LEFT JOIN reservation_members m ON m.gift_id=r.gift_id AND m.user_id=?1
+      WHERE (r.user_id=?1 OR m.user_id IS NOT NULL) AND g.owner_id<>?1
+      ORDER BY role='invited' DESC,r.created_at DESC`,
+        uid,
+        now(),
+      ).all<Record<string, unknown>>()
+    ).results;
+    const ids = rows.map((r) => r.gift_id as string);
+    const members = ids.length
+      ? (
+          await stmt(
+            db,
+            `SELECT m.gift_id,m.user_id AS id,u.name,u.username,m.status FROM reservation_members m JOIN users u ON u.id=m.user_id WHERE m.gift_id IN (${ids.map(() => "?").join(",")}) ORDER BY m.created_at`,
+            ...ids,
+          ).all<{
+            gift_id: string;
+            id: string;
+            name: string;
+            username: string | null;
+            status: string;
+          }>()
+        ).results
+      : [];
     return {
-      reservations: (
-        await stmt(
-          db,
-          `SELECT r.gift_id,r.guest_name,g.title FROM reservations r JOIN gifts g ON g.id=r.gift_id WHERE g.owner_id=? AND r.user_id IS NULL ORDER BY r.created_at DESC`,
-          uid,
-        ).all()
-      ).results,
+      reservations: rows.map(({ visible, ...r }) => ({
+        ...r,
+        ...(visible
+          ? {}
+          : {
+              title: "Подарок из закрытого списка",
+              price_minor: null,
+              price_max_minor: null,
+            }),
+        // Invitees see who organizes, not the other invitees.
+        members:
+          r.role === "invited"
+            ? []
+            : members
+                .filter((m) => m.gift_id === r.gift_id)
+                .map(({ gift_id: _, ...m }) => m),
+      })),
     };
-  }
-  const manageGuest = path.match(/^\/api\/guest-bookings\/([a-f0-9-]{36})$/);
-  if (manageGuest && (method === "PATCH" || method === "DELETE")) {
-    const filter =
-      "gift_id=? AND user_id IS NULL AND EXISTS(SELECT 1 FROM gifts WHERE id=reservations.gift_id AND owner_id=?)";
-    if (method === "DELETE")
-      await stmt(
-        db,
-        `DELETE FROM reservations WHERE ${filter}`,
-        manageGuest[1],
-        uid,
-      ).run();
-    else {
-      const name = text((await body(req)).name, 80);
-      if (!name) fail(400, "VALIDATION", "Введите имя.");
-      await stmt(
-        db,
-        `UPDATE reservations SET guest_name=? WHERE ${filter}`,
-        name,
-        manageGuest[1],
-        uid,
-      ).run();
-    }
-    return { ok: true };
   }
   const shareList = path.match(/^\/api\/lists\/(\d+)\/share-links$/);
   if (
@@ -1164,62 +1234,17 @@ async function route(req: Request, env: Env): Promise<unknown> {
   fail(404, "NOT_FOUND", "Раздел не найден.");
 }
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
-    const origin = req.headers.get("origin");
-    const headers = new Headers({
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store, private",
-      "X-Content-Type-Options": "nosniff",
-      "Referrer-Policy": "no-referrer",
-      Vary: "Origin",
-    });
-    if (origin && origin === env.APP_ORIGIN) {
-      headers.set("Access-Control-Allow-Origin", origin);
-      headers.set(
-        "Access-Control-Allow-Methods",
-        "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-      );
-      headers.set(
-        "Access-Control-Allow-Headers",
-        "Authorization,Content-Type,X-Guest-Token",
-      );
-      headers.set("Access-Control-Max-Age", "600");
-    }
-    if (origin && origin !== env.APP_ORIGIN)
-      return Response.json(
-        {
-          error: {
-            code: "ORIGIN_DENIED",
-            message: "Недопустимый источник запроса.",
-          },
-        },
-        { status: 403, headers },
-      );
-    if (req.method === "OPTIONS")
-      return new Response(null, { status: 204, headers });
+  async fetch(
+    req: Request,
+    env: Env,
+    ctx?: ExecutionContext,
+  ): Promise<Response> {
+    const out = new Outbox(env, env.DB);
+    // Telegram messages go out after the answer; a failed send never fails the request.
     try {
-      const data = await route(req, env);
-      if (data instanceof Response) {
-        data.headers.forEach((v, k) => headers.set(k, v));
-        return new Response(data.body, { status: 200, headers });
-      }
-      return new Response(JSON.stringify(data), { status: 200, headers });
-    } catch (e) {
-      if (e instanceof ApiError)
-        return Response.json(
-          { error: { code: e.code, message: e.message } },
-          { status: e.status, headers },
-        );
-      // Do not log exceptions: SQL error text can include private bindings.
-      return Response.json(
-        {
-          error: {
-            code: "INTERNAL",
-            message: "Не удалось выполнить запрос. Попробуйте ещё раз.",
-          },
-        },
-        { status: 500, headers },
-      );
+      return await respond(req, env, out);
+    } finally {
+      if (out.jobs.length) ctx?.waitUntil(out.done());
     }
   },
   async scheduled(_event: ScheduledEvent, env: Env) {
@@ -1232,6 +1257,65 @@ export default {
       stmt(env.DB, "DELETE FROM sessions WHERE expires_at<?", now()),
       stmt(env.DB, "DELETE FROM login_nonces WHERE expires_at<?", now()),
       cleanupHelperJobs(env.DB),
+      cleanupBotStates(env.DB),
     ]);
   },
 };
+async function respond(req: Request, env: Env, out: Outbox): Promise<Response> {
+  const origin = req.headers.get("origin");
+  const headers = new Headers({
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store, private",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    Vary: "Origin",
+  });
+  if (origin && origin === env.APP_ORIGIN) {
+    headers.set("Access-Control-Allow-Origin", origin);
+    headers.set(
+      "Access-Control-Allow-Methods",
+      "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    );
+    headers.set(
+      "Access-Control-Allow-Headers",
+      "Authorization,Content-Type,X-Guest-Token",
+    );
+    headers.set("Access-Control-Max-Age", "600");
+  }
+  if (origin && origin !== env.APP_ORIGIN)
+    return Response.json(
+      {
+        error: {
+          code: "ORIGIN_DENIED",
+          message: "Недопустимый источник запроса.",
+        },
+      },
+      { status: 403, headers },
+    );
+  if (req.method === "OPTIONS")
+    return new Response(null, { status: 204, headers });
+  try {
+    const data = await route(req, env, out);
+    if (data instanceof Response) {
+      data.headers.forEach((v, k) => headers.set(k, v));
+      return new Response(data.body, { status: 200, headers });
+    }
+    return new Response(JSON.stringify(data), { status: 200, headers });
+  } catch (e) {
+    if (e instanceof ApiError)
+      return Response.json(
+        { error: { code: e.code, message: e.message } },
+        { status: e.status, headers },
+      );
+    // Do not log exceptions: SQL error text can include private bindings.
+    return Response.json(
+      {
+        error: {
+          code: "INTERNAL",
+          message: "Не удалось выполнить запрос. Попробуйте ещё раз.",
+        },
+      },
+      { status: 500, headers },
+    );
+  }
+}
