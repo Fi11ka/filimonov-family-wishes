@@ -94,7 +94,12 @@ export async function lookupProduct(
         }
       : null;
   return {
-    shop: shop === generic ? null : shop.name,
+    shop:
+      info.source === "aliexpress-global"
+        ? "AliExpress (международный сайт)"
+        : shop === generic
+          ? null
+          : shop.name,
     url: url.href,
     title: info.title || "",
     image_url: info.image || "",

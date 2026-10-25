@@ -6,6 +6,8 @@ export interface PriceInfo {
 }
 export interface ProductInfo {
   title?: string;
+  /** Fallback origin disclosed to the user; original shop URL is retained. */
+  source?: "aliexpress-global";
   image?: string;
   price?: PriceInfo | null;
   /** Shop answered with an anti-bot page or refused the request. */

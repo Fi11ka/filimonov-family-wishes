@@ -494,3 +494,119 @@ test("Ozon composer fallback still runs after the HTML request throws", async ()
   assert.equal(r.price?.min_minor, 200000);
   assert.equal(r.blocked, false);
 });
+
+test("AliExpress.ru falls back to the SAME international item preview, never its regional price", async () => {
+  let fallbackUrl = "";
+  const raw =
+    "https://aliexpress.ru/item/1005002333850679.html?sku_id=12000031578956806";
+  const r = await lookupProduct(raw, {
+    async json() {
+      throw new Error("unexpected json");
+    },
+    async page(url) {
+      if (url.hostname === "aliexpress.ru")
+        return {
+          url,
+          status: 429,
+          html: "Пройдите проверку _____tmd_____/punish",
+        };
+      fallbackUrl = url.href;
+      return {
+        url: new URL(
+          url.href.replace("www.aliexpress.com", "pt.aliexpress.com"),
+        ),
+        status: 200,
+        html: `<meta property="og:type" content="product"><meta property="og:title" content="Zipper Cable Organizer"><meta property="og:image" content="https://ae-pic-a1.aliexpress-media.com/kf/product.jpg"><meta property="product:price:amount" content="9.99"><meta property="product:price:currency" content="USD">`,
+      };
+    },
+  });
+  assert.equal(
+    fallbackUrl,
+    "https://www.aliexpress.com/item/1005002333850679.html?sku_id=12000031578956806",
+  );
+  assert.equal(r.url, raw);
+  assert.equal(r.title, "Zipper Cable Organizer");
+  assert.equal(
+    r.image_url,
+    "https://ae-pic-a1.aliexpress-media.com/kf/product.jpg",
+  );
+  assert.equal(r.price, null);
+  assert.equal(r.blocked, false);
+  assert.equal(r.shop, "AliExpress (международный сайт)");
+});
+test("AliExpress preview rejects unrelated redirects and another bot page", async () => {
+  for (const target of [
+    "https://www.aliexpress.com/item/9999999999999.html",
+    "https://www.aliexpress.com/",
+    "https://aliexpress.com.example.org/item/1005002333850679.html",
+    "https://www.aliexpress.com/item/1005002333850679.html",
+  ]) {
+    const r = await lookupProduct(
+      "https://aliexpress.ru/item/1005002333850679.html",
+      {
+        async json() {
+          throw new Error("unexpected json");
+        },
+        async page(url) {
+          if (url.hostname === "aliexpress.ru") throw new Error("timeout");
+          return {
+            url: new URL(target),
+            status: target.endsWith("1005002333850679.html") ? 429 : 200,
+            html: `<meta property="og:title" content="Wrong"><meta property="og:image" content="https://example.org/wrong.jpg">`,
+          };
+        },
+      },
+    );
+    assert.equal(r.title, "");
+    assert.equal(r.image_url, "");
+    assert.equal(r.price, null);
+    assert.equal(r.blocked, true);
+  }
+});
+test("AliExpress.ru uses no fallback when the original card is complete or has no item ID", async () => {
+  for (const raw of [
+    "https://aliexpress.ru/item/1005002333850679.html",
+    "https://sl.aliexpress.ru/p?key=unknown",
+  ]) {
+    let calls = 0;
+    const short = raw.includes("/p?");
+    const r = await lookupProduct(raw, {
+      async json() {
+        throw new Error("unexpected json");
+      },
+      async page(url) {
+        ++calls;
+        return {
+          url,
+          status: short ? 429 : 200,
+          html: `<meta property="og:title" content="Оригинальное название"><meta property="og:image" content="https://img.alicdn.com/product.jpg">`,
+        };
+      },
+    });
+    assert.equal(calls, 1);
+    assert.equal(r.title, short ? "" : "Оригинальное название");
+    assert.equal(r.shop, "AliExpress Россия");
+  }
+});
+
+test("AliExpress preview preserves a price obtained from the original Russian card", async () => {
+  const r = await lookupProduct(
+    "https://aliexpress.ru/item/1005002333850679.html",
+    {
+      async json() {
+        throw new Error("unexpected json");
+      },
+      async page(url) {
+        return {
+          url,
+          status: 200,
+          html: url.hostname.endsWith(".ru")
+            ? `<script>const p={"price":{"value":1234,"currency":"RUB"}}</script>`
+            : `<meta property="og:title" content="Organizer"><meta property="og:image" content="https://img.alicdn.com/product.jpg"><meta property="product:price:amount" content="9.99"><meta property="product:price:currency" content="USD">`,
+        };
+      },
+    },
+  );
+  assert.equal(r.price?.min_minor, 123400);
+  assert.equal(r.price?.currency, "RUB");
+});
