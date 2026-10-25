@@ -10,6 +10,8 @@ export interface ProductInfo {
   price?: PriceInfo | null;
   /** Shop answered with an anti-bot page or refused the request. */
   blocked?: boolean;
+  /** Explicitly reported by the shop; missing price alone is not proof. */
+  unavailable?: boolean;
 }
 export interface Page {
   url: URL;
