@@ -148,6 +148,19 @@ async function list(
   ).all();
   return r.results;
 }
+async function reservationDetails(db: D1Database, id: string) {
+  return stmt(
+    db,
+    `SELECT r.user_id,r.guest_name,r.created_at,COALESCE(u.name,r.guest_name) AS name,u.username FROM reservations r LEFT JOIN users u ON u.id=r.user_id WHERE r.gift_id=?`,
+    id,
+  ).first<{
+    user_id: string | null;
+    guest_name: string | null;
+    created_at: number;
+    name: string;
+    username: string | null;
+  }>();
+}
 const SESSION_DAYS = 30,
   SESSION_LIMIT = 10;
 async function sessionUser(db: D1Database, raw: string): Promise<Identity> {
@@ -624,7 +637,7 @@ async function route(req: Request, env: Env): Promise<unknown> {
       gifts: (
         await stmt(
           db,
-          `SELECT ${giftColumns},g.archived_at FROM gifts g WHERE g.owner_id=? AND g.archived_at IS NOT NULL ORDER BY g.archived_at DESC,g.id`,
+          `SELECT ${giftColumns},g.archived_at,g.archive_reason,g.gifted_by_name,g.gifted_by_username FROM gifts g WHERE g.owner_id=? AND g.archived_at IS NOT NULL ORDER BY g.archived_at DESC,g.id`,
           uid,
         ).all()
       ).results,
@@ -664,7 +677,7 @@ async function route(req: Request, env: Env): Promise<unknown> {
     return { id };
   }
   const giftMatch = path.match(
-    /^\/api\/gifts\/([a-f0-9-]{36})(\/reservation|\/photo|\/archive|\/restore)?$/,
+    /^\/api\/gifts\/([a-f0-9-]{36})(\/reservation|\/photo|\/archive|\/restore|\/archive-status|\/archive-donor)?$/,
   );
   if (giftMatch) {
     const id = giftMatch[1];
@@ -687,6 +700,28 @@ async function route(req: Request, env: Env): Promise<unknown> {
       };
     }
     if (
+      (giftMatch[2] === "/archive-status" ||
+        giftMatch[2] === "/archive-donor") &&
+      method === "GET"
+    ) {
+      if (g.owner_id !== uid || g.archived_at !== null) missing();
+      const reservation = await reservationDetails(db, id);
+      if (giftMatch[2] === "/archive-status")
+        return { reserved: !!reservation };
+      return {
+        donor: reservation
+          ? {
+              name: reservation.name,
+              username: reservation.username,
+              is_guest: reservation.user_id === null,
+            }
+          : null,
+        confirmation: reservation
+          ? await hash(JSON.stringify({ gift_id: id, ...reservation }))
+          : null,
+      };
+    }
+    if (
       (giftMatch[2] === "/archive" || giftMatch[2] === "/restore") &&
       method === "POST"
     ) {
@@ -704,14 +739,68 @@ async function route(req: Request, env: Env): Promise<unknown> {
             ? `В архиве может быть не больше ${ARCHIVE_LIMIT} подарков.`
             : `В списке может быть не больше ${ACTIVE_LIMIT} желаний.`,
         );
-      await stmt(
+      if (!toArchive) {
+        await stmt(
+          db,
+          "UPDATE gifts SET archived_at=NULL,archive_reason=NULL,gifted_by_name=NULL,gifted_by_username=NULL,updated_at=unixepoch() WHERE id=? AND owner_id=?",
+          id,
+          uid,
+        ).run();
+        return { ok: true };
+      }
+      const b = req.headers.get("content-type")?.startsWith("application/json")
+        ? await body(req)
+        : {};
+      const reason = b.reason ?? "bought_self";
+      if (!["changed_mind", "gifted", "bought_self"].includes(String(reason)))
+        fail(400, "VALIDATION", "Выберите причину переноса в архив.");
+      if (g.archived_at !== null) return { ok: true };
+      const reservation = await reservationDetails(db, id);
+      if (reservation && reason !== "gifted")
+        fail(
+          409,
+          "ARCHIVE_RESERVED",
+          "Этот подарок уже выбран. Подтвердите получение в варианте «Подарили» или сначала попросите отменить бронь.",
+        );
+      if (
+        reservation &&
+        b.confirmation !==
+          (await hash(JSON.stringify({ gift_id: id, ...reservation })))
+      )
+        fail(
+          409,
+          "DONOR_CONFIRMATION",
+          "Подтвердите имя дарителя. Если данные изменились, откройте подтверждение заново.",
+        );
+      // Recheck the exact reservation inside the archive write so a new booking cannot race it.
+      const filter = reservation
+        ? "EXISTS(SELECT 1 FROM reservations WHERE gift_id=gifts.id AND user_id IS ? AND guest_name IS ? AND created_at=?)"
+        : "NOT EXISTS(SELECT 1 FROM reservations WHERE gift_id=gifts.id)";
+      const result = await stmt(
         db,
-        `UPDATE gifts SET archived_at=${toArchive ? "COALESCE(archived_at,unixepoch())" : "NULL"},updated_at=unixepoch() WHERE id=? AND owner_id=?`,
+        `UPDATE gifts SET archived_at=unixepoch(),archive_reason=?,gifted_by_name=?,gifted_by_username=?,updated_at=unixepoch() WHERE id=? AND owner_id=? AND archived_at IS NULL AND ${filter} RETURNING id`,
+        reason,
+        reason === "gifted" ? reservation?.name || null : null,
+        reason === "gifted" ? reservation?.username || null : null,
         id,
         uid,
-      ).run();
-      return { ok: true }; // Same response regardless of reservations.
+        ...(reservation
+          ? [
+              reservation.user_id,
+              reservation.guest_name,
+              reservation.created_at,
+            ]
+          : []),
+      ).first();
+      if (!result)
+        fail(
+          409,
+          "ARCHIVE_CHANGED",
+          "Бронь изменилась. Откройте перенос в архив заново.",
+        );
+      return { ok: true };
     }
+
     if (!giftMatch[2] && (method === "PUT" || method === "DELETE")) {
       if (g.owner_id !== uid) missing();
       if (method === "PUT") {

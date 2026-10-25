@@ -22,26 +22,38 @@ import {
 import { type Wish, priorities } from "./types";
 import { currencies } from "../shared/price";
 import { LookupState } from "./lookup-state";
+const modalStack: symbol[] = [];
 export function Modal({
   title,
   onClose,
   children,
   wide,
+  closeOnBackdrop = true,
 }: {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
   wide?: boolean;
+  closeOnBackdrop?: boolean;
 }) {
   const ref = useRef<HTMLElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  const titleId = React.useId();
   useEffect(() => {
+    const modalId = Symbol();
+    modalStack.push(modalId);
     const dialog = ref.current;
     const previous = document.activeElement as HTMLElement;
     dialog?.focus();
     const old = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (modalStack.at(-1) !== modalId) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close.current();
+      }
       if (e.key !== "Tab" || !dialog) return;
       const a = Array.from(
         dialog.querySelectorAll<HTMLElement>(
@@ -66,6 +78,7 @@ export function Modal({
     };
     document.addEventListener("keydown", key);
     return () => {
+      modalStack.splice(modalStack.indexOf(modalId), 1);
       document.removeEventListener("keydown", key);
       document.body.style.overflow = old;
       previous?.focus();
@@ -75,7 +88,7 @@ export function Modal({
     <div
       className="modal-backdrop"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (closeOnBackdrop && e.target === e.currentTarget) onClose();
       }}
     >
       <section
@@ -83,11 +96,11 @@ export function Modal({
         className={`modal ${wide ? "modal-wide" : ""}`}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="modal-title"
+        aria-labelledby={titleId}
         tabIndex={-1}
       >
         <div className="modal-heading">
-          <h2 id="modal-title">{title}</h2>
+          <h2 id={titleId}>{title}</h2>
           <button
             className="icon-button"
             onClick={onClose}
@@ -152,9 +165,13 @@ function isHttps(v: string) {
 export function GiftForm({
   gift,
   onSaved,
+  onDirty,
+  onSavingChange,
 }: {
   gift: Wish | null;
   onSaved: () => void;
+  onDirty: () => void;
+  onSavingChange: (saving: boolean) => void;
 }) {
   const [photo, setPhoto] = useState(""),
     [photoLoading, setPhotoLoading] = useState(!!gift?.has_photo),
@@ -163,6 +180,9 @@ export function GiftForm({
     [imageUrl, setImageUrl] = useState(""),
     [saving, setSaving] = useState(false),
     [error, setError] = useState("");
+  useEffect(() => {
+    onSavingChange(saving);
+  }, [saving, onSavingChange]);
   const [title, setTitle] = useState(gift?.title || ""),
     [shopUrl, setShopUrl] = useState(gift?.shop_url || ""),
     [description, setDescription] = useState(gift?.description || ""),
@@ -243,6 +263,7 @@ export function GiftForm({
     try {
       const value = await load();
       if (id !== photoRequest.current || (valid && !valid())) return false;
+      onDirty();
       setPhoto(value);
       setPhotoError(false);
       setPhotoNote("");
@@ -373,8 +394,10 @@ export function GiftForm({
   }
   return (
     <form
+      onChange={onDirty}
       onPaste={(e) => {
         if (e.clipboardData.files.length) {
+          onDirty();
           e.preventDefault();
           void pastedImage(e.clipboardData.files);
         }
@@ -446,6 +469,7 @@ export function GiftForm({
                 setPriceMax("");
               }
               if (autoPhoto.current) {
+                onDirty();
                 setPhoto("");
                 autoPhoto.current = false;
               }
@@ -531,6 +555,7 @@ export function GiftForm({
               ++photoRequest.current;
               autoPhoto.current = false;
               setPhotoLoading(false);
+              onDirty();
               setPhoto("");
             }}
           >
@@ -586,6 +611,7 @@ export function GiftForm({
               onClick={() => {
                 gate.current.edit("price");
                 setPriceTouched(true);
+                onDirty();
                 setPriceMode("exact");
               }}
             >
@@ -598,6 +624,7 @@ export function GiftForm({
               onClick={() => {
                 gate.current.edit("price");
                 setPriceTouched(true);
+                onDirty();
                 setPriceMode("range");
               }}
             >
@@ -691,33 +718,68 @@ export function GiftForm({
     </form>
   );
 }
-export function CopyValue({ value }: { value: string }) {
+export function CopyValue({
+  value,
+  warning,
+}: {
+  value: string;
+  warning?: string;
+}) {
+  const [confirmCopy, setConfirmCopy] = useState(false);
+  const [copyError, setCopyError] = useState("");
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setCopyError("");
+      setConfirmCopy(false);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      setCopyError(
+        "Не удалось скопировать. Выделите ссылку и скопируйте вручную.",
+      );
+    }
+  }
   const [copied, setCopied] = useState(false);
   return (
-    <div className="copy-value">
-      <input
-        readOnly
-        value={value}
-        aria-label="Ссылка или код для копирования"
-        onFocus={(e) => e.target.select()}
-      />
-      <button
-        type="button"
-        className="icon-button"
-        aria-label="Скопировать"
-        onClick={async () => {
-          try {
-            await navigator.clipboard.writeText(value);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2500);
-          } catch {
-            setCopied(false);
+    <>
+      <div className="copy-value">
+        <input
+          readOnly
+          value={value}
+          aria-label="Ссылка или код для копирования"
+          onFocus={(e) => e.target.select()}
+          onCopy={
+            warning
+              ? (e) => {
+                  e.preventDefault();
+                  setConfirmCopy(true);
+                }
+              : undefined
           }
-        }}
-      >
-        {copied ? <Check size={18} /> : <Copy size={18} />}
-      </button>
-    </div>
+        />
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Скопировать"
+          onClick={() => {
+            if (warning) setConfirmCopy(true);
+            else void copy();
+          }}
+        >
+          {copied ? <Check size={18} /> : <Copy size={18} />}
+        </button>
+      </div>
+      {copyError && <p role="alert">{copyError}</p>}
+      {confirmCopy && (
+        <Confirm
+          text={warning!}
+          action="Понятно, скопировать ссылку"
+          onCancel={() => setConfirmCopy(false)}
+          onConfirm={() => void copy()}
+        />
+      )}
+    </>
   );
 }
 export function Share() {
@@ -741,11 +803,11 @@ export function Share() {
       {error && <p role="alert">{error}</p>}
       {legacy.map((link) => (
         <div className="active-link" key={link.id}>
-          <span>Ранее созданная гостевая ссылка</span>
+          <span>Ранее созданная ссылка без входа</span>
           <button
             className="text-link danger"
             onClick={async () => {
-              if (!window.confirm("Отозвать старую гостевую ссылку?")) return;
+              if (!window.confirm("Отозвать старую ссылку без входа?")) return;
               try {
                 await api(`/api/guest-links/${link.id}`, "DELETE");
                 setLegacy(legacy.filter((l) => l.id !== link.id));
@@ -763,20 +825,21 @@ export function Share() {
           <h3>
             {link.kind === "telegram"
               ? "С входом через Telegram"
-              : "Гостевой доступ без регистрации"}
+              : "Для близких без регистрации"}
           </h3>
           <p>
             {link.kind === "telegram"
               ? "Открывает ваш вишлист после входа через Telegram. Можно добавить вас в друзья."
-              : "Виден весь вишлист и статус бронирования. Для брони достаточно указать имя."}
+              : "Для тех, кому сложно войти через Telegram, например бабушки или дедушки. Для выбора подарка достаточно указать имя."}
           </p>
-          {link.kind === "guest" && (
-            <div className="privacy-note" role="alert">
-              Не переходите сами по этой ссылке: вы сможете увидеть, какие
-              подарки забронированы.
-            </div>
-          )}
-          <CopyValue value={link.web_url} />
+          <CopyValue
+            value={link.web_url}
+            warning={
+              link.kind === "guest"
+                ? "По этой ссылке близкие увидят весь ваш вишлист и какие подарки уже выбраны. Для бронирования достаточно имени. Не открывайте её сами, если хотите сохранить сюрприз: вы тоже увидите, что забронировано."
+                : undefined
+            }
+          />
           <button
             className="text-link danger"
             onClick={async () => {
@@ -833,11 +896,13 @@ export function GuestBookings() {
   return (
     <div className="share-result">
       <p>
-        Здесь только брони гостей без регистрации. Брони пользователей Telegram
-        остаются скрыты.
+        Здесь подарки, выбранные близкими по ссылке без входа в Telegram —
+        например, бабушкой или дедушкой. Можно исправить имя покупателя или
+        отменить случайный выбор. Брони тех, кто вошёл через Telegram, остаются
+        скрыты.
       </p>
       {error && <p role="alert">{error}</p>}
-      {!rows.length && <p>Гостевых броней пока нет.</p>}
+      {!rows.length && <p>По ссылке без входа пока никто не выбрал подарок.</p>}
       {rows.map((row) => (
         <form
           key={row.gift_id}
@@ -872,7 +937,7 @@ export function GuestBookings() {
             className="button secondary"
             disabled={busy}
             onClick={() => {
-              if (window.confirm("Отменить эту гостевую бронь?"))
+              if (window.confirm("Отменить выбор этого подарка?"))
                 void change(row.gift_id);
             }}
           >
@@ -881,5 +946,178 @@ export function GuestBookings() {
         </form>
       ))}
     </div>
+  );
+}
+
+export function ArchiveWish({
+  gift,
+  onClose,
+  onArchived,
+}: {
+  gift: Wish;
+  onClose: () => void;
+  onArchived: () => Promise<void>;
+}) {
+  const [reason, setReason] = useState("");
+  const [status, setStatus] = useState<{ reserved: boolean } | null>(null);
+  const [donor, setDonor] = useState<{
+    name: string;
+    username: string | null;
+    is_guest: boolean;
+  } | null>(null);
+  const [confirmation, setConfirmation] = useState<string | null>(null);
+  const [donorLoaded, setDonorLoaded] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (demo) {
+      setStatus({ reserved: false });
+      return;
+    }
+    api(`/api/gifts/${gift.id}/archive-status`)
+      .then(setStatus)
+      .catch((e) => setError(e.message));
+  }, [gift.id]);
+  useEffect(() => {
+    setConfirmed(false);
+    setDonorLoaded(false);
+    setDonor(null);
+    setConfirmation(null);
+    if (reason !== "gifted") return;
+    if (demo) {
+      setDonorLoaded(true);
+      return;
+    }
+    let active = true;
+    api(`/api/gifts/${gift.id}/archive-donor`)
+      .then((d) => {
+        if (active) {
+          setDonor(d.donor);
+          setConfirmation(d.confirmation);
+          setDonorLoaded(true);
+        }
+      })
+      .catch((e) => {
+        if (active) setError(e.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [reason, gift.id]);
+  return (
+    <Modal
+      title="Отправить желание в архив"
+      closeOnBackdrop={false}
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+    >
+      <form
+        className="share-result"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (demo) {
+            setError("В демо архив не меняется.");
+            return;
+          }
+          setBusy(true);
+          setError("");
+          try {
+            await api(`/api/gifts/${gift.id}/archive`, "POST", {
+              reason,
+              confirmation,
+            });
+            await onArchived();
+          } catch (e) {
+            setError((e as Error).message);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <h3>{gift.title}</h3>
+        <p>Почему убираете желание из списка?</p>
+        {!status && !error && (
+          <p role="status">Проверяем возможность переноса…</p>
+        )}
+        <div className="archive-reasons">
+          {[
+            ["changed_mind", "Передумал"],
+            ["gifted", "Подарили"],
+            ["bought_self", "Купил сам"],
+          ].map(([value, label]) => (
+            <label key={value}>
+              <input
+                type="radio"
+                name="archive-reason"
+                value={value}
+                checked={reason === value}
+                disabled={
+                  busy || !status || (status.reserved && value !== "gifted")
+                }
+                onChange={() => {
+                  setReason(value);
+                  setError("");
+                }}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+        {status?.reserved && (
+          <p>
+            Подарок уже выбран близким. Можно перенести его в архив только как
+            полученный подарок, подтвердив дарителя.
+          </p>
+        )}
+        {reason === "gifted" &&
+          (donorLoaded ? (
+            donor ? (
+              <div className="donor-confirmation">
+                <p>
+                  Подарок выбрал(а): <strong>{donor.name}</strong>
+                  {donor.username
+                    ? ` · @${donor.username}`
+                    : donor.is_guest
+                      ? " · без входа в Telegram"
+                      : " · ник в Telegram не указан"}
+                </p>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={confirmed}
+                    onChange={(e) => setConfirmed(e.target.checked)}
+                  />
+                  Подтверждаете, что подарок подарил этот человек?
+                </label>
+              </div>
+            ) : (
+              <p>
+                Для этого подарка нет брони. Можно отметить его как подаренный.
+              </p>
+            )
+          ) : (
+            <p role="status">Загружаем имя дарителя…</p>
+          ))}
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+        <button
+          className="button primary full-width"
+          disabled={
+            busy ||
+            !reason ||
+            !status ||
+            (status.reserved && reason !== "gifted") ||
+            (reason === "gifted" && (!donorLoaded || (!!donor && !confirmed)))
+          }
+        >
+          {busy ? "Переносим…" : "Перенести в архив"}
+        </button>
+      </form>
+    </Modal>
   );
 }

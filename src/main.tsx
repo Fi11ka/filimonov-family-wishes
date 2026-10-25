@@ -1,4 +1,4 @@
-import { GuestBookings } from "./forms";
+import { GuestBookings, ArchiveWish } from "./forms";
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -103,6 +103,32 @@ function App() {
     [menu, setMenu] = useState(false),
     [webSession, setWebSession] = useState(false),
     [showBrowserLogin, setShowBrowserLogin] = useState(false);
+  const [archiveGift, setArchiveGift] = useState<Wish | null>(null);
+  const [giftDirty, setGiftDirty] = useState(false);
+  const [giftSaving, setGiftSaving] = useState(false);
+  function closeEditor() {
+    if (giftSaving) return;
+    if (modal === "gift" && giftDirty) {
+      setConfirmation({
+        text: "Изменения в желании ещё не сохранены. Закрыть карточку и потерять ввод?",
+        action: "Закрыть без сохранения",
+        danger: true,
+        run: async () => {
+          setModal(null);
+          setGiftDirty(false);
+        },
+      });
+    } else setModal(null);
+  }
+  useEffect(() => {
+    if (!giftDirty || modal !== "gift") return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [giftDirty, modal]);
   const [guestGift, setGuestGift] = useState<Wish | null>(null);
   const [guestName, setGuestName] = useState("");
   const own =
@@ -302,11 +328,7 @@ function App() {
     }, "Бронирование доступно после подключения приложения.");
   }
   async function markBought(g: Wish) {
-    await guarded(async () => {
-      await api(`/api/gifts/${g.id}/archive`, "POST");
-      if (user) await loadList(user.id);
-      notice("Ура! Желание перенесено в архив");
-    }, "В демо архив не меняется.");
+    setArchiveGift(g);
   }
   async function restore(g: Wish) {
     await guarded(async () => {
@@ -529,7 +551,7 @@ function App() {
                   <span>
                     {authShare
                       ? "Вишлист по ссылке Telegram"
-                      : "Гостевой список · без регистрации"}
+                      : "Вишлист для близких · без регистрации"}
                   </span>
                   {user && (
                     <a href={location.pathname}>
@@ -577,7 +599,7 @@ function App() {
                     {tab === "bookings"
                       ? "Подарки, которые вы выбрали для близких."
                       : tab === "archive"
-                        ? "Купленные и подаренные желания. Любое можно вернуть в вишлист."
+                        ? "Желания, которые вы убрали из списка. Любое можно вернуть в вишлист."
                         : own
                           ? "Пусть близким будет чуть проще сделать вас счастливее."
                           : "Самые тёплые подарки начинаются с маленькой подсказки."}
@@ -596,6 +618,7 @@ function App() {
                       className="button primary"
                       onClick={() => {
                         setEditing(null);
+                        setGiftDirty(false);
                         setModal("gift");
                       }}
                     >
@@ -710,7 +733,7 @@ function App() {
                             onClick={() => {
                               if (demo) {
                                 notice(
-                                  "Гостевая ссылка будет доступна после подключения.",
+                                  "Ссылки для близких будут доступны после подключения.",
                                 );
                                 return;
                               }
@@ -763,7 +786,7 @@ function App() {
                       className="button secondary guest-management"
                       onClick={() => setModal("guest-bookings")}
                     >
-                      Управлять гостевыми бронями
+                      Выбор подарков без входа в Telegram
                     </button>
                   )}
                   {own && tab === "mine" && (
@@ -779,7 +802,7 @@ function App() {
                   <div className="list-toolbar">
                     <h2>
                       {tab === "archive"
-                        ? "Куплено и подарено"
+                        ? "Архив желаний"
                         : own
                           ? "Мои желания"
                           : "Список желаний"}{" "}
@@ -848,6 +871,7 @@ function App() {
                           busy={busy}
                           onEdit={() => {
                             setEditing(g);
+                            setGiftDirty(false);
                             setModal("gift");
                           }}
                           onBought={() => void markBought(g)}
@@ -1017,6 +1041,17 @@ function App() {
           </form>
         </Modal>
       )}
+      {archiveGift && (
+        <ArchiveWish
+          gift={archiveGift}
+          onClose={() => setArchiveGift(null)}
+          onArchived={async () => {
+            setArchiveGift(null);
+            if (user) await loadList(user.id);
+            notice("Желание перенесено в архив");
+          }}
+        />
+      )}
       {modal && (
         <Modal
           wide={modal === "import"}
@@ -1025,7 +1060,7 @@ function App() {
               gift: editing
                 ? "Редактировать желание"
                 : "Новое маленькое желание",
-              "guest-bookings": "Управлять гостевыми бронями",
+              "guest-bookings": "Выбор подарков без входа в Telegram",
               share: "Поделиться мечтами",
               "add-friend": "Добавить друга",
               profile: "Мой профиль",
@@ -1033,14 +1068,18 @@ function App() {
               invite: "Приглашение в друзья",
             }[modal]
           }
-          onClose={() => setModal(null)}
+          closeOnBackdrop={modal !== "gift"}
+          onClose={closeEditor}
         >
           {modal === "gift" ? (
             <GiftForm
               gift={editing}
+              onDirty={() => setGiftDirty(true)}
+              onSavingChange={setGiftSaving}
               onSaved={async () => {
                 setModal(null);
                 if (user) await loadList(user.id);
+                setGiftDirty(false);
                 notice("Желание сохранено");
               }}
             />
@@ -1155,7 +1194,12 @@ function GiftCard({
         )}
         {mode === "archive" && (
           <span className="archived-badge">
-            <Check size={12} /> Куплено
+            <Check size={12} />{" "}
+            {g.archive_reason === "changed_mind"
+              ? "Передумал"
+              : g.archive_reason === "gifted"
+                ? "Подарили"
+                : "Купил сам"}
             {g.archived_at
               ? ` · ${new Date(g.archived_at * 1000).toLocaleDateString("ru-RU")}`
               : ""}
@@ -1166,6 +1210,12 @@ function GiftCard({
         <div className="gift-price">{money(g)}</div>
         <h3>{g.title}</h3>
         <p>{g.description || "Ещё одна маленькая мечта."}</p>
+        {mode === "archive" && g.gifted_by_name && (
+          <p className="archive-donor">
+            Подарил(а): {g.gifted_by_name}
+            {g.gifted_by_username ? ` · @${g.gifted_by_username}` : ""}
+          </p>
+        )}
         <div className="card-actions">
           {g.shop_url ? (
             <a
@@ -1185,7 +1235,7 @@ function GiftCard({
                 className="bought-button"
                 disabled={busy}
                 onClick={onBought}
-                title="Желание исполнилось: убрать его в архив"
+                title="Выбрать причину переноса в архив"
               >
                 <Archive size={14} />
                 Отправить в архив
