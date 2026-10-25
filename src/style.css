@@ -1941,10 +1941,32 @@ footer svg {
   align-items: center;
   padding: 7px 9px;
   font-size: 9px;
+  font-weight: 500;
   border-radius: 7px;
-  background: #eef4ee;
-  color: #6f8a72;
+  /* A visible border and hover so it reads as a button, not a status tag. */
+  border: 1px solid #cddfce;
+  background: #f4f9f4;
+  color: #5f7d63;
   min-height: 30px;
+  white-space: nowrap;
+}
+.bought-button:hover:not(:disabled) {
+  background: #e4f0e5;
+  border-color: #b5d0b7;
+}
+@media (max-width: 740px) {
+  /* Narrow cards: the button takes the row and may wrap instead of pushing the bin out. */
+  .owner-actions {
+    width: 100%;
+  }
+  .bought-button {
+    flex: 1;
+    min-width: 0;
+    justify-content: center;
+    text-align: center;
+    white-space: normal;
+    line-height: 1.25;
+  }
 }
 .gift-card.archived .photo-wrap img,
 .gift-card.archived .photo-placeholder {

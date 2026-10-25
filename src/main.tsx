@@ -298,7 +298,7 @@ function App() {
   }
   function remove(g: Wish, fromArchive: boolean) {
     setConfirmation({
-      text: `Удалить «${g.title}» навсегда? Это действие нельзя отменить. Если подарок уже подарили, лучше нажмите «Куплено» — он сохранится в архиве.`,
+      text: `Удалить «${g.title}» навсегда? Это действие нельзя отменить. Если подарок уже подарили, лучше нажмите «Отправить в архив» — он сохранится там.`,
       action: "Удалить",
       danger: true,
       run: () =>
@@ -333,7 +333,9 @@ function App() {
         ? a.currency.localeCompare(b.currency) ||
           (a.price_minor ?? a.price_max_minor ?? Infinity) -
             (b.price_minor ?? b.price_max_minor ?? Infinity)
-        : b.priority - a.priority,
+        : sort === "priority-asc"
+          ? a.priority - b.priority
+          : b.priority - a.priority,
     );
   const locked = !demo && !user && !guestToken && !loading;
   const viewingFriend = tab === "friends" && !!owner && !own;
@@ -755,7 +757,12 @@ function App() {
                           value={sort}
                           onChange={(e) => setSort(e.target.value)}
                         >
-                          <option value="priority">По приоритету</option>
+                          <option value="priority">
+                            Сначала самые желанные
+                          </option>
+                          <option value="priority-asc">
+                            Сначала менее важные
+                          </option>
                           <option value="price">По валюте и цене</option>
                         </select>
                         <ChevronDown size={14} />
@@ -823,7 +830,7 @@ function App() {
                         {search
                           ? "Попробуйте другое название."
                           : tab === "archive"
-                            ? "Когда желание исполнится, нажмите «Куплено» — оно переедет сюда."
+                            ? "Когда желание исполнится, нажмите «Отправить в архив» — оно переедет сюда."
                             : own
                               ? "Добавьте первое желание — близкие будут благодарны за подсказку."
                               : "Здесь пока нет желаний. Загляните чуть позже."}
@@ -1066,10 +1073,10 @@ function GiftCard({
                 className="bought-button"
                 disabled={busy}
                 onClick={onBought}
-                title="Отметить как купленное и убрать в архив"
+                title="Желание исполнилось: убрать его в архив"
               >
                 <Archive size={14} />
-                Куплено
+                Отправить в архив
               </button>
               <button
                 className="icon-button delete-button"
