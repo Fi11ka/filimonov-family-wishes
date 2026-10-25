@@ -53,14 +53,21 @@ interface WbProduct {
   brand?: string;
   salePriceU?: number;
   priceU?: number;
-  sizes?: { price?: { basic?: number; product?: number; total?: number } }[];
+  sizes?: {
+    chrtId?: number;
+    price?: { basic?: number; product?: number; total?: number };
+  }[];
 }
-export function wbPrice(p: WbProduct): PriceInfo | null {
+export function wbPrice(
+  p: WbProduct,
+  size: string | null = null,
+): PriceInfo | null {
   // Card API amounts are already in kopecks.
   const values = (p.sizes || [])
+    .filter((s) => !size || String(s.chrtId) === size)
     .map((s) => s.price?.product ?? s.price?.total ?? s.price?.basic)
     .filter((v): v is number => Number.isSafeInteger(v) && (v as number) > 0);
-  if (!values.length && Number.isSafeInteger(p.salePriceU ?? p.priceU))
+  if (!size && !values.length && Number.isSafeInteger(p.salePriceU ?? p.priceU))
     values.push((p.salePriceU ?? p.priceU) as number);
   if (!values.length) return null;
   const min = Math.min(...values),
@@ -88,7 +95,7 @@ export const wildberries: Shop = {
           return {
             title: clean([p.brand, p.name].filter(Boolean).join(" ")),
             image,
-            price: wbPrice(p),
+            price: wbPrice(p, url.searchParams.get("size")),
           };
       } catch {
         // try the next API version
