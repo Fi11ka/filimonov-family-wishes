@@ -118,8 +118,9 @@ export async function api<T = any>(
   path: string,
   method = "GET",
   data?: unknown,
+  timeout = 20000,
 ): Promise<T> {
-  const res = await request(path, method, data, 20000);
+  const res = await request(path, method, data, timeout);
   return (await res.json().catch(() => ({}))) as T;
 }
 /** Binary answers (images fetched by link, spreadsheets). */
@@ -133,7 +134,8 @@ import { compressPhoto } from "./photo";
 /** Downloads a picture through the API (shops forbid direct cross-site reads) and compresses it. */
 export async function photoFromUrl(url: string) {
   if (demo) throw new Error("В демо картинки по ссылке не загружаются.");
-  return compressPhoto(await apiBlob("/api/fetch/image", { url }, 25000));
+  // Up to ~32 s when the photo comes through the home helper.
+  return compressPhoto(await apiBlob("/api/fetch/image", { url }, 40000));
 }
 export interface ProductLookup {
   shop: string | null;
@@ -148,5 +150,7 @@ export interface ProductLookup {
     currency: string;
   } | null;
   blocked: boolean;
+  /** Ozon/DNS/…: the home helper is needed but not running. */
+  helper_offline?: boolean;
   unavailable?: boolean;
 }

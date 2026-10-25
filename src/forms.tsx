@@ -166,6 +166,9 @@ function isHttps(v: string) {
     return false;
   }
 }
+/** Shops read through the home helper (see worker/helper.ts). */
+const SLOW_SHOPS =
+  /^https:\/\/([^/]+\.)?(ozon\.(ru|by|kz)|dns-shop\.(ru|kz)|market\.yandex\.(ru|by|kz|uz)|aliexpress\.ru)\//i;
 export function GiftForm({
   gift,
   onSaved,
@@ -303,7 +306,13 @@ export function GiftForm({
       photo: !current.photo && !current.photoLoading && !gift?.has_photo,
     });
     try {
-      const r = await api<ProductLookup>("/api/fetch/product", "POST", { url });
+      // Shops read through the home helper can take up to ~30 seconds.
+      const r = await api<ProductLookup>(
+        "/api/fetch/product",
+        "POST",
+        { url },
+        45000,
+      );
       if (!job.current()) return;
       const notes: string[] = [];
       if (r.title && job.canApply("title")) {
@@ -342,7 +351,11 @@ export function GiftForm({
         setPhotoNote(
           "Картинку с сайта получить не удалось — добавьте фото вручную.",
         );
-      if (r.blocked)
+      if (r.blocked && r.helper_offline)
+        notes.unshift(
+          `${r.shop || "Магазин"} открывается только через домашний помощник, а он сейчас не в сети. Добавьте фото и цену вручную или попробуйте позже.`,
+        );
+      else if (r.blocked)
         notes.unshift(
           `${r.shop || "Сайт"} ограничил автоматическое чтение. Можно добавить фото и цену вручную.`,
         );
@@ -512,7 +525,11 @@ export function GiftForm({
       {(lookup === "loading" || lookupNote) && (
         <p className="lookup-note" role="status">
           <Sparkles size={14} />
-          {lookup === "loading" ? "Ищем цену и картинку…" : lookupNote}
+          {lookup === "loading"
+            ? SLOW_SHOPS.test(shopUrl)
+              ? "Открываем страницу через домашний помощник, это может занять до 30 секунд…"
+              : "Ищем цену и картинку…"
+            : lookupNote}
         </p>
       )}
       <label className="photo-upload">

@@ -43,7 +43,8 @@ test("every shop module is found by its links", () => {
     ["https://aliexpress.ru/item/1005007935983752.html", "aliexpress-ru"],
     ["https://sl.aliexpress.ru/p?key=hU2AV3e", "aliexpress-ru"],
     ["https://www.aliexpress.com/item/1005007935983752.html", "aliexpress-com"],
-    ["https://www.dns-shop.ru/product/1/", "generic"],
+    ["https://www.dns-shop.ru/product/0bcabdaf10297734/x/", "dns"],
+    ["https://www.citilink.ru/product/1/", "generic"],
     ["https://notozon.ru/product/1", "generic"],
   ];
   for (const [url, id] of cases)
