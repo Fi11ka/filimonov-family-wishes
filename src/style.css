@@ -2307,3 +2307,10 @@ footer svg {
   color: #8e6eb0;
   font-size: 13px;
 }
+
+.guest-management {
+  margin-top: 16px;
+}
+.share-result > section + section {
+  margin-top: 28px;
+}

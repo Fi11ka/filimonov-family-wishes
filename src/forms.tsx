@@ -738,100 +738,165 @@ export function CopyValue({ value }: { value: string }) {
   );
 }
 export function Share() {
-  const [link, setLink] = useState<{
-      telegram_url: string;
-      web_url: string;
-      id: string;
-    } | null>(null),
-    [links, setLinks] = useState<
-      { id: string; expires_at: number; revoked_at: number | null }[]
-    >([]),
-    [error, setError] = useState(""),
-    [busy, setBusy] = useState(false);
-  async function reload() {
-    try {
-      setLinks((await api("/api/guest-links")).links);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
+  const [links, setLinks] = useState<
+    { id: string; kind: string; web_url: string }[]
+  >([]);
+  const [error, setError] = useState("");
+  const [legacy, setLegacy] = useState<{ id: string }[]>([]);
   useEffect(() => {
-    void reload();
+    api("/api/guest-links")
+      .then((d) => (d.links.length === 2 ? d : api("/api/guest-links", "POST")))
+      .then((d) => {
+        setLinks(d.links);
+        setLegacy(d.legacy_links || []);
+      })
+      .catch((e) => setError(e.message));
   }, []);
   return (
     <div className="share-result">
-      <div className="share-illustration">
-        <Gift size={36} />
-        <Heart size={17} />
-      </div>
-      <p>
-        По ссылке гости увидят только ваш список и смогут бронировать подарки
-        через Telegram, не добавляясь в друзья.
-      </p>
-      <p className="small-text">
-        Ссылка действует 30 дней. Новая ссылка заменяет предыдущую. Уже
-        сделанные брони сохраняются, даритель может их отменить.
-      </p>
-      {link && (
-        <>
-          <label>Ссылка для Telegram</label>
-          <CopyValue value={link.telegram_url} />
-          <label>Просмотр в браузере</label>
-          <CopyValue value={link.web_url} />
-        </>
-      )}
-      {error && (
-        <div className="error" role="alert">
-          {error}
+      <p>Обе ссылки постоянные. Сохраните их и делитесь ими в любое время.</p>
+      {error && <p role="alert">{error}</p>}
+      {legacy.map((link) => (
+        <div className="active-link" key={link.id}>
+          <span>Ранее созданная гостевая ссылка</span>
+          <button
+            className="text-link danger"
+            onClick={async () => {
+              if (!window.confirm("Отозвать старую гостевую ссылку?")) return;
+              try {
+                await api(`/api/guest-links/${link.id}`, "DELETE");
+                setLegacy(legacy.filter((l) => l.id !== link.id));
+              } catch (e) {
+                setError((e as Error).message);
+              }
+            }}
+          >
+            Отозвать
+          </button>
         </div>
-      )}
-      <button
-        className="button primary full-width"
-        disabled={busy}
-        onClick={async () => {
-          setBusy(true);
-          try {
-            setLink(await api("/api/guest-links", "POST"));
-            await reload();
-            setError("");
-          } catch (e) {
-            setError((e as Error).message);
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        <LinkIcon size={17} />
-        {busy ? "Готовим…" : link ? "Заменить ссылку" : "Создать новую ссылку"}
-      </button>
-      {links
-        .filter((l) => !l.revoked_at && l.expires_at > Date.now() / 1000)
-        .map((l) => (
-          <div className="active-link" key={l.id}>
-            <span>
-              Действует до{" "}
-              {new Date(l.expires_at * 1000).toLocaleDateString("ru-RU")}
-            </span>
-            <button
-              disabled={busy}
-              className="text-link danger"
-              onClick={async () => {
-                setBusy(true);
-                try {
-                  await api(`/api/guest-links/${l.id}`, "DELETE");
-                  setLink(null);
-                  await reload();
-                } catch (e) {
-                  setError((e as Error).message);
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              Отозвать
-            </button>
-          </div>
-        ))}
+      ))}
+      {links.map((link) => (
+        <section key={link.id}>
+          <h3>
+            {link.kind === "telegram"
+              ? "С входом через Telegram"
+              : "Гостевой доступ без регистрации"}
+          </h3>
+          <p>
+            {link.kind === "telegram"
+              ? "Открывает ваш вишлист после входа через Telegram. Можно добавить вас в друзья."
+              : "Виден весь вишлист и статус бронирования. Для брони достаточно указать имя."}
+          </p>
+          {link.kind === "guest" && (
+            <div className="privacy-note" role="alert">
+              Не переходите сами по этой ссылке: вы сможете увидеть, какие
+              подарки забронированы.
+            </div>
+          )}
+          <CopyValue value={link.web_url} />
+          <button
+            className="text-link danger"
+            onClick={async () => {
+              if (
+                !window.confirm(
+                  "Отозвать ссылку? Люди со старой ссылкой потеряют доступ.",
+                )
+              )
+                return;
+              try {
+                await api(`/api/guest-links/${link.id}`, "DELETE");
+                setLinks(links.filter((l) => l.id !== link.id));
+                setLinks((await api("/api/guest-links", "POST")).links);
+              } catch (e) {
+                setError((e as Error).message);
+              }
+            }}
+          >
+            Отозвать и заменить ссылку
+          </button>
+        </section>
+      ))}
+    </div>
+  );
+}
+export function GuestBookings() {
+  const [rows, setRows] = useState<
+    { gift_id: string; title: string; guest_name: string }[]
+  >([]);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function reload() {
+    setRows((await api("/api/guest-bookings")).reservations);
+  }
+  useEffect(() => {
+    reload().catch((e) => setError(e.message));
+  }, []);
+  async function change(id: string, name?: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await api(
+        `/api/guest-bookings/${id}`,
+        name === undefined ? "DELETE" : "PATCH",
+        name === undefined ? undefined : { name },
+      );
+      await reload();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="share-result">
+      <p>
+        Здесь только брони гостей без регистрации. Брони пользователей Telegram
+        остаются скрыты.
+      </p>
+      {error && <p role="alert">{error}</p>}
+      {!rows.length && <p>Гостевых броней пока нет.</p>}
+      {rows.map((row) => (
+        <form
+          key={row.gift_id}
+          onSubmit={(e) => {
+            e.preventDefault();
+            void change(row.gift_id, row.guest_name);
+          }}
+        >
+          <h3>{row.title}</h3>
+          <label>
+            Кто покупает
+            <input
+              required
+              maxLength={80}
+              value={row.guest_name}
+              onChange={(e) =>
+                setRows(
+                  rows.map((r) =>
+                    r.gift_id === row.gift_id
+                      ? { ...r, guest_name: e.target.value }
+                      : r,
+                  ),
+                )
+              }
+            />
+          </label>
+          <button className="button secondary" disabled={busy}>
+            Сохранить имя
+          </button>
+          <button
+            type="button"
+            className="button secondary"
+            disabled={busy}
+            onClick={() => {
+              if (window.confirm("Отменить эту гостевую бронь?"))
+                void change(row.gift_id);
+            }}
+          >
+            Отменить бронь
+          </button>
+        </form>
+      ))}
     </div>
   );
 }

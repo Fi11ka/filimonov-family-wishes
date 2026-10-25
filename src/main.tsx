@@ -1,3 +1,4 @@
+import { GuestBookings } from "./forms";
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -33,6 +34,7 @@ import {
   demo,
   friendInvite,
   guestToken,
+  authShare,
   setSessionToken,
   signedIn,
   telegram,
@@ -62,7 +64,13 @@ import {
 import "./style.css";
 type Tab = "mine" | "friends" | "bookings" | "archive";
 type ModalKind =
-  "gift" | "share" | "add-friend" | "profile" | "import" | "invite";
+  | "guest-bookings"
+  | "gift"
+  | "share"
+  | "add-friend"
+  | "profile"
+  | "import"
+  | "invite";
 interface Confirmation {
   text: string;
   action: string;
@@ -95,7 +103,12 @@ function App() {
     [menu, setMenu] = useState(false),
     [webSession, setWebSession] = useState(false),
     [showBrowserLogin, setShowBrowserLogin] = useState(false);
-  const own = !!user && owner?.id === user.id;
+  const [guestGift, setGuestGift] = useState<Wish | null>(null);
+  const [guestName, setGuestName] = useState("");
+  const own =
+    !!user &&
+    owner?.id === user.id &&
+    !(guestToken && !authShare && tab === "friends");
   const notice = (message: string) => {
     setToast(message);
     setTimeout(() => setToast(""), 4500);
@@ -138,7 +151,7 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      if (guestToken) {
+      if (guestToken && (!authShare || signedIn())) {
         const d = await api("/api/guest");
         setOwner(d.owner);
         setGifts(d.gifts);
@@ -216,6 +229,7 @@ function App() {
       return;
     }
     if (next === "mine" && user) await loadList(user.id);
+    if (next === "friends" && guestToken) await refresh();
     if (next === "friends" && !guestToken) {
       setOwner(null);
       setGifts([]);
@@ -266,6 +280,10 @@ function App() {
     }
   }
   async function reserve(g: Wish) {
+    if (guestToken && !authShare) {
+      setGuestGift(g);
+      return;
+    }
     await guarded(async () => {
       try {
         await api(
@@ -338,7 +356,7 @@ function App() {
             ? a.priority - b.priority
             : b.priority - a.priority,
     );
-  const locked = !demo && !user && !guestToken && !loading;
+  const locked = !demo && !user && (!guestToken || authShare) && !loading;
   const viewingFriend = tab === "friends" && !!owner && !own;
   const showList =
     tab === "mine" || tab === "archive" || !!guestToken || viewingFriend;
@@ -509,7 +527,9 @@ function App() {
                 <div className="guest-banner">
                   <LinkIcon size={18} />
                   <span>
-                    Гостевой список · доступ только к желаниям этого участника
+                    {authShare
+                      ? "Вишлист по ссылке Telegram"
+                      : "Гостевой список · без регистрации"}
                   </span>
                   {user && (
                     <a href={location.pathname}>
@@ -517,6 +537,22 @@ function App() {
                     </a>
                   )}
                 </div>
+              )}
+              {guestToken && authShare && user && owner && !own && (
+                <button
+                  className="button secondary"
+                  disabled={busy}
+                  onClick={() =>
+                    void guarded(async () => {
+                      await api("/api/friends/requests", "POST", {
+                        user_id: owner.id,
+                      });
+                      notice("Запрос в друзья отправлен");
+                    }, "")
+                  }
+                >
+                  Добавить в друзья · {owner.name}
+                </button>
               )}
               <div className="page-title">
                 <div>
@@ -664,7 +700,9 @@ function App() {
                           <br />
                           {own
                             ? "А сюрпризы пусть остаются сюрпризами."
-                            : "Владелец списка ничего не узнает."}
+                            : guestToken && !authShare
+                              ? "Для бронирования достаточно вашего имени."
+                              : "Владелец списка ничего не узнает."}
                         </p>
                         {own && (
                           <button
@@ -721,6 +759,14 @@ function App() {
                     </section>
                   )}
                   {own && tab === "mine" && (
+                    <button
+                      className="button secondary guest-management"
+                      onClick={() => setModal("guest-bookings")}
+                    >
+                      Управлять гостевыми бронями
+                    </button>
+                  )}
+                  {own && tab === "mine" && (
                     <div className="privacy-note">
                       <ShieldCheck size={16} />
                       <span>
@@ -729,22 +775,7 @@ function App() {
                       </span>
                     </div>
                   )}
-                  {guestToken && !user && (
-                    <div className="privacy-note guest-login">
-                      <ShieldCheck size={18} />
-                      <span>
-                        Чтобы забронировать подарок, войдите через Telegram или
-                        откройте список в Telegram. Добавляться в друзья не
-                        нужно.
-                      </span>
-                      {apiConfigured && (
-                        <WebLogin compact onSignedIn={() => void refresh()} />
-                      )}
-                      <a className="button primary" href={telegramLink()}>
-                        Открыть <ArrowUpRight size={15} />
-                      </a>
-                    </div>
-                  )}
+
                   <div className="list-toolbar">
                     <h2>
                       {tab === "archive"
@@ -937,6 +968,55 @@ function App() {
           </button>
         </div>
       )}
+      {guestGift && (
+        <Modal
+          title="Забронировать подарок"
+          onClose={() => {
+            if (!busy) setGuestGift(null);
+          }}
+        >
+          <form
+            className="share-result"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void guarded(async () => {
+                try {
+                  await api(`/api/guest-reservations/${guestGift.id}`, "POST", {
+                    name: guestName,
+                  });
+                  setGuestGift(null);
+                  notice("Подарок забронирован!");
+                } finally {
+                  await refresh();
+                }
+              }, "");
+            }}
+          >
+            <h3>{guestGift.title}</h3>
+            <label>
+              Кто будет покупать подарок?
+              <input
+                autoFocus
+                required
+                maxLength={80}
+                value={guestName}
+                onChange={(e) => setGuestName(e.target.value)}
+                placeholder="Ваше имя"
+              />
+            </label>
+            <p>
+              Регистрация не нужна. Если ошиблись, владелец вишлиста сможет
+              исправить или отменить эту бронь.
+            </p>
+            <button
+              className="button primary"
+              disabled={busy || !guestName.trim()}
+            >
+              {busy ? "Бронируем…" : "Забронировать"}
+            </button>
+          </form>
+        </Modal>
+      )}
       {modal && (
         <Modal
           wide={modal === "import"}
@@ -945,6 +1025,7 @@ function App() {
               gift: editing
                 ? "Редактировать желание"
                 : "Новое маленькое желание",
+              "guest-bookings": "Управлять гостевыми бронями",
               share: "Поделиться мечтами",
               "add-friend": "Добавить друга",
               profile: "Мой профиль",
@@ -963,6 +1044,8 @@ function App() {
                 notice("Желание сохранено");
               }}
             />
+          ) : modal === "guest-bookings" ? (
+            <GuestBookings />
           ) : modal === "share" ? (
             <Share />
           ) : modal === "add-friend" ? (
@@ -1135,7 +1218,7 @@ function GiftCard({
                 <Trash2 size={16} />
               </button>
             </span>
-          ) : mode === "friend" ? (
+          ) : mode === "friend" || mode === "guest" ? (
             <button
               disabled={busy || g.reservation === "reserved"}
               className={`reserve-button ${g.reservation === "mine" ? "mine" : ""}`}
