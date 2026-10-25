@@ -428,3 +428,69 @@ test("Wildberries prices respect selected size; an unknown variant does not rece
   assert.equal(wbPrice(p, "missing"), null);
   assert.equal(wbPrice({ salePriceU: 123400 }, "339839029"), null);
 });
+
+test("WB v4 optionId matches the selected variant; an absent variant gets no borrowed price", () => {
+  const p = {
+    sizes: [
+      { optionId: 339839029, price: { product: 17000 } },
+      { optionId: 339839030, price: { product: 25000 } },
+    ],
+  };
+  assert.deepEqual(wbPrice(p, "339839029"), {
+    min: 17000,
+    max: null,
+    currency: "RUB",
+  });
+  assert.equal(wbPrice(p, "999"), null);
+});
+test("the real WB 212550828 out-of-stock response supplies a photo, never an invented price", async () => {
+  const r = await lookupProduct(
+    "https://www.wildberries.ru/catalog/212550828/detail.aspx?size=339839029",
+    ctx({
+      "https://card.wb.ru/cards/v4/": {
+        json: {
+          products: [
+            {
+              id: 212550828,
+              brand: "Пехорка",
+              name: "Пряжа",
+              totalQuantity: 0,
+              sizes: [{ optionId: 339839029, stocks: [] }],
+            },
+          ],
+        },
+      },
+    }),
+  );
+  assert.equal(r.unavailable, true);
+  assert.equal(r.price, null);
+  assert.equal(r.title, "Пехорка Пряжа");
+  assert.equal(
+    r.image_url,
+    "https://basket-14.wbbasket.ru/vol2125/part212550/212550828/images/big/1.webp",
+  );
+});
+test("Ozon composer fallback still runs after the HTML request throws", async () => {
+  let requested = false;
+  const r = await lookupProduct("https://www.ozon.ru/product/2402035826/", {
+    async page() {
+      throw new Error("network timeout");
+    },
+    async json() {
+      requested = true;
+      return {
+        widgetStates: {
+          "webProductHeading-1": { title: "Приставной столик" },
+          "webPrice-1": { price: "2 000 ₽" },
+          "webGallery-1": {
+            coverImage: "https://ir.ozone.ru/s3/multimedia/photo.jpg",
+          },
+        },
+      };
+    },
+  });
+  assert.equal(requested, true);
+  assert.equal(r.title, "Приставной столик");
+  assert.equal(r.price?.min_minor, 200000);
+  assert.equal(r.blocked, false);
+});
