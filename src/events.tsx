@@ -894,7 +894,10 @@ export function EventsList({
       <h3 className="event-subtitle">Мои мероприятия</h3>
       <ul className="event-people">
         {data.mine.map((m) => (
-          <li key={m.event.key}>
+          <li
+            key={m.event.key}
+            className={m.guests ? "has-party" : undefined}
+          >
             <button
               className="event-row"
               onClick={() => onOpen(me, m.event.key, m.event.date)}

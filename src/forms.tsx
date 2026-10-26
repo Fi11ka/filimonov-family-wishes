@@ -201,6 +201,7 @@ export function GiftForm({
     [photoError, setPhotoError] = useState(false),
     [photoNote, setPhotoNote] = useState(""),
     [imageUrl, setImageUrl] = useState(""),
+    [urlOpen, setUrlOpen] = useState(false),
     [saving, setSaving] = useState(false),
     [error, setError] = useState("");
   useEffect(() => {
@@ -538,6 +539,7 @@ export function GiftForm({
   }
   return (
     <form
+      className="gift-form"
       onChange={onDirty}
       onPaste={(e) => {
         if (e.clipboardData.files.length) {
@@ -600,234 +602,11 @@ export function GiftForm({
         }
       }}
     >
+      <div className="gift-form-body">
       <label>
-        Ссылка на магазин
-        <div className="input-with-action">
-          <input
-            name="shop_url"
-            type="url"
-            maxLength={2048}
-            value={shopUrl}
-            onChange={(e) => {
-              gate.current.invalidate();
-              setLookup("idle");
-              setLookupNote("");
-              if (photoIsLookup.current) {
-                ++photoRequest.current;
-                photoIsLookup.current = false;
-                setPhotoLoading(false);
-              }
-              if (autoTitle.current) {
-                setTitle("");
-                autoTitle.current = false;
-              }
-              if (autoDescription.current) {
-                setDescription("");
-                autoDescription.current = false;
-              }
-              if (!draft.current.priceTouched) {
-                setPriceMin("");
-                setPriceMax("");
-              }
-              if (autoPhoto.current) {
-                onDirty();
-                setPhoto("");
-                autoPhoto.current = false;
-              }
-              setShopUrl(e.target.value);
-            }}
-            placeholder="https://… — попробуем найти цену и фото"
-          />
-          <button
-            type="button"
-            className="icon-button"
-            aria-label="Подтянуть данные по ссылке"
-            title="Подтянуть данные по ссылке"
-            disabled={!isHttps(shopUrl.trim()) || lookup === "loading"}
-            onClick={() => void fillFromLink(shopUrl.trim())}
-          >
-            <RefreshCw
-              size={17}
-              className={lookup === "loading" ? "spin" : ""}
-            />
-          </button>
-        </div>
-      </label>
-      <div className="screenshot-row">
-        <label
-          className={`button secondary file-link${shot === "loading" ? " busy" : ""}`}
-        >
-          <ScanText size={16} className={shot === "loading" ? "spin" : ""} />
-          {shot === "loading" ? "Читаем скриншот…" : "Добавить скриншот"}
-          <input
-            type="file"
-            accept="image/*"
-            aria-label="Выбрать скриншот товара"
-            disabled={shot === "loading" || saving}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              if (file) void fillFromScreenshot(file);
-            }}
-          />
-        </label>
-        <button
-          type="button"
-          className="button secondary"
-          disabled={shot === "loading" || saving}
-          onClick={() => void pasteScreenshot()}
-        >
-          <ClipboardPaste size={16} />
-          Из буфера
-        </button>
         <span>
-          Ссылка не сработала? Заполним название, цену и фото по скриншоту
-          товара.
+          Название <small className="required">обязательно</small>
         </span>
-      </div>
-      {(lookup === "loading" || shot === "loading" || lookupNote) && (
-        <p className="lookup-note" role="status">
-          <Sparkles size={14} />
-          {shot === "loading"
-            ? "Нейросеть читает скриншот, это занимает 5–15 секунд…"
-            : lookup === "loading"
-              ? SLOW_SHOPS.test(shopUrl)
-                ? "Открываем страницу через домашний помощник, это может занять до 30 секунд…"
-                : "Ищем цену и картинку…"
-              : lookupNote}
-        </p>
-      )}
-      {photo ? (
-        editSrc ? (
-          <PhotoFrame
-            src={editSrc}
-            framing={framing}
-            onChange={(f) => {
-              gate.current.edit("photo");
-              autoPhoto.current = false;
-              framingTouched.current = true;
-              setFraming(f);
-              onDirty();
-            }}
-          />
-        ) : (
-          <div className="photo-frame">
-            <img
-              className="photo-frame-canvas"
-              src={photo}
-              alt="Фото подарка"
-            />
-          </div>
-        )
-      ) : (
-        <label className="photo-upload">
-          {photoNote && !photoLoading ? (
-            <span className="photo-fallback">
-              <ImageOff size={27} />
-              <strong>Нет картинки</strong>
-              <span>Выберите файл, вставьте Ctrl+V или ссылку на картинку</span>
-            </span>
-          ) : (
-            <>
-              <ImagePlus size={27} />
-              <strong>
-                {photoLoading ? "Готовим фото…" : "Добавить фотографию"}
-              </strong>
-              <span>Файл, Ctrl+V или ссылка · сожмём автоматически</span>
-            </>
-          )}
-          <input
-            type="file"
-            accept="image/*"
-            aria-label="Выбрать фотографию"
-            disabled={photoLoading || saving}
-            onChange={async (e) => {
-              const file = e.target.files?.[0];
-              if (!file) return;
-              await applyPhoto(
-                () => compressPhoto(file),
-                "Не удалось открыть фото.",
-              );
-            }}
-          />
-        </label>
-      )}
-      {photoNote && (
-        <p className="photo-note" role="status">
-          {photoNote}
-        </p>
-      )}
-      <div className="photo-tools">
-        <button
-          type="button"
-          className="text-link"
-          disabled={photoLoading}
-          onClick={() => void pasteFromClipboard()}
-        >
-          <ClipboardPaste size={15} />
-          Вставить из буфера
-        </button>
-        {photo && (
-          <label className="text-link file-link">
-            <ImagePlus size={15} />
-            Заменить фото
-            <input
-              type="file"
-              accept="image/*"
-              aria-label="Выбрать другую фотографию"
-              disabled={photoLoading || saving}
-              onChange={async (e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                await applyPhoto(
-                  () => compressPhoto(file),
-                  "Не удалось открыть фото.",
-                );
-              }}
-            />
-          </label>
-        )}
-        {photo && (
-          <button
-            type="button"
-            className="text-link"
-            onClick={() => {
-              gate.current.edit("photo");
-              ++photoRequest.current;
-              autoPhoto.current = false;
-              setPhotoLoading(false);
-              onDirty();
-              setPhoto("");
-            }}
-          >
-            Убрать фото
-          </button>
-        )}
-      </div>
-      <div className="input-with-action">
-        <input
-          aria-label="Ссылка на картинку"
-          type="url"
-          value={imageUrl}
-          onChange={(e) => setImageUrl(e.target.value)}
-          placeholder="Или ссылка на картинку: https://…/photo.jpg"
-        />
-        <button
-          type="button"
-          className="button secondary"
-          disabled={!isHttps(imageUrl.trim()) || photoLoading}
-          onClick={() =>
-            void applyPhoto(
-              () => photoFromUrl(imageUrl.trim()),
-              "Не удалось загрузить картинку.",
-            )
-          }
-        >
-          Загрузить
-        </button>
-      </div>
-      <label>
-        Название желания
         <input
           name="title"
           required
@@ -841,9 +620,256 @@ export function GiftForm({
           placeholder="Например, беспроводные наушники"
         />
       </label>
+      <div className="form-section">
+        <label>
+          <span>
+            Ссылка на товар <small className="optional">необязательно</small>
+          </span>
+          <div className="input-with-action">
+            <input
+              name="shop_url"
+              type="url"
+              maxLength={2048}
+              value={shopUrl}
+              onChange={(e) => {
+                gate.current.invalidate();
+                setLookup("idle");
+                setLookupNote("");
+                if (photoIsLookup.current) {
+                  ++photoRequest.current;
+                  photoIsLookup.current = false;
+                  setPhotoLoading(false);
+                }
+                if (autoTitle.current) {
+                  setTitle("");
+                  autoTitle.current = false;
+                }
+                if (autoDescription.current) {
+                  setDescription("");
+                  autoDescription.current = false;
+                }
+                if (!draft.current.priceTouched) {
+                  setPriceMin("");
+                  setPriceMax("");
+                }
+                if (autoPhoto.current) {
+                  onDirty();
+                  setPhoto("");
+                  autoPhoto.current = false;
+                }
+                setShopUrl(e.target.value);
+              }}
+              placeholder="https://… — подставим название, цену и фото"
+            />
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Подтянуть данные по ссылке"
+              title="Подтянуть данные по ссылке"
+              disabled={!isHttps(shopUrl.trim()) || lookup === "loading"}
+              onClick={() => void fillFromLink(shopUrl.trim())}
+            >
+              <RefreshCw
+                size={17}
+                className={lookup === "loading" ? "spin" : ""}
+              />
+            </button>
+          </div>
+        </label>
+        <div className="screenshot-row">
+          <span>Ссылка не открылась?</span>
+          <label
+            className={`text-link file-link${shot === "loading" ? " busy" : ""}`}
+          >
+            <ScanText size={16} className={shot === "loading" ? "spin" : ""} />
+            {shot === "loading" ? "Читаем скриншот…" : "Скриншот товара"}
+            <input
+              type="file"
+              accept="image/*"
+              aria-label="Выбрать скриншот товара"
+              disabled={shot === "loading" || saving}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file) void fillFromScreenshot(file);
+              }}
+            />
+          </label>
+          <button
+            type="button"
+            className="text-link"
+            disabled={shot === "loading" || saving}
+            onClick={() => void pasteScreenshot()}
+          >
+            <ClipboardPaste size={16} />
+            Скриншот из буфера
+          </button>
+        </div>
+        {(lookup === "loading" || shot === "loading" || lookupNote) && (
+          <p className="lookup-note" role="status">
+            <Sparkles size={14} />
+            {shot === "loading"
+              ? "Нейросеть читает скриншот, это занимает 5–15 секунд…"
+              : lookup === "loading"
+                ? SLOW_SHOPS.test(shopUrl)
+                  ? "Открываем страницу через домашний помощник, это может занять до 30 секунд…"
+                  : "Ищем цену и картинку…"
+                : lookupNote}
+          </p>
+        )}
+      </div>
+      <div className="form-section">
+        <div className="section-label">
+          Фото <small className="optional">необязательно</small>
+        </div>
+        {photo ? (
+          editSrc ? (
+            <PhotoFrame
+              src={editSrc}
+              framing={framing}
+              onChange={(f) => {
+                gate.current.edit("photo");
+                autoPhoto.current = false;
+                framingTouched.current = true;
+                setFraming(f);
+                onDirty();
+              }}
+            />
+          ) : (
+            <div className="photo-frame">
+              <img
+                className="photo-frame-canvas"
+                src={photo}
+                alt="Фото подарка"
+              />
+            </div>
+          )
+        ) : (
+          <label className="photo-upload">
+            {photoNote && !photoLoading ? (
+              <span className="photo-fallback">
+                <ImageOff size={27} />
+                <strong>Нет картинки</strong>
+                <span>Выберите файл или вставьте картинку</span>
+              </span>
+            ) : (
+              <>
+                <ImagePlus size={27} />
+                <strong>
+                  {photoLoading ? "Готовим фото…" : "Добавить фотографию"}
+                </strong>
+                <span>Выберите файл или вставьте картинку</span>
+              </>
+            )}
+            <input
+              type="file"
+              accept="image/*"
+              aria-label="Выбрать фотографию"
+              disabled={photoLoading || saving}
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                await applyPhoto(
+                  () => compressPhoto(file),
+                  "Не удалось открыть фото.",
+                );
+              }}
+            />
+          </label>
+        )}
+        {photoNote && (
+          <p className="photo-note" role="status">
+            {photoNote}
+          </p>
+        )}
+        <div className="photo-tools">
+          <button
+            type="button"
+            className="text-link"
+            disabled={photoLoading}
+            onClick={() => void pasteFromClipboard()}
+          >
+            <ClipboardPaste size={15} />
+            Вставить из буфера
+          </button>
+          {!photo && (
+            <button
+              type="button"
+              className="text-link"
+              aria-expanded={urlOpen}
+              onClick={() => setUrlOpen(!urlOpen)}
+            >
+              <LinkIcon size={15} />
+              Ссылка на картинку
+            </button>
+          )}
+          {photo && (
+            <label className="text-link file-link">
+              <ImagePlus size={15} />
+              Заменить фото
+              <input
+                type="file"
+                accept="image/*"
+                aria-label="Выбрать другую фотографию"
+                disabled={photoLoading || saving}
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  await applyPhoto(
+                    () => compressPhoto(file),
+                    "Не удалось открыть фото.",
+                  );
+                }}
+              />
+            </label>
+          )}
+          {photo && (
+            <button
+              type="button"
+              className="text-link"
+              onClick={() => {
+                gate.current.edit("photo");
+                ++photoRequest.current;
+                autoPhoto.current = false;
+                setPhotoLoading(false);
+                onDirty();
+                setPhoto("");
+              }}
+            >
+              Убрать фото
+            </button>
+          )}
+        </div>
+        {urlOpen && !photo && (
+          <div className="input-with-action">
+            <input
+              aria-label="Ссылка на картинку"
+              type="url"
+              value={imageUrl}
+              onChange={(e) => setImageUrl(e.target.value)}
+              placeholder="Или ссылка на картинку: https://…/photo.jpg"
+            />
+            <button
+              type="button"
+              className="button secondary"
+              disabled={!isHttps(imageUrl.trim()) || photoLoading}
+              onClick={() =>
+                void applyPhoto(
+                  () => photoFromUrl(imageUrl.trim()),
+                  "Не удалось загрузить картинку.",
+                )
+              }
+            >
+              Загрузить
+            </button>
+          </div>
+        )}
+      </div>
       <div className="price-field">
         <div className="price-heading">
-          <span>Цена</span>
+          <span>
+            Цена <small className="optional">необязательно</small>
+          </span>
           <div className="segmented small" role="group" aria-label="Тип цены">
             <button
               type="button"
@@ -883,7 +909,7 @@ export function GiftForm({
               setPriceMin(e.target.value);
               setPriceTouched(true);
             }}
-            placeholder={priceMode === "range" ? "от" : "Необязательно"}
+            placeholder={priceMode === "range" ? "от" : "Сколько стоит"}
           />
           {priceMode === "range" && (
             <input
@@ -913,8 +939,14 @@ export function GiftForm({
           </select>
         </div>
       </div>
+      <div className="field hearts-field">
+        <span>Насколько хочется</span>
+        <Hearts value={priority} onChange={setPriority} size={26} />
+      </div>
       <label>
-        Комментарий
+        <span>
+          Комментарий <small className="optional">необязательно</small>
+        </span>
         <textarea
           name="description"
           rows={3}
@@ -928,37 +960,34 @@ export function GiftForm({
           placeholder="Цвет, размер или другие важные детали"
         />
       </label>
-      <div className="field">
-        <span>Насколько хочется</span>
-        <Hearts value={priority} onChange={setPriority} size={24} />
-        <span className="small-text">
-          Чем больше сердечек, тем сильнее хочется.
-        </span>
-      </div>
       {error && (
         <div className="error" role="alert">
           {error}
         </div>
       )}
-      <button
-        className="button primary full-width"
-        disabled={
-          saving ||
-          lookup === "loading" ||
-          shot === "loading" ||
-          photoLoading ||
-          photoError
-        }
-      >
-        {saving ? (
-          "Сохраняем…"
-        ) : (
-          <>
-            <Heart size={17} />
-            Сохранить желание
-          </>
-        )}
-      </button>
+      </div>
+      {/* Always visible: no scrolling past the photo to save. */}
+      <div className="form-footer">
+        <button
+          className="button primary"
+          disabled={
+            saving ||
+            lookup === "loading" ||
+            shot === "loading" ||
+            photoLoading ||
+            photoError
+          }
+        >
+          {saving ? (
+            "Сохраняем…"
+          ) : (
+            <>
+              <Heart size={17} />
+              Сохранить желание
+            </>
+          )}
+        </button>
+      </div>
     </form>
   );
 }
