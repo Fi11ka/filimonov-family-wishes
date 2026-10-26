@@ -2873,3 +2873,52 @@ test("gift photo: the owner swaps a shop photo link for the photo, quietly and o
     false,
   );
 });
+
+// ---- Sign-in data: written only when Telegram sends something new ----
+test("sign-in: a new name or @username from Telegram is saved, a taken @username moves", async () => {
+  const as = (id: number, name: string, username: string) => ({
+    Authorization: `tma ${signed(id, {
+      user: JSON.stringify({ id, first_name: name, username }),
+    })}`,
+  });
+  const me = async (id: number, name: string, username: string) =>
+    (
+      await call(
+        "/me",
+        undefined,
+        "GET",
+        undefined,
+        undefined,
+        as(id, name, username),
+      )
+    ).body.user;
+  const stored = async (id: string) =>
+    await db
+      .prepare(
+        "SELECT u.name,u.username,i.username AS sign_in FROM users u JOIN identities i ON i.user_id=u.id AND i.provider='telegram' WHERE u.id=?",
+      )
+      .bind(id)
+      .first();
+  assert.equal((await me(7901, "Маша", "masha_7901")).name, "Маша");
+  // The same data again: nothing changes.
+  assert.equal((await me(7901, "Маша", "masha_7901")).name, "Маша");
+  assert.deepEqual(await stored("7901"), {
+    name: "Маша",
+    username: "masha_7901",
+    sign_in: "masha_7901",
+  });
+  // A new name.
+  assert.equal((await me(7901, "Мария", "masha_7901")).name, "Мария");
+  assert.equal((await stored("7901"))?.name, "Мария");
+  // The @username now belongs to someone else: it moves to them.
+  assert.equal((await me(7902, "Петя", "masha_7901")).username, "masha_7901");
+  assert.deepEqual(await stored("7901"), {
+    name: "Мария",
+    username: null,
+    sign_in: null,
+  });
+  // A copy edited by hand gets fixed on the next request.
+  await db.prepare("UPDATE users SET name='Старое' WHERE id='7902'").run();
+  assert.equal((await me(7902, "Петя", "masha_7901")).name, "Петя");
+  assert.equal((await stored("7902"))?.name, "Петя");
+});

@@ -53,14 +53,28 @@ export async function follow(db: D1Database, follower: string, target: string) {
  */
 export async function saveUser(db: D1Database, user: Identity) {
   const telegramId = user.id;
-  const account =
-    (
-      await stmt(
-        db,
-        "SELECT user_id FROM identities WHERE provider='telegram' AND subject=?",
-        telegramId,
-      ).first<{ user_id: string }>()
-    )?.user_id ?? telegramId;
+  const known = await stmt(
+    db,
+    `SELECT i.user_id,i.name,i.username,u.name AS shown_name,u.username AS shown_username
+    FROM identities i LEFT JOIN users u ON u.id=i.user_id WHERE i.provider='telegram' AND i.subject=?`,
+    telegramId,
+  ).first<{
+    user_id: string;
+    name: string | null;
+    username: string | null;
+    shown_name: string | null;
+    shown_username: string | null;
+  }>();
+  const account = known?.user_id ?? telegramId;
+  // Almost every request: the same name and @username as last time, nothing to write.
+  if (
+    known &&
+    known.name === user.name &&
+    known.shown_name === user.name &&
+    known.username === user.username &&
+    known.shown_username === user.username
+  )
+    return { ...user, id: account };
   await db.batch([
     // A Telegram username can move to another person; the newest owner keeps it.
     // users.username is kept as a copy for display and for the previous Worker version.
