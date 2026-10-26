@@ -1081,6 +1081,43 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
           )?.photo || "",
       };
     }
+    if (giftMatch[2] === "/photo" && method === "PUT") {
+      // The bot saves a shop's photo as a link (the server cannot shrink it); the
+      // owner's app swaps it for the photo itself, compressed in the browser.
+      if (g.owner_id !== uid) missing();
+      const b = await body(req);
+      const photo = text(b.photo, 220000),
+        from = text(b.from, 2048);
+      if (
+        !/^data:image\/(jpeg|webp|png);base64,[A-Za-z0-9+/]+=*$/.test(photo) ||
+        !/^https:\/\//.test(from)
+      )
+        fail(400, "VALIDATION", "Некорректное фото.");
+      const before = await stmt(
+        db,
+        "SELECT wishlist_updated_at FROM users WHERE id=?",
+        uid,
+      ).first<{ wishlist_updated_at: number | null }>();
+      // Only while the link is still there: an edit made meanwhile wins.
+      // The same picture, so «вишлист обновлён» keeps its date.
+      const [swap] = await db.batch([
+        stmt(
+          db,
+          "UPDATE gifts SET photo=? WHERE id=? AND owner_id=? AND photo=?",
+          photo,
+          id,
+          uid,
+          from,
+        ),
+        stmt(
+          db,
+          "UPDATE users SET wishlist_updated_at=? WHERE id=?",
+          before?.wishlist_updated_at ?? null,
+          uid,
+        ),
+      ]);
+      return { replaced: swap.meta.changes > 0 };
+    }
     if (giftMatch[2] === "/restore" && method === "POST") {
       if (g.owner_id !== uid) missing();
       await restoreGift(db, out, user, id);

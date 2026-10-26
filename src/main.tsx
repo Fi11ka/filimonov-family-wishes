@@ -55,6 +55,7 @@ import {
   openBot,
   openInBrowser,
   openTarget,
+  photoFromUrl,
   redeemHandoff,
   RequestError,
   setGuestCode,
@@ -1655,7 +1656,7 @@ function GiftCard({
   return (
     <article className={`gift-card ${mode === "archive" ? "archived" : ""}`}>
       <div className="photo-wrap">
-        <Photo wish={g} />
+        <Photo wish={g} own={mode === "own" || mode === "archive"} />
         <span className="priority">
           <Hearts value={g.priority} size={12} />
         </span>
@@ -1823,7 +1824,23 @@ function GiftCard({
     </article>
   );
 }
-function Photo({ wish }: { wish: Wish }) {
+/**
+ * The bot saves a shop's photo as a link: the server cannot shrink it. When the
+ * owner sees such a wish, the app stores the photo itself, one at a time.
+ */
+let photoSwaps = Promise.resolve();
+const photoSwapped = new Set<string>();
+function keepShopPhoto(id: string, link: string) {
+  if (photoSwapped.has(id)) return;
+  photoSwapped.add(id);
+  photoSwaps = photoSwaps
+    .then(async () => {
+      const photo = await photoFromUrl(link);
+      await api(`/api/gifts/${id}/photo`, "PUT", { photo, from: link });
+    })
+    .catch(() => undefined);
+}
+function Photo({ wish, own }: { wish: Wish; own: boolean }) {
   const [src, setSrc] = useState(wish.photo || ""),
     [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -1832,6 +1849,8 @@ function Photo({ wish }: { wish: Wish }) {
       void api<{ photo: string }>(`/api/gifts/${wish.id}/photo`)
         .then((r) => {
           if (alive) setSrc(r.photo);
+          if (own && /^https:\/\//.test(r.photo))
+            keepShopPhoto(wish.id, r.photo);
         })
         .catch(() => {
           if (alive) setFailed(true);
@@ -1839,7 +1858,7 @@ function Photo({ wish }: { wish: Wish }) {
     return () => {
       alive = false;
     };
-  }, [wish]);
+  }, [wish, own]);
   return src && !failed ? (
     <img
       loading="lazy"
