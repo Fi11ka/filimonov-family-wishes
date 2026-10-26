@@ -4,6 +4,7 @@ import {
   ArrowUpRight,
   CalendarPlus,
   ChevronRight,
+  Eye,
   Pencil,
   PartyPopper,
   Trash2,
@@ -31,8 +32,8 @@ const icons: Record<string, string> = {
   custom: "🎉",
 };
 const modeText = {
-  hero: "Виновник торжества",
-  everyone: "Праздник для всех",
+  hero: "Подарки виновнику торжества",
+  everyone: "Обмен подарками",
 };
 /** Events in the wishlist header; the owner adds their own and invites friends. */
 export function WishlistEvents({
@@ -62,61 +63,88 @@ export function WishlistEvents({
   const custom = events.find((e) => e.key === "custom");
   const invited = (e: UpcomingEvent) =>
     invitations.find((i) => i.key === e.key && i.date === e.date);
+  // One compact row of chips: each opens the event page, where guests and
+  // details live. Events with invited guests stand out and show the count.
   return (
     <div className="wishlist-events">
-      <ul>
+      <ul className="event-chips">
         {events.map((e) => {
           const party = invited(e);
-          return (
-            <li key={e.key}>
-              <span>
-                {icons[e.key]} <strong>{e.title}</strong> · {eventDay(e.date)} ·{" "}
-                {untilText(e.days)}
-                {own && e.key === "custom" && (
-                  <button
-                    className="icon-button event-edit"
-                    aria-label="Изменить мероприятие"
-                    onClick={() => setDialog("event")}
-                  >
-                    <Pencil size={13} />
-                  </button>
-                )}
-                {onOpen && (
-                  <button
-                    className="text-link event-more"
-                    onClick={() => onOpen(e)}
-                  >
-                    Подробнее <ChevronRight size={13} />
-                  </button>
-                )}
+          const guests = party?.guests.length || 0;
+          const label = (
+            <>
+              <span className="event-chip-icon" aria-hidden="true">
+                {icons[e.key]}
               </span>
-              {!!party?.guests.length && (
+              <span className="event-chip-text">
+                <strong>{e.title}</strong>
                 <small>
-                  {modeText[party.mode]} · приглашены:{" "}
-                  {party.guests.map((g) => g.name).join(", ")}
+                  {eventDay(e.date)} · {untilText(e.days)}
                 </small>
+              </span>
+              {guests > 0 && (
+                <span
+                  className="event-chip-guests"
+                  aria-label={`Гостей: ${guests}`}
+                  title={`${modeText[party!.mode]} · гостей: ${guests}`}
+                >
+                  <Users size={13} />
+                  {guests}
+                </span>
+              )}
+            </>
+          );
+          return (
+            <li key={e.key} className={guests ? "has-party" : undefined}>
+              {onOpen ? (
+                <button className="event-chip" onClick={() => onOpen(e)}>
+                  {label}
+                  <ChevronRight size={14} className="event-chip-arrow" />
+                </button>
+              ) : (
+                <span className="event-chip">{label}</span>
+              )}
+              {own && e.key === "custom" && (
+                <button
+                  className="icon-button event-edit"
+                  aria-label="Изменить мероприятие"
+                  title="Изменить мероприятие"
+                  onClick={() => setDialog("event")}
+                >
+                  <Pencil size={14} />
+                </button>
               )}
             </li>
           );
         })}
+        {own && !owner.birthday && (
+          <li>
+            <button className="event-chip add" onClick={onProfile}>
+              🎂 День рождения
+            </button>
+          </li>
+        )}
+        {own && !custom && (
+          <li>
+            <button
+              className="event-chip add"
+              onClick={() => setDialog("event")}
+            >
+              <CalendarPlus size={15} /> Мероприятие
+            </button>
+          </li>
+        )}
+        {own && (
+          <li>
+            <button
+              className="event-chip add"
+              onClick={() => setDialog("invite")}
+            >
+              <PartyPopper size={15} /> Пригласить
+            </button>
+          </li>
+        )}
       </ul>
-      {own && (
-        <div className="event-actions">
-          {!owner.birthday && (
-            <button className="text-link" onClick={onProfile}>
-              Указать дату рождения
-            </button>
-          )}
-          {!custom && (
-            <button className="text-link" onClick={() => setDialog("event")}>
-              <CalendarPlus size={15} /> Добавить мероприятие
-            </button>
-          )}
-          <button className="text-link" onClick={() => setDialog("invite")}>
-            <PartyPopper size={15} /> Пригласить на мероприятие
-          </button>
-        </div>
-      )}
       {dialog === "event" && (
         <EventDialog
           current={custom}
@@ -477,7 +505,8 @@ export function EventPage({
   friends: Friend[];
   today: Date;
   onBack: () => void;
-  onOpenList: (id: string) => void;
+  /** `named`: the event whose guests' bookings are named in that list. */
+  onOpenList: (id: string, named?: string) => void;
   notice: (message: string) => void;
 }) {
   const [data, setData] = useState<EventPageData | null>(null),
@@ -582,8 +611,9 @@ export function EventPage({
               {modeText[data.mode]}:{" "}
               {data.mode === "everyone"
                 ? "участники видят, кто из них что забронировал, в вишлистах друг друга"
-                : `гости видят, кто из них что забронировал, в вишлисте ${own ? "виновника" : data.owner.name}`}
-              . В своём вишлисте этого не видит никто.
+                : `гости видят, кто из них что забронировал, в вишлисте ${own ? "виновника торжества" : data.owner.name}`}
+              . Брони людей не из числа гостей показываются без имени, а в
+              своём вишлисте никто не видит, кто что дарит.
             </p>
           )}
         </div>
@@ -654,7 +684,7 @@ export function EventPage({
           </p>
           <button
             className="button secondary event-open-list"
-            onClick={() => onOpenList(data.owner.id)}
+            onClick={() => onOpenList(data.owner.id, undefined)}
           >
             Вишлист: {data.owner.name} <ArrowUpRight size={14} />
           </button>
@@ -663,18 +693,31 @@ export function EventPage({
         <ul className="event-people">
           {people.map((p) => (
             <li key={p.id}>
-              <span>
+              <span className="event-person">
                 <strong>{p.id === me ? "Вы" : p.name}</strong>
                 {p.username && p.id !== me && <small> @{p.username}</small>}
-                {p.host && <small> · виновник торжества</small>}
+                {p.host && (
+                  <span className="person-role">
+                    {data.mode === "everyone"
+                      ? "организатор"
+                      : "виновник торжества"}
+                  </span>
+                )}
+                {named(p.id) && (
+                  <small className="person-names">
+                    <Eye size={13} /> В вишлисте видно, кто из гостей что
+                    дарит
+                  </small>
+                )}
               </span>
               {(p.id === me || data.mode === "everyone" || p.host) && (
                 <button
                   className="button secondary"
-                  onClick={() => onOpenList(p.id)}
+                  onClick={() =>
+                    onOpenList(p.id, named(p.id) ? event.title : undefined)
+                  }
                 >
                   {p.id === me ? "Мой вишлист" : "Вишлист"}
-                  {named(p.id) && " · с именами"}
                   <ArrowUpRight size={14} />
                 </button>
               )}

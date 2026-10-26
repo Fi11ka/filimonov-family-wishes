@@ -1,3 +1,4 @@
+import { eventSpecs } from "../shared/events";
 export const demoUser = {
   id: "1001",
   name: "Анастасия Филимонова",
@@ -103,5 +104,50 @@ export const demoArchive = [
     archived_at: 1735689600,
     photo:
       "https://images.unsplash.com/photo-1580301762395-21ce84d00bc6?w=700&auto=format&fit=crop&q=85",
+  },
+];
+/** «Мои брони» in the demo: a solo booking, a shared one and an invitation. */
+export const demoBookings = [
+  {
+    gift_id: "demo-b1",
+    role: "organizer" as const,
+    title: "Шарф из мериноса",
+    price_minor: 4500,
+    currency: "EUR",
+    owner_id: "1002",
+    owner_name: "Александр Филимонов",
+    organizer_name: null,
+    archived: 0,
+    owner_events: eventSpecs({}),
+    members: [],
+  },
+  {
+    gift_id: "demo-b2",
+    role: "organizer" as const,
+    title: "Кофемашина",
+    price_minor: 32000,
+    currency: "EUR",
+    owner_id: "1003",
+    owner_name: "Мария Филимонова",
+    organizer_name: null,
+    archived: 0,
+    owner_events: eventSpecs({}),
+    members: [
+      { id: "1002", name: "Александр", username: "sasha_f", status: "joined" as const },
+      { id: "1004", name: "Михаил", username: null, status: "invited" as const },
+    ],
+  },
+  {
+    gift_id: "demo-b3",
+    role: "invited" as const,
+    title: "Билеты в театр",
+    price_minor: 12000,
+    currency: "EUR",
+    owner_id: "1004",
+    owner_name: "Михаил Филимонов",
+    organizer_name: "Мария",
+    archived: 0,
+    owner_events: [],
+    members: [],
   },
 ];
