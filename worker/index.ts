@@ -17,7 +17,7 @@ import { JWKS_URL, liveJwks, verifyIdToken, type Jwk } from "./oidc";
 import { liveContext, lookupProduct } from "./shops";
 import { cartKind, readCart } from "./shops/carts";
 import { aiNamer } from "./shops/naming";
-import { readScreenshot, screenshotBytes } from "./screenshot";
+import { isQuotaError, readScreenshot, screenshotBytes } from "./screenshot";
 import { cleanupHelperJobs, helperRoute, homeHelper } from "./helper";
 import {
   FRIEND_OF,
@@ -96,6 +96,15 @@ async function body(req: Request): Promise<Record<string, unknown>> {
   } catch {
     fail(400, "VALIDATION", "Некорректный JSON.");
   }
+}
+/** "5006: Error: oneOf at '/' not met…" → "5006"; otherwise a short excerpt. */
+function aiErrorCode(e: unknown) {
+  const m = String((e as Error)?.message ?? e);
+  return (
+    m.match(/\b\d{4}\b/)?.[0] ||
+    m.replace(/\s+/g, " ").slice(0, 60) ||
+    "без кода"
+  );
 }
 async function rate(db: D1Database, key: string, max: number) {
   const window = Math.floor(now() / 60);
@@ -1217,17 +1226,15 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     await rate(db, `screenshot:${uid}`, 6);
     if (!env.AI)
       fail(503, "AI_UNAVAILABLE", "Распознавание скриншотов не настроено.");
-    const image = screenshotBytes(text(b.image, 235000, true));
-    if (!image)
+    const image = text(b.image, 235000, true);
+    if (!screenshotBytes(image))
       fail(400, "VALIDATION", "Выберите скриншот JPEG, PNG или WebP.");
     let r;
     try {
       r = await readScreenshot(env.AI, image);
     } catch (e) {
       // Free Workers AI quota (10 000 neurons a day) is shared by the whole app.
-      if (
-        /allocation|quota|limit|4006|3036/i.test(String((e as Error)?.message))
-      )
+      if (isQuotaError(e))
         fail(
           429,
           "AI_LIMIT",
@@ -1236,7 +1243,8 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       fail(
         502,
         "AI_FAILED",
-        "Не удалось распознать скриншот. Попробуйте ещё раз.",
+        // The model's error code (e.g. "5006") tells what Cloudflare refused.
+        `Не удалось распознать скриншот (${aiErrorCode(e)}). Попробуйте ещё раз.`,
       );
     }
     if (!r)

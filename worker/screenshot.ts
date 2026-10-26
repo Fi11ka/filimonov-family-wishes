@@ -9,7 +9,7 @@ import type { AiBinding } from "./shops/naming";
 
 /** The cheapest vision model in Workers AI (about 40 neurons per screenshot). */
 export const SCREENSHOT_MODEL = "@cf/meta/llama-3.2-11b-vision-instruct";
-const TIMEOUT_MS = 20000;
+const TIMEOUT_MS = 30000;
 
 export interface ScreenshotResult {
   shop: string | null;
@@ -128,25 +128,44 @@ export function screenshotBytes(dataUrl: string): Uint8Array | null {
   }
 }
 
+/** Errors that another request format cannot fix. */
+export const isQuotaError = (e: unknown) =>
+  /allocation|quota|neurons|4006|3036/i.test(
+    String((e as Error)?.message ?? e),
+  );
+
 /**
- * Reads a screenshot with the vision model. Meta's licence has to be accepted
+ * Reads a screenshot with the vision model. The image goes inside `messages`
+ * (the current format); if the model refuses it, the older documented
+ * `prompt` + `image` bytes format is tried. Meta's licence has to be accepted
  * once per Cloudflare account by sending "agree"; done here on the first refusal.
  */
 export async function readScreenshot(
   ai: AiBinding,
-  image: Uint8Array,
+  dataUrl: string,
   model = SCREENSHOT_MODEL,
   timeoutMs = TIMEOUT_MS,
 ): Promise<ScreenshotResult | null> {
-  const ask = () =>
-    ai.run(model, {
-      messages: [{ role: "user", content: PROMPT }],
-      image: [...image],
-      max_tokens: 400,
-      temperature: 0.1,
-    });
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const run = async () => {
+  const bytes = screenshotBytes(dataUrl);
+  if (!bytes) return null;
+  const options = { max_tokens: 400, temperature: 0.1 };
+  const formats = [
+    () =>
+      ai.run(model, {
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: PROMPT },
+              { type: "image_url", image_url: { url: dataUrl } },
+            ],
+          },
+        ],
+        ...options,
+      }),
+    () => ai.run(model, { prompt: PROMPT, image: [...bytes], ...options }),
+  ];
+  const withLicence = async (ask: () => Promise<unknown>) => {
     try {
       return await ask();
     } catch (e) {
@@ -155,6 +174,20 @@ export async function readScreenshot(
       return ask();
     }
   };
+  const run = async () => {
+    let last: unknown;
+    for (const ask of formats) {
+      try {
+        return await withLicence(ask);
+      } catch (e) {
+        if (isQuotaError(e)) throw e;
+        console.error("screenshot: model refused the request", e);
+        last = e;
+      }
+    }
+    throw last;
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const answer = await Promise.race([
       run(),
