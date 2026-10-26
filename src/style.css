@@ -3443,3 +3443,35 @@ button.event-chip:hover {
   font-weight: 400;
   line-height: 1.35;
 }
+/* A request in «Подписки» / «Подписчики»: not counted until approved. */
+.member-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.member-tile > .member {
+  flex: 1;
+}
+.member.pending {
+  border-style: dashed;
+}
+.pending-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--purple-dark);
+  font-size: var(--fs-xs);
+  font-style: normal;
+  font-weight: 500;
+}
+.member-actions {
+  display: flex;
+  gap: 6px;
+}
+.member-actions .button {
+  flex: 1;
+  min-height: 34px;
+  padding: 0 8px;
+  font-size: var(--fs-sm);
+}
