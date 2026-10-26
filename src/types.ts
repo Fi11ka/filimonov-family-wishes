@@ -69,6 +69,8 @@ export type Booking = {
   archived: number;
   /** The owner's events, to know by when to buy. */
   owner_events: EventSpec[];
+  /** The owner's parties the user is invited to. */
+  my_events?: { key: string; date: string }[];
   members: {
     id: string;
     name: string;
