@@ -3276,3 +3276,34 @@ button.event-chip:hover {
     font-size: 15px;
   }
 }
+/* «В браузере» / «В Telegram» in the header. */
+.switch-app {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--purple-dark);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.switch-app:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+@media (max-width: 740px) {
+  /* Narrow header: the icon alone, with a 40px target. */
+  .switch-app {
+    min-width: var(--control);
+    min-height: var(--control);
+    padding: 0;
+    justify-content: center;
+  }
+  .switch-app > span {
+    display: none;
+  }
+}

@@ -252,6 +252,7 @@ before(async () => {
   await migrate("migrations/0013_event_page.sql");
   await migrate("migrations/0014_profile_photo.sql");
   await migrate("migrations/0015_identities.sql");
+  await migrate("migrations/0016_login_handoff.sql");
   assert.equal(
     (
       await db
@@ -2737,4 +2738,83 @@ test("identities: a Telegram nickname moves to its newest owner in sign-ins and 
   });
   assert.equal(r.status, 200, r.raw);
   assert.equal((await call("/friends", 7307)).body.incoming[0]?.id, "7308");
+});
+
+// ---- «В браузере»: one-time sign-in code from the Mini App ----
+test("handoff: the Mini App makes a one-time code that signs the website in once", async () => {
+  const made = await call("/auth/handoff", 7401, "POST", {});
+  assert.equal(made.status, 200, made.raw);
+  assert.match(made.body.code, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(made.body.expires_in, 120);
+  // Only the hash is stored.
+  const stored = await db
+    .prepare(
+      "SELECT code_hash,user_id FROM login_handoffs WHERE user_id='7401'",
+    )
+    .first<{ code_hash: string; user_id: string }>();
+  assert.ok(stored);
+  assert.notEqual(stored!.code_hash, made.body.code);
+  // The website exchanges it without any other sign-in.
+  const redeemed = await call("/auth/handoff/redeem", undefined, "POST", {
+    code: made.body.code,
+  });
+  assert.equal(redeemed.status, 200, redeemed.raw);
+  const me = await call("/me", undefined, "GET", undefined, undefined, {
+    Authorization: `Session ${redeemed.body.token}`,
+  });
+  assert.equal(me.status, 200);
+  assert.equal(me.body.user.id, "7401");
+  assert.equal(me.body.web_session, true);
+  // Single use.
+  const again = await call("/auth/handoff/redeem", undefined, "POST", {
+    code: made.body.code,
+  });
+  assert.equal(again.status, 401);
+  assert.equal(again.body.error.code, "HANDOFF_INVALID");
+});
+test("handoff: expired, made-up and malformed codes fail; only the Mini App can make one", async () => {
+  const made = await call("/auth/handoff", 7402, "POST", {});
+  await db
+    .prepare("UPDATE login_handoffs SET expires_at=1 WHERE user_id='7402'")
+    .run();
+  for (const code of [made.body.code, "x".repeat(43), "short", "", 42, null])
+    assert.equal(
+      (
+        await call(
+          "/auth/handoff/redeem",
+          undefined,
+          "POST",
+          { code },
+          undefined,
+          {
+            "CF-Connecting-IP": "192.0.2.74",
+          },
+        )
+      ).status,
+      401,
+      String(code),
+    );
+  // Without signed Telegram data there is nothing to hand off.
+  assert.equal(
+    (await call("/auth/handoff", undefined, "POST", {})).status,
+    401,
+  );
+  // A website session cannot make a code: «В браузере» exists only in Telegram.
+  const fresh = await call("/auth/handoff", 7402, "POST", {});
+  const session = (
+    await call("/auth/handoff/redeem", undefined, "POST", {
+      code: fresh.body.code,
+    })
+  ).body.token;
+  const fromSite = await call(
+    "/auth/handoff",
+    undefined,
+    "POST",
+    {},
+    undefined,
+    {
+      Authorization: `Session ${session}`,
+    },
+  );
+  assert.equal(fromSite.status, 400);
 });
