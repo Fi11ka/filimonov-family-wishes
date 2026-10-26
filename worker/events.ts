@@ -28,6 +28,27 @@ export async function ownerSpecs(db: D1Database, ownerId: string) {
   }>();
   return r ? eventSpecs(r) : [];
 }
+/** Event specs of several owners in one query (an unknown owner has none). */
+async function specsOf(db: D1Database, ownerIds: string[]) {
+  const specs = new Map<string, EventSpec[]>();
+  const ids = [...new Set(ownerIds)];
+  if (!ids.length) return specs;
+  const rows = (
+    await stmt(
+      db,
+      "SELECT id,birthday,gender,event_title,event_date FROM users WHERE id IN (SELECT value FROM json_each(?))",
+      JSON.stringify(ids),
+    ).all<{
+      id: string;
+      birthday: string | null;
+      gender: string | null;
+      event_title: string | null;
+      event_date: string | null;
+    }>()
+  ).results;
+  for (const r of rows) specs.set(r.id, eventSpecs(r));
+  return specs;
+}
 export type Mode = "hero" | "everyone";
 /** Whose bookings are named where: see migrations/0012_events.sql. */
 const PARTY_ROWS = `SELECT p.owner_id,p.event_key,p.event_on,p.mode,p.description,u.id,u.name,u.username
@@ -57,7 +78,10 @@ export const PARTY_PEER = (viewer: string, owner: string) =>
   `EXISTS(SELECT 1 FROM event_parties p WHERE p.event_on>=date('now','-1 day') AND ${member(viewer)} AND (p.owner_id=${owner} OR (p.mode='everyone' AND ${member(owner)})))`;
 /** Groups guest rows into parties that are still ahead (a changed birthday leaves old rows behind). */
 async function parties(db: D1Database, rows: PartyRow[]) {
-  const specs = new Map<string, EventSpec[]>();
+  const specs = await specsOf(
+    db,
+    rows.map((r) => r.owner_id),
+  );
   const found = new Map<
     string,
     {
@@ -71,9 +95,7 @@ async function parties(db: D1Database, rows: PartyRow[]) {
     }
   >();
   for (const r of rows) {
-    if (!specs.has(r.owner_id))
-      specs.set(r.owner_id, await ownerSpecs(db, r.owner_id));
-    const own = specs.get(r.owner_id)!;
+    const own = specs.get(r.owner_id) ?? [];
     if (!isUpcoming(own, r.event_key, r.event_on)) continue;
     const id = `${r.owner_id}:${r.event_key}:${r.event_on}`;
     if (!found.has(id))
@@ -170,14 +192,13 @@ export async function myParties(db: D1Database, uid: string) {
       uid,
     ).all<{ owner_id: string; key: string; date: string }>()
   ).results;
-  const specs = new Map<string, EventSpec[]>();
-  const found = [];
-  for (const r of rows) {
-    if (!specs.has(r.owner_id))
-      specs.set(r.owner_id, await ownerSpecs(db, r.owner_id));
-    if (isUpcoming(specs.get(r.owner_id)!, r.key, r.date)) found.push(r);
-  }
-  return found;
+  const specs = await specsOf(
+    db,
+    rows.map((r) => r.owner_id),
+  );
+  return rows.filter((r) =>
+    isUpcoming(specs.get(r.owner_id) ?? [], r.key, r.date),
+  );
 }
 /** Owner's event routes; null when the path is not one of them. */
 export async function eventRoute(
@@ -211,9 +232,13 @@ export async function eventRoute(
         username: string | null;
       }>()
     ).results;
+    const hosts = await specsOf(
+      db,
+      rows.map((r) => r.owner_id),
+    );
     const invited = [];
     for (const r of rows) {
-      const own = await ownerSpecs(db, r.owner_id);
+      const own = hosts.get(r.owner_id) ?? [];
       if (!isUpcoming(own, r.event_key, r.event_on)) continue;
       invited.push({
         owner: { id: r.owner_id, name: r.name, username: r.username },
