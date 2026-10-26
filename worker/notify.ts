@@ -252,6 +252,13 @@ export class Outbox {
       [[openButton(this.env, "Мои брони", "b")]],
     );
   }
+  groupDissolved(organizer: Named, gift: GiftLike, ids: string[]) {
+    this.send(
+      ids,
+      `${who(organizer)} купит «${esc(gift.title)}» сам(а): совместный подарок отменён, скидываться не нужно.`,
+      [[openButton(this.env, "Мои брони", "b")]],
+    );
+  }
   groupCancelled(organizer: Named, gift: GiftLike, ids: string[]) {
     this.send(
       ids,

@@ -971,7 +971,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     return { ok: true };
   }
   const giftMatch = path.match(
-    /^\/api\/gifts\/([a-f0-9-]{36})(\/reservation(?:\/invite|\/join|\/decline)?|\/photo|\/archive|\/restore)?$/,
+    /^\/api\/gifts\/([a-f0-9-]{36})(\/reservation(?:\/invite|\/join|\/decline|\/members)?|\/photo|\/archive|\/restore)?$/,
   );
   if (giftMatch) {
     const id = giftMatch[1];
@@ -1075,6 +1075,34 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
             out.memberAnswered(user, i.organizer, i.gift, false);
         }
         return { ok: true };
+      }
+      // «Куплю сам»: the organizer keeps the booking, everyone else leaves it.
+      if (action === "/members" && method === "DELETE") {
+        if (
+          !(await stmt(
+            db,
+            "SELECT 1 AS ok FROM reservations WHERE gift_id=? AND user_id=?",
+            id,
+            uid,
+          ).first())
+        )
+          fail(
+            403,
+            "NOT_ORGANIZER",
+            "Отменить совместный подарок может только тот, кто его собирает.",
+          );
+        const removed = (
+          await stmt(
+            db,
+            "DELETE FROM reservation_members WHERE gift_id=? RETURNING user_id",
+            id,
+          ).all<{ user_id: string }>()
+        ).results.map((r) => r.user_id);
+        if (removed.length) {
+          const i = await info();
+          if (i) out.groupDissolved(user, i.gift, removed);
+        }
+        return { ok: true, removed: removed.length };
       }
       if ((action === "/join" || action === "/decline") && method === "POST") {
         const r = await stmt(

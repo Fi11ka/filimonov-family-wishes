@@ -1654,6 +1654,45 @@ test("group gifts: invite friends, answer from the site or the bot, owner sees n
   );
 });
 
+test("group gifts: the organizer buys alone, everyone else leaves and is told", async () => {
+  await befriend(961, 962);
+  await befriend(962, 963);
+  await befriend(962, 964);
+  const g = await gift(961, { title: "Велосипед" });
+  await call(`/gifts/${g}/reservation`, 962, "POST", {
+    friends: ["963", "964"],
+  });
+  await call(`/gifts/${g}/reservation/join`, 963, "POST");
+  // Only the organizer can call the shared gift off.
+  assert.equal(
+    (await call(`/gifts/${g}/reservation/members`, 963, "DELETE")).status,
+    403,
+  );
+  const r = await call(`/gifts/${g}/reservation/members`, 962, "DELETE");
+  assert.equal(r.status, 200, r.raw);
+  assert.equal(r.body.removed, 2);
+  // The joined friend and the one who has not answered yet both hear about it.
+  assert.match(
+    (await messages(963, 2))[1].text,
+    /купит «Велосипед» сам\(а\): совместный подарок отменён/,
+  );
+  assert.match(
+    (await messages(964, 2))[1].text,
+    /купит «Велосипед» сам\(а\)/,
+  );
+  assert.equal((await call("/reservations", 963)).body.reservations.length, 0);
+  assert.equal((await call("/reservations", 964)).body.reservations.length, 0);
+  // The booking itself stays with the organizer, now without members.
+  const own = (await call("/reservations", 962)).body.reservations[0];
+  assert.equal(own.role, "organizer");
+  assert.deepEqual(own.members, []);
+  assert.equal(
+    (await call("/lists/961", 963)).body.gifts.find((x: any) => x.id === g)
+      .reservation,
+    "reserved",
+  );
+});
+
 test("bot webhook: secret required, menu, adding and editing one's own wishes", async () => {
   const secret = createHash("sha256").update(`webhook:${BOT}`).digest("hex");
   const hook = (update: unknown, key = secret) =>
