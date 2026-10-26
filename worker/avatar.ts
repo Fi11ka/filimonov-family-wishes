@@ -3,6 +3,7 @@
 import { telegramPhoto } from "./bot";
 import { now, stmt, type Env } from "./core";
 import { fetchBytes, imageType } from "./net";
+import { PHOTO_DATA_URL, dataUrlOf } from "./photo-data";
 import { telegramCall } from "./notify";
 import { fail, isTelegramPhotoHost, type Identity } from "./security";
 /** Raw bytes ≤ 80 KB stay under the 120 000-character data URL limit of users.photo. */
@@ -10,11 +11,7 @@ const MAX_BYTES = 80_000;
 export const MAX_PHOTO_CHARS = 120_000;
 function dataUrl(bytes: Uint8Array) {
   const type = imageType(bytes);
-  if (!/^image\/(jpeg|png|webp)$/.test(type)) return null;
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000)
-    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return `data:${type};base64,${btoa(binary)}`;
+  return /^image\/(jpeg|png|webp)$/.test(type) ? dataUrlOf(bytes, type) : null;
 }
 /**
  * The current Telegram profile photo of a person (by Telegram user ID, not
@@ -80,9 +77,7 @@ export async function firstPhoto(
 /** A photo picked on the device and compressed in the browser. */
 export function photoInput(value: unknown) {
   const photo = typeof value === "string" ? value : "";
-  const m = photo.match(
-    /^data:image\/(jpeg|webp|png);base64,([A-Za-z0-9+/]+=*)$/,
-  );
+  const m = photo.match(PHOTO_DATA_URL);
   if (!m || photo.length > MAX_PHOTO_CHARS)
     fail(400, "VALIDATION", "Выберите фото JPEG, PNG или WebP поменьше.");
   let bytes: Uint8Array;

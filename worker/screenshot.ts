@@ -5,6 +5,7 @@
 
 import { currencyCode, detectCurrency, parsePriceText } from "../shared/price";
 import { shortTitle } from "../shared/short-title";
+import { photoBytes } from "./photo-data";
 import type { AiBinding } from "./shops/naming";
 
 /** The cheapest vision model in Workers AI (about 40 neurons per screenshot). */
@@ -113,20 +114,7 @@ export function parseScreenshot(raw: unknown): ScreenshotResult | null {
 }
 
 /** "data:image/jpeg;base64,…" → bytes, only for images the form produces. */
-export function screenshotBytes(dataUrl: string): Uint8Array | null {
-  const m = dataUrl.match(
-    /^data:image\/(?:jpeg|png|webp);base64,([A-Za-z0-9+/]+=*)$/,
-  );
-  if (!m) return null;
-  try {
-    const bin = atob(m[1]);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return bytes;
-  } catch {
-    return null;
-  }
-}
+export const screenshotBytes = photoBytes;
 
 /** Errors that another request format cannot fix. */
 export const isQuotaError = (e: unknown) =>

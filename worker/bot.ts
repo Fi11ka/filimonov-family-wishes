@@ -15,6 +15,7 @@ import {
   type StoredGift,
 } from "./gifts";
 import { homeHelper } from "./helper";
+import { dataUrlOf } from "./photo-data";
 import {
   Outbox,
   esc,
@@ -808,10 +809,7 @@ export async function telegramPhoto(
       bytes[1] !== 0xd8
     )
       return null;
-    let binary = "";
-    for (let i = 0; i < bytes.length; i += 0x8000)
-      binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    return `data:image/jpeg;base64,${btoa(binary)}`;
+    return dataUrlOf(bytes, "image/jpeg");
   } catch {
     return null;
   }
