@@ -448,6 +448,24 @@ function App() {
       notice(b.role === "organizer" ? "Бронь отменена" : "Вы вышли из подарка");
     }, "Бронирование доступно после подключения приложения.");
   }
+  /** «Куплю сам»: the organizer keeps the booking, the others leave it. */
+  function buyAlone(b: Booking) {
+    const names = b.members.map((m) => m.name).join(", ");
+    setConfirmation({
+      text: `Совместный подарок отменится: ${names} выйдут из брони и получат сообщение в Telegram. Бронь останется за вами.`,
+      action: "Куплю сам",
+      run: () =>
+        guarded(async () => {
+          await api(`/api/gifts/${b.gift_id}/reservation/members`, "DELETE");
+          setBookings((list) =>
+            list.map((x) =>
+              x.gift_id === b.gift_id ? { ...x, members: [] } : x,
+            ),
+          );
+          notice("Теперь это ваш подарок, участникам ушло сообщение");
+        }, "В демо брони не меняются."),
+    });
+  }
   async function toggleSubscription(f: Friend) {
     await guarded(async () => {
       const r = await api(
@@ -1222,6 +1240,18 @@ function App() {
                                     Пригласить
                                   </button>
                                 )}
+                                {b.role === "organizer" &&
+                                  b.members.length > 0 && (
+                                    <button
+                                      className="button secondary"
+                                      disabled={busy}
+                                      onClick={() => buyAlone(b)}
+                                      title="Перестать скидываться: участники выйдут из брони"
+                                    >
+                                      <UserMinus size={15} />
+                                      Куплю сам
+                                    </button>
+                                  )}
                                 <button
                                   className="button secondary"
                                   disabled={busy}
