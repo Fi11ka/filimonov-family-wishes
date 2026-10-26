@@ -717,7 +717,11 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     return { ok: true };
   }
   if (path === "/api/auth/logout-all" && method === "POST") {
-    await stmt(db, "DELETE FROM sessions WHERE user_id=?", uid).run();
+    // Every way into the website ends: sessions and unused «В браузере» codes.
+    await db.batch([
+      stmt(db, "DELETE FROM sessions WHERE user_id=?", uid),
+      stmt(db, "DELETE FROM login_handoffs WHERE user_id=?", uid),
+    ]);
     return { ok: true };
   }
   // ---- Friends ----

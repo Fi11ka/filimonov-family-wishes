@@ -2859,3 +2859,29 @@ test("handoff: expired, made-up and malformed codes fail; only the Mini App can 
   );
   assert.equal(fromSite.status, 400);
 });
+test("handoff: «Выйти на всех устройствах» also cancels unused «В браузере» codes", async () => {
+  const made = await call("/auth/handoff", 7403, "POST", {});
+  assert.equal(made.status, 200, made.raw);
+  // Someone else's code must survive: only the person's own codes go.
+  const other = await call("/auth/handoff", 7404, "POST", {});
+  assert.equal((await call("/auth/logout-all", 7403, "POST", {})).status, 200);
+  const late = await call(
+    "/auth/handoff/redeem",
+    undefined,
+    "POST",
+    { code: made.body.code },
+    undefined,
+    { "CF-Connecting-IP": "192.0.2.75" },
+  );
+  assert.equal(late.status, 401);
+  assert.equal(late.body.error.code, "HANDOFF_INVALID");
+  const fine = await call(
+    "/auth/handoff/redeem",
+    undefined,
+    "POST",
+    { code: other.body.code },
+    undefined,
+    { "CF-Connecting-IP": "192.0.2.75" },
+  );
+  assert.equal(fine.status, 200, fine.raw);
+});
