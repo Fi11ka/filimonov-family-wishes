@@ -738,6 +738,11 @@ test("private responses are never cached and CORS is restricted", async () => {
   assert.equal(preflight.status, 204);
 });
 test("friend request guessing and link creation have per-user rate limits", async () => {
+  // Limits count per calendar minute: start well inside one, or the counter
+  // may reset halfway through and the 429 never comes.
+  const second = Math.floor(Date.now() / 1000) % 60;
+  if (second > 50)
+    await new Promise((r) => setTimeout(r, (61 - second) * 1000));
   for (let i = 0; i < 10; i++)
     assert.equal(
       (await call("/friends/requests", 9, "POST", { username: `missing_${i}` }))
@@ -1656,6 +1661,7 @@ test("group gifts: invite friends, answer from the site or the bot, owner sees n
 
 test("group gifts: the organizer buys alone, everyone else leaves and is told", async () => {
   await befriend(961, 962);
+  await befriend(961, 963);
   await befriend(962, 963);
   await befriend(962, 964);
   const g = await gift(961, { title: "Велосипед" });
