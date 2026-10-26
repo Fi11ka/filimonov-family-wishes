@@ -2786,8 +2786,9 @@ footer svg {
 /* «Добавить скриншот» under the shop link. */
 .screenshot-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 8px 10px;
   margin: 2px 0 10px;
 }
 .modal form .screenshot-row .button {
@@ -2805,6 +2806,7 @@ footer svg {
   cursor: default;
 }
 .screenshot-row > span {
+  flex: 1 1 180px;
   font-size: 11px;
   line-height: 1.4;
   color: #9a83ad;

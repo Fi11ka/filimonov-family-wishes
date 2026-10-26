@@ -408,7 +408,7 @@ export function GiftForm({
     }
   }
   /** «Добавить скриншот»: the vision model reads name, price and photo frame. */
-  async function fillFromScreenshot(file: File) {
+  async function fillFromScreenshot(file: Blob) {
     if (demo) {
       setLookupNote("В демо скриншоты не распознаются.");
       return;
@@ -478,6 +478,22 @@ export function GiftForm({
       if (job.current()) setShot("idle");
     }
   }
+  async function pasteScreenshot() {
+    try {
+      for (const item of await navigator.clipboard.read()) {
+        const type = item.types.find((t) => t.startsWith("image/"));
+        if (type)
+          return void (await fillFromScreenshot(await item.getType(type)));
+      }
+      setLookupNote(
+        "В буфере обмена нет картинки. Сделайте скриншот карточки товара и попробуйте снова.",
+      );
+    } catch {
+      setLookupNote(
+        "Браузер не дал доступ к буферу. Нажмите в поле ссылки и вставьте скриншот: Ctrl+V или долгое нажатие → «Вставить».",
+      );
+    }
+  }
   // Look the link up shortly after it is pasted or typed.
   useEffect(() => {
     const url = shopUrl.trim();
@@ -527,7 +543,16 @@ export function GiftForm({
         if (e.clipboardData.files.length) {
           onDirty();
           e.preventDefault();
-          void pastedImage(e.clipboardData.files);
+          // An image pasted into the link field is a product screenshot to read.
+          const shotFile = Array.from(e.clipboardData.files).find((f) =>
+            f.type.startsWith("image/"),
+          );
+          if (
+            shotFile &&
+            (e.target as HTMLElement).getAttribute("name") === "shop_url"
+          ) {
+            if (shot !== "loading") void fillFromScreenshot(shotFile);
+          } else void pastedImage(e.clipboardData.files);
         }
       }}
       onSubmit={async (e) => {
@@ -646,6 +671,15 @@ export function GiftForm({
             }}
           />
         </label>
+        <button
+          type="button"
+          className="button secondary"
+          disabled={shot === "loading" || saving}
+          onClick={() => void pasteScreenshot()}
+        >
+          <ClipboardPaste size={16} />
+          Из буфера
+        </button>
         <span>
           Ссылка не сработала? Заполним название, цену и фото по скриншоту
           товара.

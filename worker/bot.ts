@@ -32,6 +32,11 @@ import {
 } from "./security";
 import { liveContext, lookupProduct } from "./shops";
 import { aiNamer } from "./shops/naming";
+import {
+  isQuotaError,
+  readScreenshot,
+  type ScreenshotResult,
+} from "./screenshot";
 type Rate = (db: D1Database, key: string, max: number) => Promise<void>;
 /** Derived from the bot token, so no extra secret has to be configured. */
 export async function webhookSecret(botToken: string) {
@@ -198,7 +203,7 @@ class Chat {
     await this.state(null);
     await this.say(
       `Привет, ${esc(this.user.name.split(" ")[0])}! Это семейный вишлист.\n\n` +
-        `<b>${ADD}</b> — пришлите ссылку на товар, название или фото.\n` +
+        `<b>${ADD}</b> — пришлите ссылку на товар, скриншот карточки товара, название или фото.\n` +
         `<b>${LIST}</b> — посмотреть и изменить свои желания.\n` +
         `<b>${OPEN}</b> — вишлисты друзей, брони и подписки.\n\n` +
         "Сюда же приходят уведомления: заявки в друзья, новые желания друзей, на которых вы подписаны, и приглашения скинуться на подарок.",
@@ -213,7 +218,9 @@ class Chat {
   async askNew() {
     await this.state("add");
     await this.say(
-      "Пришлите <b>ссылку на товар</b> — я подтяну название, цену и фото. Или просто напишите название, можно с фото.\n\n/cancel — отменить",
+      "Пришлите <b>ссылку на товар</b> — я подтяну название, цену и фото.\n\n" +
+        "Ссылка не открывается (Ozon, Яндекс Маркет)? Пришлите <b>скриншот карточки товара</b> — прочитаю название и цену. Можно вместе со ссылкой в подписи.\n\n" +
+        "Или просто напишите название, можно с фото.\n\n/cancel — отменить",
     );
   }
   async list(page: number) {
@@ -266,12 +273,13 @@ class Chat {
       ],
       [
         { text: "📷 Фото", callback_data: `e:photo:${g.id}` },
-        { text: "💜 Важность", callback_data: `r:${g.id}` },
+        { text: "📸 По скриншоту", callback_data: `e:shot:${g.id}` },
       ],
       [
+        { text: "💜 Важность", callback_data: `r:${g.id}` },
         { text: "🗄 В архив", callback_data: `a:${g.id}` },
-        { text: "🗑 Удалить", callback_data: `x:${g.id}` },
       ],
+      [{ text: "🗑 Удалить", callback_data: `x:${g.id}` }],
       [{ text: "← Все желания", callback_data: "l:0" }],
     ]);
   }
@@ -285,8 +293,12 @@ class Chat {
     }
     return g;
   }
-  /** A new wish from text (maybe with a shop link) and/or a photo. */
-  async create(text: string, photo = "") {
+  /**
+   * A new wish from text (maybe with a shop link) and/or a photo. A photo is
+   * also read by the vision model (`shot` is a larger copy for it): a product
+   * screenshot gives the name and price when the shop link cannot be read.
+   */
+  async create(text: string, photo = "", shot = "") {
     const link = text.match(/https:\/\/\S+/)?.[0] || "";
     let title = text.replace(link, "").replace(/\s+/g, " ").trim(),
       description = "",
@@ -296,6 +308,11 @@ class Chat {
         max: null,
         range: false,
       };
+    const userTitle = !!title;
+    let shopImage = "",
+      blocked = false,
+      seen: ScreenshotResult | null = null,
+      shotNote = "";
     let currency =
       (
         await stmt(
@@ -315,9 +332,11 @@ class Chat {
           liveContext(this.env.HELPER_TOKEN ? homeHelper(this.db) : null),
           this.env.AI ? aiNamer(this.env.AI) : undefined,
         );
+        blocked = p.blocked;
         if (!title) title = p.title;
         description = p.details || "";
-        if (!image && /^https:\/\//.test(p.image_url)) image = p.image_url;
+        if (/^https:\/\//.test(p.image_url)) shopImage = p.image_url;
+        if (!image) image = shopImage;
         if (p.price) {
           price = {
             min: p.price.min_minor,
@@ -329,6 +348,26 @@ class Chat {
       } catch {
         // The shop could not be read: the wish is saved with the link only.
       }
+    }
+    if (shot) ({ seen, note: shotNote } = await this.recognize(shot));
+    if (seen) {
+      // The shop's own data wins; the screenshot fills what the link did not give.
+      if (seen.title && !userTitle && (blocked || !title)) title = seen.title;
+      if (seen.details && !description) description = seen.details;
+      if (seen.price && price.min === null && price.max === null) {
+        price = {
+          min: seen.price.min_minor,
+          max: seen.price.max_minor,
+          range: seen.price.max_minor !== null,
+        };
+        currency = seen.price.currency;
+      }
+      shotNote = "Прочитала фото нейросетью — проверьте название и цену.";
+      // A screenshot of a shop page: the shop's own photo is better, if it came.
+      if (seen.photo_box && shopImage) image = shopImage;
+      else if (seen.photo_box && image)
+        shotNote +=
+          " Фото сохранила целиком: обрезать его можно в приложении (кнопка «Открыть» → желание → рамка).";
     }
     if (!title) title = link ? "Желание по ссылке" : "Новое желание";
     const values = giftInput({
@@ -345,11 +384,91 @@ class Chat {
     const id = await createGift(this.db, this.out, this.user, values);
     await this.state(null);
     const g = await ownGift(this.db, this.user.id, id);
+    const noPrice = price.min === null && price.max === null;
+    const notes = [
+      shotNote,
+      link && noPrice && !shot
+        ? blocked
+          ? "Магазин не дал прочитать страницу. Пришлите скриншот карточки товара — дополню это желание названием и ценой. Или укажите цену кнопкой «Цена»."
+          : "Цену магазин не отдал — укажите её кнопкой «Цена»."
+        : noPrice && shot
+          ? "Цену не нашла — укажите её кнопкой «Цена»."
+          : "",
+    ].filter(Boolean);
+    // The shop refused: the next photo fills this wish instead of making a new one.
+    if (g && blocked && noPrice && !shot && this.env.AI)
+      await this.state("shot", g.id);
     if (g)
       await this.card(
         g,
-        `✅ Добавлено в вишлист${link && price.min === null && price.max === null ? ". Цену магазин не отдал — укажите её кнопкой «Цена»." : "."}\n`,
+        `✅ Добавлено в вишлист.${notes.length ? `\n${esc(notes.join(" "))}` : ""}\n`,
       );
+  }
+  /** Reads a photo with the vision model; the note explains a refusal. */
+  private async recognize(
+    shot: string,
+  ): Promise<{ seen: ScreenshotResult | null; note: string }> {
+    if (!this.env.AI) return { seen: null, note: "" };
+    await telegramCall(this.env, "sendChatAction", {
+      chat_id: this.user.id,
+      action: "typing",
+    });
+    try {
+      return { seen: await readScreenshot(this.env.AI, shot), note: "" };
+    } catch (e) {
+      return {
+        seen: null,
+        note: isQuotaError(e)
+          ? "Бесплатный лимит распознавания скриншотов на сегодня закончился — название и цену укажите кнопками."
+          : "",
+      };
+    }
+  }
+  /** «📸 Скриншот»: fills an existing wish from a screenshot of its product card. */
+  async fromScreenshot(g: StoredGift, shot: string, photo: string) {
+    const { seen, note } = await this.recognize(shot);
+    if (!seen)
+      return this.say(
+        note ||
+          "Не получилось прочитать скриншот. Пришлите скриншот карточки товара целиком или /cancel.",
+      );
+    if (seen.title) await this.set(g, "title", seen.title.slice(0, 120));
+    if (seen.details && !g.description)
+      await this.set(g, "description", seen.details.slice(0, 2000));
+    if (seen.price)
+      await stmt(
+        this.db,
+        "UPDATE gifts SET price_minor=?,price_max_minor=?,price_range=?,currency=?,updated_at=unixepoch() WHERE id=? AND owner_id=?",
+        seen.price.min_minor,
+        seen.price.max_minor,
+        seen.price.max_minor !== null ? 1 : 0,
+        seen.price.currency,
+        g.id,
+        this.user.id,
+      ).run();
+    // A photo only where there was none: a chosen photo is not replaced.
+    const photoSet =
+      !!photo &&
+      ((
+        await stmt(
+          this.db,
+          "UPDATE gifts SET photo=?,updated_at=unixepoch() WHERE id=? AND owner_id=? AND photo=''",
+          photo,
+          g.id,
+          this.user.id,
+        ).run()
+      ).meta?.changes ?? 0) > 0;
+    await this.state(null);
+    const fresh = await ownGift(this.db, this.user.id, g.id);
+    const notes = [
+      "Прочитала скриншот нейросетью — проверьте название и цену.",
+      seen.price ? "" : "Цену не нашла — укажите её кнопкой «Цена».",
+      photoSet
+        ? "Фото сохранила целиком: обрезать его можно в приложении (кнопка «Открыть» → желание → рамка)."
+        : "",
+    ].filter(Boolean);
+    if (fresh)
+      await this.card(fresh, `✅ Обновлено.\n${esc(notes.join(" "))}\n`);
   }
   async edit(action: string, g: StoredGift, text: string) {
     const clear = text.trim() === "-";
@@ -417,6 +536,7 @@ const prompts: Record<string, string> = {
   desc: "Пришлите подсказку для близких (размер, цвет…). «-» — убрать.",
   link: "Пришлите ссылку на товар (https://…). «-» — убрать.",
   photo: "Пришлите фото.",
+  shot: "Пришлите скриншот карточки товара из магазина — прочитаю название и цену.",
 };
 async function handleUpdate(update: Update, env: Env, out: Outbox, rate: Rate) {
   const db = env.DB;
@@ -466,15 +586,27 @@ async function onMessage(chat: Chat, m: NonNullable<Update["message"]>) {
     return chat.list(0);
   }
   if (text === OPEN) return chat.open();
-  const state = await stmt(
+  let state = await stmt(
     chat.db,
     "SELECT action,gift_id FROM bot_states WHERE user_id=? AND updated_at>?",
     chat.user.id,
     now() - 86400,
   ).first<{ action: string; gift_id: string | null }>();
   const photo = m.photo?.length ? await telegramPhoto(chat.env, m.photo) : null;
-  if (m.photo?.length && photo === null)
+  // A larger copy keeps small text on screenshots readable for the model.
+  const shot =
+    m.photo?.length &&
+    chat.env.AI &&
+    (!state?.gift_id || state.action === "shot")
+      ? (await telegramPhoto(chat.env, m.photo, 400_000)) || photo || ""
+      : "";
+  if (m.photo?.length && photo === null && !shot)
     return chat.say("Не удалось загрузить фото. Попробуйте фото поменьше.");
+  // Waiting for a screenshot, but got something else: handle it as usual.
+  if (state?.action === "shot" && !shot) {
+    await chat.state(null);
+    state = null;
+  }
   if (state?.gift_id) {
     const g = await chat.gift(state.gift_id);
     if (!g) return chat.state(null);
@@ -490,13 +622,15 @@ async function onMessage(chat: Chat, m: NonNullable<Update["message"]>) {
       await chat.state(null);
       return chat.card(g, "✅ Фото обновлено\n");
     }
+    if (state.action === "shot")
+      return chat.fromScreenshot(g, shot, photo || "");
     if (!text) return chat.say(prompts[state.action] || "Пришлите текст.");
     return chat.edit(state.action, g, text);
   }
   // A link or a photo is always a new wish; plain text only after «Добавить».
-  if (state?.action === "add" || photo || /https:\/\//.test(text)) {
-    if (!text && !photo) return chat.askNew();
-    return chat.create(text, photo || "");
+  if (state?.action === "add" || photo || shot || /https:\/\//.test(text)) {
+    if (!text && !photo && !shot) return chat.askNew();
+    return chat.create(text, photo || "", shot);
   }
   return chat.say(
     `Нажмите <b>${ADD}</b> или пришлите ссылку на товар — я добавлю его в вишлист.`,
@@ -638,10 +772,11 @@ async function onButton(chat: Chat, data: string) {
 async function telegramPhoto(
   env: Env,
   sizes: { file_id: string; file_size?: number; width: number }[],
+  maxBytes = 150_000,
 ) {
   const fit = [...sizes]
     .sort((x, y) => y.width - x.width)
-    .find((s) => (s.file_size || 0) > 0 && (s.file_size || 0) <= 150_000);
+    .find((s) => (s.file_size || 0) > 0 && (s.file_size || 0) <= maxBytes);
   if (!fit) return null;
   const file = await telegramCall(env, "getFile", { file_id: fit.file_id });
   const path = (file.result as { file_path?: string } | undefined)?.file_path;
@@ -654,7 +789,7 @@ async function telegramPhoto(
     const bytes = new Uint8Array(await res.arrayBuffer());
     if (
       !res.ok ||
-      bytes.length > 150_000 ||
+      bytes.length > maxBytes ||
       bytes[0] !== 0xff ||
       bytes[1] !== 0xd8
     )
