@@ -1,4 +1,4 @@
-import { daysLeft, eventDay, upcomingEvents } from "../shared/events";
+import { eventDay, untilText, upcomingEvents } from "../shared/events";
 import { formatPrice, sharePrice } from "../shared/price";
 import { EventPage, EventsList, WishlistEvents } from "./events";
 import { ArchiveWish, ReserveDialog } from "./forms";
@@ -22,6 +22,9 @@ import {
   Pencil,
   Trash2,
   RefreshCw,
+  Eye,
+  Clock,
+  ChevronRight,
   Archive,
   ArchiveRestore,
   FileSpreadsheet,
@@ -30,12 +33,11 @@ import {
   Maximize2,
   Minimize2,
   Bell,
-  BellOff,
+  BellRing,
   SlidersHorizontal,
 } from "lucide-react";
 import { useFullscreen } from "./fullscreen";
 import { Hearts } from "./hearts";
-import { WishlistAbout } from "./about";
 import {
   api,
   apiConfigured,
@@ -55,6 +57,7 @@ import {
 import { WebLogin } from "./login";
 import {
   demoArchive,
+  demoBookings,
   demoFriends,
   demoGifts,
   demoIncoming,
@@ -63,7 +66,15 @@ import {
 import { GiftForm, Share, Modal, Confirm } from "./forms";
 import { AcceptInvite, AddFriend, Profile, Requests } from "./friends";
 import { ImportDialog } from "./import/ImportDialog";
-import { comparePrice, priceInRubMinor } from "../shared/wish-price";
+import { comparePrice } from "../shared/wish-price";
+import {
+  WishFilters,
+  activeCount,
+  noFilters,
+  passes,
+  priceScale,
+  type Filters,
+} from "./filters";
 import {
   type Booking,
   type Invitation,
@@ -106,10 +117,7 @@ function App() {
     [search, setSearch] = useState(""),
     [sort, setSort] = useState("priority"),
     [filtersOpen, setFiltersOpen] = useState(false),
-    [priceFrom, setPriceFrom] = useState(""),
-    [priceTo, setPriceTo] = useState(""),
-    [minPriority, setMinPriority] = useState("0"),
-    [availability, setAvailability] = useState("all");
+    [filters, setFilters] = useState<Filters>(noFilters);
   const [bookings, setBookings] = useState<Booking[]>([]),
     [busy, setBusy] = useState(false),
     [menu, setMenu] = useState(false),
@@ -120,6 +128,11 @@ function App() {
     return () => clearInterval(timer);
   }, []);
   const [archiveGift, setArchiveGift] = useState<Wish | null>(null);
+  /** A list opened from an event page where guests' bookings carry names. */
+  const [namedList, setNamedList] = useState<{
+    owner: string;
+    event: string;
+  } | null>(null);
   const [eventRef, setEventRef] = useState<{
     owner: string;
     key: string;
@@ -134,11 +147,15 @@ function App() {
     setMenu(false);
   }
   /** A participant's wishlist from the event page. */
-  async function openList(id: string) {
+  async function openList(id: string, named?: string) {
     if (user && id === user.id) await navigate("mine");
     else {
       setTab("friends");
-      await loadList(id);
+      setFilters(noFilters);
+      const demoFriend = demo && friends.find((f) => f.id === id);
+      if (demoFriend) openFriend(demoFriend);
+      else await loadList(id);
+      setNamedList(named ? { owner: id, event: named } : null);
     }
   }
   const [giftDirty, setGiftDirty] = useState(false);
@@ -301,6 +318,8 @@ function App() {
   }, []);
   async function navigate(next: Tab) {
     setMenu(false);
+    setNamedList(null);
+    setFilters(noFilters);
     setTab(next);
     setSearch("");
     setError("");
@@ -314,6 +333,7 @@ function App() {
         setOwner(null);
         setGifts([]);
       }
+      if (next === "bookings") setBookings(demoBookings);
       return;
     }
     if (next === "mine" && user) await loadList(user.id);
@@ -341,6 +361,8 @@ function App() {
     }
   }
   function openFriend(f: Friend) {
+    setNamedList(null);
+    setFilters(noFilters);
     if (demo) {
       setOwner(f);
       setGifts(
@@ -435,17 +457,17 @@ function App() {
         ),
       );
       if (r.subscribed && !r.notifications.bot_connected) {
-        notice("Подписка оформлена. Откройте бота и нажмите «Запустить»");
+        notice("Уведомления включены. Откройте бота и нажмите «Запустить»");
         openBot(r.notifications.bot_url);
       } else if (r.subscribed && !r.notifications.enabled)
-        notice("Подписка оформлена, но уведомления выключены в профиле");
+        notice("Уведомления включены, но в профиле выключены сообщения бота");
       else
         notice(
           r.subscribed
             ? `Бот напишет, когда ${f.name.split(" ")[0]} изменит вишлист`
-            : "Подписка отменена",
+            : "Уведомления о вишлисте выключены",
         );
-    }, "В демо подписки не сохраняются.");
+    }, "В демо уведомления не включаются.");
   }
   async function markBought(g: Wish) {
     setArchiveGift(g);
@@ -488,28 +510,14 @@ function App() {
   }
   const list = tab === "archive" ? archive : gifts;
   const foreignList = !own && tab !== "archive";
-  const fromMinor = filterRubles(priceFrom),
-    toMinor = filterRubles(priceTo);
-  const activeFilters =
-    fromMinor !== null ||
-    toMinor !== null ||
-    minPriority !== "0" ||
-    (foreignList && availability !== "all");
+  const scale = priceScale(list);
+  const activeFilters = activeCount(filters, foreignList) > 0;
   const shown = list
-    .filter((g) => {
-      if (!g.title.toLowerCase().includes(search.toLowerCase())) return false;
-      const price = priceInRubMinor(g);
-      if (fromMinor !== null && (price === null || price < fromMinor))
-        return false;
-      if (toMinor !== null && (price === null || price > toMinor)) return false;
-      if (g.priority < Number(minPriority)) return false;
-      if (foreignList && availability !== "all") {
-        const available = g.reservation === "available";
-        if (availability === "available" && !available) return false;
-        if (availability === "reserved" && available) return false;
-      }
-      return true;
-    })
+    .filter(
+      (g) =>
+        g.title.toLowerCase().includes(search.toLowerCase()) &&
+        passes(g, filters, scale.rate, foreignList),
+    )
     .sort((a, b) =>
       sort === "price"
         ? comparePrice(a, b, 1)
@@ -697,24 +705,6 @@ function App() {
                                 ? "Мой вишлист"
                                 : `Вишлист: ${owner?.name || ownerFirst}`}
                   </h1>
-                  {owner &&
-                    showList &&
-                    tab !== "bookings" &&
-                    tab !== "archive" && (
-                      <WishlistAbout
-                        key={`${owner.id}:${owner.about || ""}`}
-                        owner={owner}
-                        own={own}
-                        onSaved={(updated) => {
-                          setOwner((o) =>
-                            o?.id === updated.id ? { ...o, ...updated } : o,
-                          );
-                          setUser((u) =>
-                            u?.id === updated.id ? { ...u, ...updated } : u,
-                          );
-                        }}
-                      />
-                    )}
                   {owner && showList && tab !== "bookings" && (
                     <div className="wishlist-meta">
                       {tab !== "archive" && (
@@ -872,66 +862,86 @@ function App() {
               )}
               {!error && showList && (
                 <>
-                  {user &&
-                    !own &&
-                    owner &&
-                    showList &&
-                    tab !== "archive" &&
-                    owner.allow_resharing !== 0 && (
+                  {(() => {
+                    // Share, notifications and unfriending in one row.
+                    const canShare =
+                      !!user &&
+                      !own &&
+                      !!owner &&
+                      tab !== "archive" &&
+                      owner.allow_resharing !== 0;
+                    const friend = viewingFriend
+                      ? friends.find((f) => f.id === owner?.id)
+                      : undefined;
+                    if (!owner || (!canShare && !friend)) return null;
+                    return (
                       <div className="wishlist-actions">
-                        <button
-                          className="button secondary"
-                          onClick={() => {
-                            if (demo) {
-                              notice("В демо ссылки не создаются.");
-                              return;
-                            }
-                            setModal("share");
-                          }}
-                        >
-                          <LinkIcon size={16} />
-                          Поделиться
-                        </button>
-                      </div>
-                    )}
-                  {viewingFriend &&
-                    owner &&
-                    friends.some((f) => f.id === owner.id) &&
-                    (() => {
-                      const friend = friends.find((f) => f.id === owner.id)!;
-                      return (
-                        <div className="friend-actions">
+                        {canShare && (
                           <button
                             className="button secondary"
-                            disabled={busy}
-                            onClick={() => void toggleSubscription(friend)}
-                            title="Уведомления в Telegram о новых и удалённых желаниях"
+                            onClick={() => {
+                              if (demo) {
+                                notice("В демо ссылки не создаются.");
+                                return;
+                              }
+                              setModal("share");
+                            }}
                           >
-                            {friend.subscribed ? (
-                              <>
-                                <BellOff size={16} />
-                                Отписаться
-                              </>
-                            ) : (
-                              <>
-                                <Bell size={16} />
-                                Подписаться на обновления
-                              </>
-                            )}
+                            <LinkIcon size={16} />
+                            Поделиться
                           </button>
-                          <button
-                            className="text-link danger remove-friend"
-                            onClick={() => unfriend(owner)}
-                          >
-                            <UserMinus size={15} />
-                            Удалить из друзей
-                          </button>
-                        </div>
-                      );
-                    })()}
+                        )}
+                        {friend && (
+                          <>
+                            {/* A switch for bot messages, not «unfollowing» the person. */}
+                            <button
+                              className={`button secondary notify-toggle ${friend.subscribed ? "on" : ""}`}
+                              disabled={busy}
+                              aria-pressed={!!friend.subscribed}
+                              onClick={() => void toggleSubscription(friend)}
+                              title={
+                                friend.subscribed
+                                  ? "Бот пишет в Telegram, когда вишлист меняется. Нажмите, чтобы выключить"
+                                  : "Бот напишет в Telegram о новых и удалённых желаниях"
+                              }
+                            >
+                              {friend.subscribed ? (
+                                <>
+                                  <BellRing size={16} />
+                                  Уведомления включены
+                                </>
+                              ) : (
+                                <>
+                                  <Bell size={16} />
+                                  Уведомлять об изменениях
+                                </>
+                              )}
+                            </button>
+                            <button
+                              className="text-link danger remove-friend"
+                              onClick={() => unfriend(owner)}
+                            >
+                              <UserMinus size={15} />
+                              Удалить из друзей
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })()}
                   {guestToken && !authShare && (
                     <p className="list-help">
                       Нажмите «Забронировать» у подарка, который хотите купить.
+                    </p>
+                  )}
+                  {namedList && owner && namedList.owner === owner.id && (
+                    <p className="names-note">
+                      <Eye size={16} />
+                      <span>
+                        Вы гость «{namedList.event}»: у подарков видно, кто из
+                        гостей их забронировал. Брони других людей — без
+                        имени.
+                      </span>
                     </p>
                   )}
                   <div className="list-toolbar">
@@ -944,10 +954,16 @@ function App() {
                       <label className="search">
                         <Search size={16} />
                         <input
+                          type="search"
+                          enterKeyHint="search"
                           aria-label="Найти желание"
                           placeholder="Найти желание"
                           value={search}
                           onChange={(e) => setSearch(e.target.value)}
+                          // The list filters as you type; Enter only hides the phone keyboard.
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") e.currentTarget.blur();
+                          }}
                         />
                       </label>
                       <label className="sort">
@@ -992,80 +1008,12 @@ function App() {
                     </div>
                   </div>
                   {filtersOpen && (
-                    <section
-                      className="wish-filters"
-                      aria-label="Фильтры желаний"
-                    >
-                      <div className="price-filter">
-                        <span>Цена, примерно ₽</span>
-                        <label>
-                          <span>от</span>
-                          <input
-                            type="number"
-                            min="0"
-                            inputMode="numeric"
-                            value={priceFrom}
-                            onChange={(e) => setPriceFrom(e.target.value)}
-                            placeholder="0"
-                            aria-label="Минимальная цена в рублях"
-                          />
-                        </label>
-                        <label>
-                          <span>до</span>
-                          <input
-                            type="number"
-                            min="0"
-                            inputMode="numeric"
-                            value={priceTo}
-                            onChange={(e) => setPriceTo(e.target.value)}
-                            placeholder="любая"
-                            aria-label="Максимальная цена в рублях"
-                          />
-                        </label>
-                      </div>
-                      <label className="filter-field">
-                        <span>Приоритет</span>
-                        <select
-                          value={minPriority}
-                          onChange={(e) => setMinPriority(e.target.value)}
-                        >
-                          <option value="0">Любой</option>
-                          <option value="1">От 1 сердца</option>
-                          <option value="2">От 2 сердец</option>
-                          <option value="3">От 3 сердец</option>
-                          <option value="4">От 4 сердец</option>
-                          <option value="5">Только 5 сердец</option>
-                        </select>
-                      </label>
-                      {foreignList && (
-                        <label className="filter-field">
-                          <span>Доступность</span>
-                          <select
-                            value={availability}
-                            onChange={(e) => setAvailability(e.target.value)}
-                          >
-                            <option value="all">Все</option>
-                            <option value="available">
-                              Можно забронировать
-                            </option>
-                            <option value="reserved">Уже забронированы</option>
-                          </select>
-                        </label>
-                      )}
-                      {activeFilters && (
-                        <button
-                          className="text-link filter-reset"
-                          onClick={() => {
-                            setPriceFrom("");
-                            setPriceTo("");
-                            setMinPriority("0");
-                            setAvailability("all");
-                          }}
-                        >
-                          Сбросить фильтры
-                        </button>
-                      )}
-                    </section>
+                    <WishFilters
+                      list={list}
+                      value={filters}
+                      onChange={setFilters}
+                      foreign={foreignList}
+                    />
                   )}
                   {loading ? (
                     <div className="loading" role="status">
@@ -1146,7 +1094,7 @@ function App() {
                       ? navigate(eventRef.from)
                       : openList(eventRef.owner))
                   }
-                  onOpenList={(id) => void openList(id)}
+                  onOpenList={(id, named) => void openList(id, named)}
                 />
               )}
               {tab === "events" && user && (
@@ -1167,20 +1115,29 @@ function App() {
                     {bookings.length ? (
                       bookings.map((b) => (
                         <div className="booking" key={b.gift_id}>
-                          <span className="booking-icon">
-                            {b.members.length || b.role !== "organizer" ? (
-                              <Users />
-                            ) : (
-                              <Gift />
-                            )}
-                          </span>
-                          <div>
-                            <h3>{b.title}</h3>
-                            <p>
-                              {`Для ${b.owner_name}`}
-                              {b.archived ? " · в архиве" : ""}
+                          <div className="booking-main">
+                            <div className="booking-top">
+                              <h3>{b.title}</h3>
+                              <BookingPrice booking={b} />
+                            </div>
+                            <p className="booking-sub">
+                              <span className={`status-badge ${b.role}`}>
+                                {b.role === "invited"
+                                  ? "Зовут скинуться"
+                                  : b.role === "joined"
+                                    ? "Скидываемся"
+                                    : b.members.length
+                                      ? "Вы собираете"
+                                      : "Ваша бронь"}
+                              </span>
+                              <span>
+                                для {b.owner_name}
+                                {b.role !== "organizer" && b.organizer_name
+                                  ? ` · собирает ${b.organizer_name}`
+                                  : ""}
+                                {b.archived ? " · в архиве" : ""}
+                              </span>
                             </p>
-                            <BookingPrice booking={b} />
                             <NearestEvent
                               booking={b}
                               today={today}
@@ -1188,23 +1145,24 @@ function App() {
                                 openEvent(b.owner_id, key, date)
                               }
                             />
-                            <p className="small-text">
-                              {b.role === "invited"
-                                ? `${b.organizer_name || "Друг"} предлагает скинуться на этот подарок`
-                                : b.role === "joined"
-                                  ? `Совместный подарок, организует ${b.organizer_name || "друг"}`
-                                  : b.members.length
-                                    ? "Вы организуете совместный подарок"
-                                    : "Вы забронировали этот подарок"}
-                            </p>
                             {b.members.length > 0 && (
                               <ul className="booking-members">
                                 {b.members.map((m) => (
-                                  <li key={m.id}>
+                                  <li
+                                    key={m.id}
+                                    className={m.status}
+                                    title={
+                                      m.status === "joined"
+                                        ? "Участвует"
+                                        : "Ждём ответа"
+                                    }
+                                  >
+                                    {m.status === "joined" ? (
+                                      <Check size={12} />
+                                    ) : (
+                                      <Clock size={12} />
+                                    )}
                                     {m.name}
-                                    {m.status === "joined"
-                                      ? " — участвует"
-                                      : " — ждём ответа"}
                                   </li>
                                 ))}
                               </ul>
@@ -1473,13 +1431,6 @@ function App() {
     </div>
   );
 }
-function filterRubles(value: string) {
-  if (!value.trim()) return null;
-  const amount = Number(value);
-  return Number.isFinite(amount) && amount >= 0
-    ? Math.round(amount * 100)
-    : null;
-}
 function GiftCard({
   wish: g,
   mode,
@@ -1537,8 +1488,9 @@ function GiftCard({
         <h3>{g.title}</h3>
         {g.description && <p>{g.description}</p>}
         {g.reservation === "reserved" && !!g.booked_by?.length && (
-          <p className="small-text booked-by">
-            Забронировал(а): {g.booked_by.join(", ")}
+          <p className="booked-by">
+            <Users size={13} />
+            <span>Дарит: {g.booked_by.join(", ")}</span>
           </p>
         )}
         {g.reservation === "mine" && !!g.group_joined && (
@@ -1730,19 +1682,17 @@ function NearestEvent({
       booking.my_events?.some((m) => m.key === e.key && m.date === e.date),
     ) || events[0];
   if (!next || booking.archived) return null;
-  const nearest = next === events[0];
   return (
     <button
-      className="text-link booking-event"
+      className="booking-event"
+      title="Успеть к мероприятию"
       onClick={() => onOpen(next.key, next.date)}
     >
       <CalendarDays size={14} />
       <span>
-        Успеть к {eventDay(next.date)} ({next.title}) —{" "}
-        {next.days
-          ? `до ${nearest ? "ближайшего " : ""}мероприятия ${daysLeft(next.days)}`
-          : "мероприятие уже сегодня"}
+        {next.title} · {eventDay(next.date)} · {untilText(next.days)}
       </span>
+      <ChevronRight size={14} />
     </button>
   );
 }
