@@ -874,12 +874,20 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     const raw = typeof b.token === "string" ? b.token : "";
     if (!/^[A-Za-z0-9_-]{43}$/.test(raw))
       fail(404, "INVITE_INVALID", "Приглашение не найдено или устарело.");
-    const invite = await stmt(
-      db,
-      "SELECT owner_id FROM friend_invites WHERE token_hash=? AND revoked_at IS NULL AND expires_at>?",
-      await hash(raw),
-      now(),
-    ).first<{ owner_id: string }>();
+    // The owner's own «Поделиться» link for Telegram doubles as a friend invitation.
+    const invite =
+      (await stmt(
+        db,
+        "SELECT owner_id FROM friend_invites WHERE token_hash=? AND revoked_at IS NULL AND expires_at>?",
+        await hash(raw),
+        now(),
+      ).first<{ owner_id: string }>()) ||
+      (await stmt(
+        db,
+        "SELECT owner_id FROM guest_links WHERE token_hash=? AND kind='telegram' AND created_by=owner_id AND revoked_at IS NULL AND expires_at>?",
+        await hash(raw),
+        now(),
+      ).first<{ owner_id: string }>());
     if (!invite)
       fail(404, "INVITE_INVALID", "Приглашение не найдено или устарело.");
     if (invite.owner_id === uid)
