@@ -2628,10 +2628,11 @@ footer svg {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  color: #e5487d;
+  /* The main accent of the design, like buttons and links. */
+  color: var(--purple);
 }
 .hearts .heart:not(.filled) {
-  color: #d9cfe4;
+  color: #dacce8;
 }
 .hearts.picker button {
   background: none;
