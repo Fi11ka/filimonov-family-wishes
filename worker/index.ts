@@ -319,6 +319,8 @@ const telegramKeys = liveJwks(async () => {
   return keys;
 });
 const NONCE_TTL = 600;
+/** «Открыть в браузере»: the one-time code from the Mini App lives 2 minutes. */
+const HANDOFF_TTL = 120;
 /** A user's card with their events; gender is shown only to the person themself. */
 async function profile(db: D1Database, id: string, self = false) {
   const p = await stmt(
@@ -414,6 +416,34 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     });
     const account = await saveUser(db, identity);
     out.jobs.push(firstPhoto(env, account.id, identity).catch(() => {}));
+    return createSession(db, account);
+  }
+  if (path === "/api/auth/handoff/redeem" && method === "POST") {
+    // The website exchanges a one-time code made in the Mini App for a session.
+    await rate(db, `handoff:${await ipKey()}`, 10);
+    const code = (await body(req)).code;
+    const row =
+      typeof code === "string" && /^[A-Za-z0-9_-]{43}$/.test(code)
+        ? await stmt(
+            db,
+            "DELETE FROM login_handoffs WHERE code_hash=? AND expires_at>? RETURNING user_id",
+            await hash(code),
+            now(),
+          ).first<{ user_id: string }>()
+        : null;
+    const account = row
+      ? await stmt(
+          db,
+          "SELECT id,name,username FROM users WHERE id=?",
+          row.user_id,
+        ).first<Identity>()
+      : null;
+    if (!account)
+      fail(
+        401,
+        "HANDOFF_INVALID",
+        "Ссылка для входа устарела. Нажмите «В браузере» в Telegram ещё раз или войдите через Telegram здесь.",
+      );
     return createSession(db, account);
   }
   if (
@@ -537,6 +567,21 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   }
   if (!user) fail(401, "AUTH_REQUIRED", "Откройте приложение через Telegram.");
   const uid = user.id;
+  if (path === "/api/auth/handoff" && method === "POST") {
+    // Only from the Mini App (signed Telegram data), not from a website session.
+    if (session)
+      fail(400, "VALIDATION", "Переход на сайт доступен из Telegram.");
+    await rate(db, `handoff-make:${uid}`, 10);
+    const code = token();
+    await stmt(
+      db,
+      "INSERT INTO login_handoffs(code_hash,user_id,expires_at) VALUES(?,?,?)",
+      await hash(code),
+      uid,
+      now() + HANDOFF_TTL,
+    ).run();
+    return { code, expires_in: HANDOFF_TTL };
+  }
   if (path === "/api/me" && method === "GET")
     return {
       user: await profile(db, uid, true),
@@ -1555,6 +1600,7 @@ export default {
       ),
       stmt(env.DB, "DELETE FROM sessions WHERE expires_at<?", now()),
       stmt(env.DB, "DELETE FROM login_nonces WHERE expires_at<?", now()),
+      stmt(env.DB, "DELETE FROM login_handoffs WHERE expires_at<?", now()),
       cleanupHelperJobs(env.DB),
       cleanupBotStates(env.DB),
       stmt(
