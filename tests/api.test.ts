@@ -20,6 +20,17 @@ fetchMock
     headers: { "content-type": "application/json" },
   })
   .persist();
+// A tiny JPEG: what Telegram serves for profile photos.
+const JPEG = Buffer.from([
+  0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1,
+  0, 0, 0xff, 0xd9,
+]);
+// User 7103 has no photo the bot can see, but signs in with a photo_url on t.me.
+fetchMock
+  .get("https://t.me")
+  .intercept({ path: "/i/userpic/320/u7103.jpg" })
+  .reply(200, JPEG, { headers: { "content-type": "image/jpeg" } })
+  .persist();
 // Telegram Bot API: a local server records every call; chat 403403 has blocked the bot.
 type TelegramCall = { method: string; body: any };
 const telegram: TelegramCall[] = [];
@@ -27,7 +38,39 @@ const telegramServer = createServer((req, res) => {
   let raw = "";
   req.on("data", (chunk) => (raw += chunk));
   req.on("end", () => {
+    // Profile photo files: only user 7101's photo exists.
+    if (String(req.url).startsWith("/file/")) {
+      res.writeHead(200, { "content-type": "image/jpeg" });
+      res.end(JPEG);
+      return;
+    }
     const body = raw ? JSON.parse(raw) : {};
+    const method = String(req.url).split("/").pop()!;
+    if (method === "getUserProfilePhotos" || method === "getFile") {
+      telegram.push({ method, body });
+      const has = body.user_id === 7101;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          result:
+            method === "getFile"
+              ? { file_path: "photos/file_7101.jpg" }
+              : {
+                  total_count: has ? 1 : 0,
+                  photos: has
+                    ? [
+                        [
+                          { file_id: "small", file_size: 900, width: 160 },
+                          { file_id: "big", file_size: 900_000, width: 640 },
+                        ],
+                      ]
+                    : [],
+                },
+        }),
+      );
+      return;
+    }
     telegram.push({ method: String(req.url).split("/").pop()!, body });
     const blocked = body.chat_id === "403403";
     res.writeHead(blocked ? 403 : 200, { "content-type": "application/json" });
@@ -207,6 +250,7 @@ before(async () => {
   await migrate("migrations/0011_hearts_and_about.sql");
   await migrate("migrations/0012_events.sql");
   await migrate("migrations/0013_event_page.sql");
+  await migrate("migrations/0014_profile_photo.sql");
   assert.equal(
     (
       await db
@@ -762,8 +806,10 @@ test("website sign-in: Telegram id_token issues a revocable session for the same
     about,
     gender: _gender,
     events: _events,
+    photo_at,
     ...identity
   } = profile.body.user;
+  assert.equal(photo_at, null);
   assert.equal(birthday, null);
   assert.equal(about, null);
   assert.equal(allow_resharing, 1);
@@ -2262,4 +2308,149 @@ test("people who are not friends are invited by username and see the event, the 
   // Removed from the party: the list closes again.
   await party({ friends: [] });
   assert.equal((await call("/lists/861", 862)).status, 404);
+});
+
+// ---- Profile photos ----
+const WEBP = `data:image/webp;base64,${Buffer.from("RIFF\x10\0\0\0WEBPVP8 ").toString("base64")}`;
+async function storedPhoto(id: number, wait = false) {
+  for (let i = 0; i < (wait ? 50 : 1); i++) {
+    const row = await db
+      .prepare("SELECT photo,photo_checked FROM users WHERE id=?")
+      .bind(String(id))
+      .first<{ photo: string; photo_checked: number }>();
+    if (!wait || row?.photo) return row;
+    await new Promise((r) => setTimeout(r, 40));
+  }
+  return db
+    .prepare("SELECT photo,photo_checked FROM users WHERE id=?")
+    .bind(String(id))
+    .first<{ photo: string; photo_checked: number }>();
+}
+test("profile photo: own upload is checked and visible only to people who may see the person", async () => {
+  const up = await call("/me/photo", 7001, "PUT", { photo: WEBP });
+  assert.equal(up.status, 200, up.raw);
+  assert.equal(typeof up.body.user.photo_at, "number");
+  assert.equal(
+    (await call("/me", 7001)).body.user.photo_at,
+    up.body.user.photo_at,
+  );
+  assert.equal((await call("/users/7001/photo", 7001)).body.photo, WEBP);
+  // A friend sees it, also in the friends list; a stranger and an anonymous visitor do not.
+  await befriend(7001, 7002);
+  assert.equal((await call("/users/7001/photo", 7002)).body.photo, WEBP);
+  const friends = (await call("/friends", 7002)).body.friends;
+  assert.equal(
+    friends.find((u: any) => u.id === "7001").photo_at,
+    up.body.user.photo_at,
+  );
+  assert.equal((await call("/users/7001/photo", 7003)).status, 404);
+  assert.equal((await call("/users/7001/photo")).status, 404);
+  // No photo yet: 404, and photo_at stays empty.
+  assert.equal((await call("/users/7002/photo", 7001)).status, 404);
+  assert.equal(
+    friends.find((u: any) => u.id === "7001") &&
+      (await call("/me", 7002)).body.user.photo_at,
+    null,
+  );
+  for (const photo of [
+    WEBP.replace("image/webp", "image/png"), // declared type does not match the bytes
+    "https://example.com/me.jpg",
+    `data:image/webp;base64,${"A".repeat(120_001)}`,
+    "data:image/svg+xml;base64,PHN2Zz4=",
+    "",
+    42,
+  ])
+    assert.equal(
+      (await call("/me/photo", 7001, "PUT", { photo })).status,
+      400,
+      String(photo).slice(0, 40),
+    );
+  assert.equal((await call("/users/7001/photo", 7001)).body.photo, WEBP);
+});
+test("profile photo from Telegram: taken on the first sign-in only, later only on request", async () => {
+  // First sign-in: the bot sees the photo, it is saved after the answer.
+  assert.equal((await call("/me", 7101)).status, 200);
+  const first = await storedPhoto(7101, true);
+  assert.equal(
+    first?.photo,
+    `data:image/jpeg;base64,${JPEG.toString("base64")}`,
+  );
+  assert.equal(first?.photo_checked, 1);
+  assert.ok(
+    telegram.some((c) => c.method === "getFile" && c.body.file_id === "small"),
+    "the smallest size that fits is downloaded",
+  );
+  // An own photo is never replaced by later sign-ins.
+  assert.equal(
+    (await call("/me/photo", 7101, "PUT", { photo: WEBP })).status,
+    200,
+  );
+  await call("/me", 7101);
+  await settle();
+  assert.equal((await storedPhoto(7101))?.photo, WEBP);
+  // «Взять из Telegram» brings it back on request.
+  assert.deepEqual((await call("/me/photo/telegram", 7101)).body, {
+    available: true,
+  });
+  const again = await call("/me/photo/telegram", 7101, "POST");
+  assert.equal(again.status, 200, again.raw);
+  assert.equal(
+    (await storedPhoto(7101))?.photo.startsWith("data:image/jpeg"),
+    true,
+  );
+  // Hidden or missing photo: nothing is set, the menu says so, the button explains.
+  await call("/me", 7102);
+  await settle();
+  assert.deepEqual(await storedPhoto(7102), { photo: "", photo_checked: 1 });
+  assert.deepEqual((await call("/me/photo/telegram", 7102)).body, {
+    available: false,
+  });
+  const none = await call("/me/photo/telegram", 7102, "POST");
+  assert.equal(none.status, 404);
+  assert.equal(none.body.error.code, "PHOTO_UNAVAILABLE");
+});
+test("profile photo from Telegram: the signed photo_url is used when the bot cannot see the photo", async () => {
+  const p = new URLSearchParams({
+    auth_date: String(Math.floor(Date.now() / 1000)),
+    user: JSON.stringify({
+      id: 7103,
+      first_name: "User 7103",
+      photo_url: "https://t.me/i/userpic/320/u7103.jpg",
+    }),
+  });
+  const data = [...p.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => `${k}=${v}`)
+    .join("\n");
+  const key = createHmac("sha256", "WebAppData").update(BOT).digest();
+  p.set("hash", createHmac("sha256", key).update(data).digest("hex"));
+  const me = await call("/me", undefined, "GET", undefined, undefined, {
+    Authorization: `tma ${p.toString()}`,
+  });
+  assert.equal(me.status, 200, me.raw);
+  assert.equal(
+    (await storedPhoto(7103, true))?.photo,
+    `data:image/jpeg;base64,${JPEG.toString("base64")}`,
+  );
+  // Links outside Telegram are not even kept from the sign-in data.
+  const identity = await validateInitData(
+    (() => {
+      const q = new URLSearchParams({
+        auth_date: String(Math.floor(Date.now() / 1000)),
+        user: JSON.stringify({
+          id: 7104,
+          first_name: "User 7104",
+          photo_url: "https://evil.example/x.jpg",
+        }),
+      });
+      const d = [...q.entries()]
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([k, v]) => `${k}=${v}`)
+        .join("\n");
+      q.set("hash", createHmac("sha256", key).update(d).digest("hex"));
+      return q.toString();
+    })(),
+    BOT,
+  );
+  assert.equal(identity.photo_url, undefined);
 });

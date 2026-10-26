@@ -8,6 +8,7 @@ export function encodePhoto(
   height: number,
   canvas: HTMLCanvasElement,
   edges = [900, 720, 540, 360],
+  maxChars = MAX_DATA_URL,
 ): string {
   if (!width || !height) throw new Error("У фотографии нет размеров.");
   const ctx = canvas.getContext("2d");
@@ -27,7 +28,7 @@ export function encodePhoto(
           /^data:image\/(webp|jpeg|png);base64,[A-Za-z0-9+/]+=*$/.test(
             result,
           ) &&
-          result.length < MAX_DATA_URL
+          result.length < maxChars
         )
           return result;
         // Unsupported encoders return PNG: lowering its quality does nothing.
@@ -100,5 +101,37 @@ export async function cropPhoto(
     if (!ctx) throw new Error("Не удалось обработать фото.");
     ctx.drawImage(image, x, y, cw, ch, 0, 0, cw, ch);
     return encodePhoto(part, cw, ch, document.createElement("canvas"));
+  });
+}
+/** A profile photo: the centre square, small enough for users.photo (120 000 characters). */
+export async function avatarPhoto(file: Blob): Promise<string> {
+  return withImage(file, (image) => {
+    const w = image.naturalWidth,
+      h = image.naturalHeight,
+      side = Math.min(w, h);
+    const part = document.createElement("canvas");
+    part.width = side;
+    part.height = side;
+    const ctx = part.getContext("2d");
+    if (!ctx) throw new Error("Не удалось обработать фото.");
+    ctx.drawImage(
+      image,
+      (w - side) / 2,
+      (h - side) / 2,
+      side,
+      side,
+      0,
+      0,
+      side,
+      side,
+    );
+    return encodePhoto(
+      part,
+      side,
+      side,
+      document.createElement("canvas"),
+      [400, 320, 240],
+      110_000,
+    );
   });
 }

@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { api, demo, openBot, type Notifications } from "./api";
 import { CopyValue } from "./forms";
+import { AvatarEditor, Face } from "./avatar";
 import { type User, handle, initials } from "./types";
 export function AddFriend({ onDone }: { onDone: (message: string) => void }) {
   const [mode, setMode] = useState<"nick" | "link">("nick"),
@@ -201,7 +202,9 @@ export function Requests({
     <div className="requests">
       {incoming.map((u) => (
         <div className="request" key={u.id}>
-          <span className="avatar small">{initials(u.name)}</span>
+          <span className="avatar small">
+            <Face user={u} />
+          </span>
           <span>
             <strong>{u.name}</strong> {handle(u)}
             <small>хочет добавить вас в друзья</small>
@@ -233,7 +236,9 @@ export function Requests({
       ))}
       {outgoing.map((u) => (
         <div className="request outgoing" key={u.id}>
-          <span className="avatar small">{initials(u.name)}</span>
+          <span className="avatar small">
+            <Face user={u} />
+          </span>
           <span>
             <strong>{u.name}</strong> {handle(u)}
             <small>ждём подтверждения</small>
@@ -286,7 +291,9 @@ export function AcceptInvite({
     );
   return (
     <div className="share-result">
-      <span className="avatar large">{initials(owner.name)}</span>
+      <span className="avatar large">
+        <Face user={owner} />
+      </span>
       <h3>
         {owner.name} {handle(owner)}
       </h3>
@@ -368,7 +375,7 @@ export function Profile({
   ];
   return (
     <div className="share-result">
-      <span className="avatar large">{initials(user?.name || "Гость")}</span>
+      <AvatarEditor user={user} onUpdated={onUpdated} />
       <h3>{user?.name || "Гость"}</h3>
       <p className="muted">
         {user?.username ? (
