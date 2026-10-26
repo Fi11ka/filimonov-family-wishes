@@ -161,7 +161,7 @@ export async function apiBlob(path: string, data: unknown, timeout = 30000) {
 }
 export const telegramLink = () =>
   telegramAppLink(guestToken, friendInvite, authShare);
-export { compressPhoto } from "./photo";
+export { compressPhoto, compressScreenshot, cropPhoto } from "./photo";
 import { compressPhoto } from "./photo";
 /** Downloads a picture through the API (shops forbid direct cross-site reads) and compresses it. */
 export async function photoFromUrl(url: string) {
@@ -203,4 +203,13 @@ export interface ProductLookup {
   /** Ozon/DNS/…: the home helper is needed but not running. */
   helper_offline?: boolean;
   unavailable?: boolean;
+}
+/** POST /api/fetch/screenshot: what the vision model read on a product screenshot. */
+export interface ScreenshotLookup {
+  shop: string | null;
+  title: string;
+  details: string;
+  price: ProductLookup["price"];
+  /** Product photo on the screenshot, shares: [left, top, right, bottom]. */
+  photo_box: [number, number, number, number] | null;
 }

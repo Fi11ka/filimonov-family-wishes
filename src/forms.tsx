@@ -11,14 +11,18 @@ import {
   ClipboardPaste,
   Sparkles,
   ImageOff,
+  ScanText,
   Users,
 } from "lucide-react";
 import {
   api,
   compressPhoto,
+  compressScreenshot,
+  cropPhoto,
   demo,
   photoFromUrl,
   type ProductLookup,
+  type ScreenshotLookup,
 } from "./api";
 import { type Friend, type Wish } from "./types";
 import { Hearts } from "./hearts";
@@ -216,6 +220,7 @@ export function GiftForm({
       gift?.price_minor != null || gift?.price_max_minor != null,
     );
   const [lookup, setLookup] = useState<"idle" | "loading">("idle"),
+    [shot, setShot] = useState<"idle" | "loading">("idle"),
     [lookupNote, setLookupNote] = useState(""),
     lastLookup = useRef(gift?.shop_url || "");
   const gate = useRef(new LookupState()),
@@ -402,6 +407,77 @@ export function GiftForm({
       if (job.current()) setLookup("idle");
     }
   }
+  /** «Добавить скриншот»: the vision model reads name, price and photo frame. */
+  async function fillFromScreenshot(file: File) {
+    if (demo) {
+      setLookupNote("В демо скриншоты не распознаются.");
+      return;
+    }
+    setShot("loading");
+    setLookupNote("");
+    const current = draft.current;
+    const job = gate.current.begin({
+      title: !current.title.trim(),
+      description: !current.description.trim(),
+      price: !current.priceTouched || (!current.priceMin && !current.priceMax),
+      photo: !current.photo && !current.photoLoading && !gift?.has_photo,
+    });
+    try {
+      const image = await compressScreenshot(file);
+      const r = await api<ScreenshotLookup>(
+        "/api/fetch/screenshot",
+        "POST",
+        { image },
+        45000,
+      );
+      if (!job.current()) return;
+      const notes: string[] = [];
+      if (r.title && job.canApply("title")) {
+        setTitle(r.title.slice(0, 120));
+        autoTitle.current = true;
+        if (r.details && job.canApply("description")) {
+          setDescription(r.details.slice(0, 2000));
+          autoDescription.current = true;
+        }
+      }
+      if (r.price && job.canApply("price")) {
+        const range = r.price.max_minor !== null;
+        setPriceMode(range ? "range" : "exact");
+        setPriceMin(fromMinor(r.price.min_minor));
+        setPriceMax(range ? fromMinor(r.price.max_minor) : "");
+        if ((currencies as readonly string[]).includes(r.price.currency))
+          setCurrency(r.price.currency);
+        setPriceTouched(false);
+      } else if (!r.price)
+        notes.push("Цену на скриншоте не нашли — введите её вручную.");
+      if (job.canApply("photo")) {
+        const box = r.photo_box;
+        const ok = await applyPhoto(
+          () => (box ? cropPhoto(file, box) : compressPhoto(file)),
+          "Не удалось вырезать фото со скриншота.",
+          () => job.canApply("photo"),
+        );
+        if (!job.current()) return;
+        if (ok) {
+          autoPhoto.current = true;
+          notes.push(
+            box
+              ? "Фото вырезали со скриншота — если рамка неточная, подвиньте его или замените."
+              : "Фото товара не нашли, поставили весь скриншот — подвиньте рамку или замените фото.",
+          );
+        }
+      }
+      notes.unshift(
+        `Распознали скриншот${r.shop ? ` (${r.shop})` : ""}. Проверьте название и цену: нейросеть может ошибиться.`,
+      );
+      setLookupNote(notes.join(" "));
+    } catch (err) {
+      if (job.current())
+        setLookupNote(`${(err as Error).message} Заполните поля вручную.`);
+    } finally {
+      if (job.current()) setShot("idle");
+    }
+  }
   // Look the link up shortly after it is pasted or typed.
   useEffect(() => {
     const url = shopUrl.trim();
@@ -552,14 +628,39 @@ export function GiftForm({
           </button>
         </div>
       </label>
-      {(lookup === "loading" || lookupNote) && (
+      <div className="screenshot-row">
+        <label
+          className={`button secondary file-link${shot === "loading" ? " busy" : ""}`}
+        >
+          <ScanText size={16} className={shot === "loading" ? "spin" : ""} />
+          {shot === "loading" ? "Читаем скриншот…" : "Добавить скриншот"}
+          <input
+            type="file"
+            accept="image/*"
+            aria-label="Выбрать скриншот товара"
+            disabled={shot === "loading" || saving}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) void fillFromScreenshot(file);
+            }}
+          />
+        </label>
+        <span>
+          Ссылка не сработала? Заполним название, цену и фото по скриншоту
+          товара.
+        </span>
+      </div>
+      {(lookup === "loading" || shot === "loading" || lookupNote) && (
         <p className="lookup-note" role="status">
           <Sparkles size={14} />
-          {lookup === "loading"
-            ? SLOW_SHOPS.test(shopUrl)
-              ? "Открываем страницу через домашний помощник, это может занять до 30 секунд…"
-              : "Ищем цену и картинку…"
-            : lookupNote}
+          {shot === "loading"
+            ? "Нейросеть читает скриншот, это занимает 5–15 секунд…"
+            : lookup === "loading"
+              ? SLOW_SHOPS.test(shopUrl)
+                ? "Открываем страницу через домашний помощник, это может занять до 30 секунд…"
+                : "Ищем цену и картинку…"
+              : lookupNote}
         </p>
       )}
       {photo ? (
@@ -807,7 +908,13 @@ export function GiftForm({
       )}
       <button
         className="button primary full-width"
-        disabled={saving || lookup === "loading" || photoLoading || photoError}
+        disabled={
+          saving ||
+          lookup === "loading" ||
+          shot === "loading" ||
+          photoLoading ||
+          photoError
+        }
       >
         {saving ? (
           "Сохраняем…"
