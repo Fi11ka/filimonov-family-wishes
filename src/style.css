@@ -2177,6 +2177,9 @@ button.event-chip:hover {
 .toast > svg:first-child {
   color: var(--purple);
 }
+.toast.error > svg:first-child {
+  color: var(--danger);
+}
 .tg-fullscreen .toast {
   bottom: calc(var(--tabbar) + 20px + var(--tg-safe-area-inset-bottom, 0px));
 }

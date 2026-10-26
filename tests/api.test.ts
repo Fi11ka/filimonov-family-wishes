@@ -2790,3 +2790,54 @@ test("handoff: «Выйти на всех устройствах» also cancels 
   );
   assert.equal(fine.status, 200, fine.raw);
 });
+
+// ---- A shop photo the bot saved as a link becomes the photo itself ----
+test("gift photo: the owner swaps a shop photo link for the photo, quietly and only once", async () => {
+  await befriend(7701, 7702);
+  const link = "https://shop.example/images/1.jpg";
+  const photo = "data:image/webp;base64,UklGRg==";
+  const g = await gift(7701, { photo: link });
+  await db
+    .prepare("UPDATE users SET wishlist_updated_at=1 WHERE id='7701'")
+    .run();
+  // Only the owner.
+  assert.equal(
+    (await call(`/gifts/${g}/photo`, 7702, "PUT", { photo, from: link }))
+      .status,
+    404,
+  );
+  // Only a photo in place of a link.
+  for (const bad of [
+    { photo: link, from: link },
+    { photo: "data:image/svg+xml;base64,xxx", from: link },
+    { photo, from: "data:image/png;base64,aGVsbG8=" },
+  ])
+    assert.equal(
+      (await call(`/gifts/${g}/photo`, 7701, "PUT", bad)).status,
+      400,
+    );
+  // The link changed meanwhile: nothing is replaced.
+  const stale = await call(`/gifts/${g}/photo`, 7701, "PUT", {
+    photo,
+    from: "https://shop.example/images/old.jpg",
+  });
+  assert.equal(stale.body.replaced, false);
+  assert.equal((await call(`/gifts/${g}/photo`, 7702)).body.photo, link);
+  const done = await call(`/gifts/${g}/photo`, 7701, "PUT", {
+    photo,
+    from: link,
+  });
+  assert.equal(done.status, 200, done.raw);
+  assert.equal(done.body.replaced, true);
+  assert.equal((await call(`/gifts/${g}/photo`, 7702)).body.photo, photo);
+  // The same picture: friends do not see «вишлист обновлён».
+  assert.equal(
+    (await call("/lists/7701", 7702)).body.owner.wishlist_updated_at,
+    1,
+  );
+  assert.equal(
+    (await call(`/gifts/${g}/photo`, 7701, "PUT", { photo, from: link })).body
+      .replaced,
+    false,
+  );
+});

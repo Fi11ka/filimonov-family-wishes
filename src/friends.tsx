@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import { Check, X, LogOut, Share2 } from "lucide-react";
 import { api, demo, openBot, type Notifications } from "./api";
 import { AvatarEditor, Face } from "./avatar";
-import { type User, handle } from "./types";
+import { type ToastTone, type User, handle } from "./types";
 /** Requests to follow me (approve or decline) and my own requests still waiting. */
 export function Requests({
   incoming,
@@ -17,13 +17,13 @@ export function Requests({
   outgoing: User[];
   onChanged: () => void;
   onOpen: (id: string) => void;
-  notice: (m: string) => void;
+  notice: (m: string, tone?: ToastTone) => void;
 }) {
   const [busy, setBusy] = useState(false);
   if (!incoming.length && !outgoing.length) return null;
   async function act(path: string, method: string, message: string) {
     if (demo) {
-      notice("В демо запросы не меняются.");
+      notice("В демо запросы не меняются.", "info");
       return;
     }
     setBusy(true);
@@ -32,7 +32,7 @@ export function Requests({
       notice(message);
       onChanged();
     } catch (e) {
-      notice((e as Error).message);
+      notice((e as Error).message, "error");
     } finally {
       setBusy(false);
     }

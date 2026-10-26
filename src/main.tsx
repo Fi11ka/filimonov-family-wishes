@@ -17,6 +17,8 @@ import {
   Link as LinkIcon,
   X,
   Check,
+  CircleAlert,
+  Info,
   Sparkles,
   Search,
   ChevronDown,
@@ -56,6 +58,7 @@ import {
   openBot,
   openInBrowser,
   openTarget,
+  photoFromUrl,
   profileLink,
   profileTarget,
   redeemHandoff,
@@ -93,6 +96,7 @@ import {
 import {
   type Booking,
   type Invitation,
+  type ToastTone,
   type User,
   type Friend,
   type Person,
@@ -146,7 +150,9 @@ function App() {
     ),
     [loading, setLoading] = useState(!demo),
     [error, setError] = useState(""),
-    [toast, setToast] = useState("");
+    [toast, setToast] = useState<{ text: string; tone: ToastTone } | null>(
+      null,
+    );
   const [modal, setModal] = useState<ModalKind | null>(null),
     [confirmation, setConfirmation] = useState<Confirmation | null>(null),
     [editing, setEditing] = useState<Wish | null>(null),
@@ -234,11 +240,11 @@ function App() {
    * Signed in, the link just opens the list and the rest of the app works as usual. */
   const guestView = () => !!guestToken && !signedIn();
   const own = !!user && owner?.id === user.id;
-  const notice = (message: string) => {
-    setToast(message);
-    setTimeout(() => setToast(""), 4500);
+  const notice = (message: string, tone: ToastTone = "ok") => {
+    setToast({ text: message, tone });
+    setTimeout(() => setToast(null), 4500);
   };
-  const fullscreen = useFullscreen(notice);
+  const fullscreen = useFullscreen((message) => notice(message, "error"));
   async function loadList(id: string) {
     setLoading(true);
     setError("");
@@ -332,7 +338,7 @@ function App() {
           const shared = guestToken
             ? (await api("/api/guest").catch(() => null))?.owner.id
             : profileTarget || (await linkedProfile());
-          if (!shared) notice("Ссылка не найдена или отозвана");
+          if (!shared) notice("Ссылка не найдена или отозвана", "error");
           else if (shared !== me.user.id) {
             setSharedOwner(shared);
             await openPerson(shared);
@@ -397,7 +403,9 @@ function App() {
       telegram.setBackgroundColor("#f8f6fc");
     }
     // «В браузере» from the Mini App: sign in with its one-time code first.
-    const handoff = redeemHandoff().catch((e) => notice((e as Error).message));
+    const handoff = redeemHandoff().catch((e) =>
+      notice((e as Error).message, "error"),
+    );
     void handoff.then(refresh).then(async () => {
       // Buttons in bot messages open a profile or «Мои брони».
       if (demo || !signedIn() || guestToken || profileTarget || legacyLink)
@@ -480,14 +488,14 @@ function App() {
   }
   async function guarded(action: () => Promise<void>, demoMessage: string) {
     if (demo) {
-      notice(demoMessage);
+      notice(demoMessage, "info");
       return;
     }
     setBusy(true);
     try {
       await action();
     } catch (e) {
-      notice((e as Error).message);
+      notice((e as Error).message, "error");
     } finally {
       setBusy(false);
     }
@@ -606,7 +614,10 @@ function App() {
         notice("Уведомления включены. Откройте бота и нажмите «Запустить»");
         openBot(r.notifications.bot_url);
       } else if (r.subscribed && !r.notifications.enabled)
-        notice("Уведомления включены, но в профиле выключены сообщения бота");
+        notice(
+          "Уведомления включены, но в профиле выключены сообщения бота",
+          "info",
+        );
       else
         notice(
           r.subscribed
@@ -801,7 +812,7 @@ function App() {
                     onClick={() => {
                       setOpening(true);
                       void openInBrowser()
-                        .catch((e) => notice((e as Error).message))
+                        .catch((e) => notice((e as Error).message, "error"))
                         .finally(() => setOpening(false));
                     }}
                     aria-label="Открыть в браузере"
@@ -960,7 +971,7 @@ function App() {
                       className="share-button"
                       onClick={() => {
                         if (demo) {
-                          notice("В демо ссылки не создаются.");
+                          notice("В демо ссылки не создаются.", "info");
                           return;
                         }
                         setModal("share");
@@ -1087,7 +1098,7 @@ function App() {
                       className="text-link"
                       onClick={() => {
                         if (demo) {
-                          notice("В демо ссылки не создаются.");
+                          notice("В демо ссылки не создаются.", "info");
                           return;
                         }
                         setModal("share");
@@ -1223,7 +1234,7 @@ function App() {
                           className="button secondary"
                           onClick={() => {
                             if (demo) {
-                              notice("В демо ссылки не создаются.");
+                              notice("В демо ссылки не создаются.", "info");
                               return;
                             }
                             setModal("share");
@@ -1312,7 +1323,7 @@ function App() {
                         className="icon-button"
                         aria-label="Обновить список"
                         onClick={() => {
-                          if (demo) notice("Демонстрационные данные");
+                          if (demo) notice("Демонстрационные данные", "info");
                           else if (tab === "archive") void loadArchive();
                           else if (guestView()) void refresh();
                           else if (owner) void loadList(owner.id);
@@ -1575,13 +1586,22 @@ function App() {
           )}
         </main>
       </div>
-      {toast && (
-        <div className="toast" role="status">
-          <Check size={17} />
-          {toast}
+      {toast?.text && (
+        <div
+          className={`toast ${toast.tone}`}
+          role={toast.tone === "error" ? "alert" : "status"}
+        >
+          {toast.tone === "error" ? (
+            <CircleAlert size={17} />
+          ) : toast.tone === "info" ? (
+            <Info size={17} />
+          ) : (
+            <Check size={17} />
+          )}
+          {toast.text}
           <button
             className="icon-button"
-            onClick={() => setToast("")}
+            onClick={() => setToast(null)}
             aria-label="Закрыть уведомление"
           >
             <X size={16} />
@@ -1851,7 +1871,7 @@ function GiftCard({
   return (
     <article className={`gift-card ${mode === "archive" ? "archived" : ""}`}>
       <div className="photo-wrap">
-        <Photo wish={g} />
+        <Photo wish={g} own={mode === "own" || mode === "archive"} />
         <span className="priority">
           <Hearts value={g.priority} size={12} />
         </span>
@@ -2019,7 +2039,23 @@ function GiftCard({
     </article>
   );
 }
-function Photo({ wish }: { wish: Wish }) {
+/**
+ * The bot saves a shop's photo as a link: the server cannot shrink it. When the
+ * owner sees such a wish, the app stores the photo itself, one at a time.
+ */
+let photoSwaps = Promise.resolve();
+const photoSwapped = new Set<string>();
+function keepShopPhoto(id: string, link: string) {
+  if (photoSwapped.has(id)) return;
+  photoSwapped.add(id);
+  photoSwaps = photoSwaps
+    .then(async () => {
+      const photo = await photoFromUrl(link);
+      await api(`/api/gifts/${id}/photo`, "PUT", { photo, from: link });
+    })
+    .catch(() => undefined);
+}
+function Photo({ wish, own }: { wish: Wish; own: boolean }) {
   const [src, setSrc] = useState(wish.photo || ""),
     [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -2028,6 +2064,8 @@ function Photo({ wish }: { wish: Wish }) {
       void api<{ photo: string }>(`/api/gifts/${wish.id}/photo`)
         .then((r) => {
           if (alive) setSrc(r.photo);
+          if (own && /^https:\/\//.test(r.photo))
+            keepShopPhoto(wish.id, r.photo);
         })
         .catch(() => {
           if (alive) setFailed(true);
@@ -2035,7 +2073,7 @@ function Photo({ wish }: { wish: Wish }) {
     return () => {
       alive = false;
     };
-  }, [wish]);
+  }, [wish, own]);
   return src && !failed ? (
     <img
       loading="lazy"

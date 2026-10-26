@@ -23,7 +23,7 @@ import {
 } from "../shared/events";
 import { api, demo } from "./api";
 import { Confirm, Modal } from "./forms";
-import type { Friend, Invitation, User } from "./types";
+import type { Friend, Invitation, ToastTone, User } from "./types";
 const icons: Record<string, string> = {
   birthday: "🎂",
   new_year: "🎄",
@@ -56,7 +56,7 @@ export function WishlistEvents({
   onProfile: () => void;
   /** Opens the event page (owner: any event; guests: the ones they are invited to). */
   onOpen?: (e: UpcomingEvent) => void;
-  notice: (message: string) => void;
+  notice: (message: string, tone?: ToastTone) => void;
 }) {
   const [dialog, setDialog] = useState<"event" | "invite" | null>(null);
   const events = upcomingEvents(owner.events ?? eventSpecs(owner), today);
@@ -510,7 +510,7 @@ export function EventPage({
   onBack: () => void;
   /** `named`: the event whose guests' bookings are named in that list. */
   onOpenList: (id: string, named?: string) => void;
-  notice: (message: string) => void;
+  notice: (message: string, tone?: ToastTone) => void;
 }) {
   const [data, setData] = useState<EventPageData | null>(null),
     [error, setError] = useState(""),
@@ -591,7 +591,7 @@ export function EventPage({
       setEditing(false);
       await load();
     } catch (e) {
-      notice((e as Error).message);
+      notice((e as Error).message, "error");
     } finally {
       setBusy(false);
     }
@@ -797,7 +797,7 @@ export function EventPage({
                 notice("Праздник отменён, гостям ушло сообщение");
                 await load();
               })
-              .catch((e) => notice((e as Error).message));
+              .catch((e) => notice((e as Error).message, "error"));
           }}
         />
       )}
