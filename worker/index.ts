@@ -1,3 +1,4 @@
+import { ACCOUNT_ID_PART, isAccountId } from "../shared/account-id";
 import { validBirthday } from "../shared/birthday";
 import { legacyPriority } from "../shared/hearts";
 import {
@@ -28,6 +29,7 @@ import {
   pair,
   saveUser,
   stmt,
+  telegramIdOf,
   type Env,
 } from "./core";
 import { Outbox, telegramCall } from "./notify";
@@ -222,7 +224,7 @@ async function inviteFriends(
   if (
     !Array.isArray(value) ||
     value.length > GROUP_LIMIT ||
-    !value.every((v) => typeof v === "string" && /^\d+$/.test(v))
+    !value.every(isAccountId)
   )
     fail(400, "VALIDATION", `Выберите до ${GROUP_LIMIT} друзей.`);
   const info = await giftInfo(db, giftId);
@@ -264,6 +266,8 @@ async function inviteFriends(
   out.groupInvite(user, info.owner, info.gift, invited);
   return invited;
 }
+/** Profile photo of an account: Telegram (digits) or other sign-in (a_<uuid>) IDs. */
+const AVATAR_PATH = new RegExp(`^/api/users/(${ACCOUNT_ID_PART})/photo$`);
 const SESSION_DAYS = 30,
   SESSION_LIMIT = 10;
 async function sessionUser(db: D1Database, raw: string): Promise<Identity> {
@@ -315,6 +319,8 @@ const telegramKeys = liveJwks(async () => {
   return keys;
 });
 const NONCE_TTL = 600;
+/** «Открыть в браузере»: the one-time code from the Mini App lives 2 minutes. */
+const HANDOFF_TTL = 120;
 /** A user's card with their events; gender is shown only to the person themself. */
 async function profile(db: D1Database, id: string, self = false) {
   const p = await stmt(
@@ -366,7 +372,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   // Mini App: signed initData on every request. Website: a session token issued
   // after Telegram Login (OpenID Connect), looked up by its SHA-256.
   const session = auth?.startsWith("Session ") ? auth.slice(8) : "";
-  const user = !auth
+  let user = !auth
     ? null
     : session
       ? await sessionUser(db, session)
@@ -408,9 +414,37 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
           now(),
         ).first()),
     });
-    await saveUser(db, identity);
-    out.jobs.push(firstPhoto(env, identity).catch(() => {}));
-    return createSession(db, identity);
+    const account = await saveUser(db, identity);
+    out.jobs.push(firstPhoto(env, account.id, identity).catch(() => {}));
+    return createSession(db, account);
+  }
+  if (path === "/api/auth/handoff/redeem" && method === "POST") {
+    // The website exchanges a one-time code made in the Mini App for a session.
+    await rate(db, `handoff:${await ipKey()}`, 10);
+    const code = (await body(req)).code;
+    const row =
+      typeof code === "string" && /^[A-Za-z0-9_-]{43}$/.test(code)
+        ? await stmt(
+            db,
+            "DELETE FROM login_handoffs WHERE code_hash=? AND expires_at>? RETURNING user_id",
+            await hash(code),
+            now(),
+          ).first<{ user_id: string }>()
+        : null;
+    const account = row
+      ? await stmt(
+          db,
+          "SELECT id,name,username FROM users WHERE id=?",
+          row.user_id,
+        ).first<Identity>()
+      : null;
+    if (!account)
+      fail(
+        401,
+        "HANDOFF_INVALID",
+        "Ссылка для входа устарела. Нажмите «В браузере» в Telegram ещё раз или войдите через Telegram здесь.",
+      );
+    return createSession(db, account);
   }
   if (
     !user &&
@@ -420,7 +454,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       (method === "GET" &&
         (path === "/api/guest" ||
           /^\/api\/gifts\/[a-f0-9-]{36}\/photo$/.test(path) ||
-          /^\/api\/users\/\d{1,20}\/photo$/.test(path)))
+          AVATAR_PATH.test(path)))
     )
   )
     fail(401, "AUTH_REQUIRED", "Откройте приложение через Telegram.");
@@ -431,12 +465,14 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   await rate(db, rateKey, user ? 240 : 120);
   // Session identities come from the users table; only signed Telegram data updates it.
   if (user && !session) {
-    await saveUser(db, user);
+    // Signed Telegram data carries the Telegram ID; from here on user.id is the account ID.
+    const telegram = user;
+    user = await saveUser(db, telegram);
     // The Telegram photo is taken once, after the answer, so the app never waits for it.
-    out.jobs.push(firstPhoto(env, user).catch(() => {}));
+    out.jobs.push(firstPhoto(env, user.id, telegram).catch(() => {}));
   }
   // A profile photo is visible to whoever may see this person: friends, requests, events, list links.
-  const avatar = path.match(/^\/api\/users\/(\d{1,20})\/photo$/);
+  const avatar = path.match(AVATAR_PATH);
   if (avatar && method === "GET") {
     const id = avatar[1];
     if (!(
@@ -531,6 +567,21 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   }
   if (!user) fail(401, "AUTH_REQUIRED", "Откройте приложение через Telegram.");
   const uid = user.id;
+  if (path === "/api/auth/handoff" && method === "POST") {
+    // Only from the Mini App (signed Telegram data), not from a website session.
+    if (session)
+      fail(400, "VALIDATION", "Переход на сайт доступен из Telegram.");
+    await rate(db, `handoff-make:${uid}`, 10);
+    const code = token();
+    await stmt(
+      db,
+      "INSERT INTO login_handoffs(code_hash,user_id,expires_at) VALUES(?,?,?)",
+      await hash(code),
+      uid,
+      now() + HANDOFF_TTL,
+    ).run();
+    return { code, expires_in: HANDOFF_TTL };
+  }
   if (path === "/api/me" && method === "GET")
     return {
       user: await profile(db, uid, true),
@@ -550,8 +601,10 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   }
   if (path === "/api/me/photo/telegram" && method === "GET") {
     // Cheap check for the menu: does Telegram show this person's photo at all?
+    const telegramId = await telegramIdOf(db, uid);
+    if (!telegramId) return { available: false };
     const r = await telegramCall(env, "getUserProfilePhotos", {
-      user_id: Number(uid),
+      user_id: Number(telegramId),
       limit: 1,
     });
     const count = (r.result as { total_count?: number } | undefined)
@@ -560,7 +613,10 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   }
   if (path === "/api/me/photo/telegram" && method === "POST") {
     await rate(db, `tg-photo:${uid}`, 10);
-    const photo = await telegramAvatar(env, user);
+    const telegramId = await telegramIdOf(db, uid);
+    const photo = telegramId
+      ? await telegramAvatar(env, telegramId, user.photo_url)
+      : null;
     if (!photo)
       fail(
         404,
@@ -715,20 +771,18 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     const b = await body(req);
     await rate(db, `friendreq:${uid}`, 10);
     const username = usernameOf(b.username);
-    if (
-      !username &&
-      !(typeof b.user_id === "string" && /^\d+$/.test(b.user_id))
-    )
+    if (!username && !isAccountId(b.user_id))
       fail(
         400,
         "VALIDATION",
         "Введите ник Telegram, например @anna_filimonova.",
       );
+    // A nickname is looked up among Telegram sign-ins; an account ID directly.
     const target = await stmt(
       db,
-      "SELECT id FROM users WHERE username=? OR id=?",
+      "SELECT user_id AS id FROM identities WHERE provider='telegram' AND username=? UNION SELECT id FROM users WHERE id=?",
       username,
-      typeof b.user_id === "string" ? b.user_id : "",
+      isAccountId(b.user_id) ? b.user_id : "",
     ).first<{ id: string }>();
     if (!target)
       fail(
@@ -763,7 +817,9 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     if (created) out.friendRequest(user, target.id);
     return { status: "pending" };
   }
-  const friendMatch = path.match(/^\/api\/friends\/(\d+)(\/accept)?$/);
+  const friendMatch = path.match(
+    new RegExp(`^/api/friends/(${ACCOUNT_ID_PART})(/accept)?$`),
+  );
   if (friendMatch) {
     const [a, b] = pair(uid, friendMatch[1]);
     if (friendMatch[2] && method === "POST") {
@@ -793,7 +849,9 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     }
   }
   // Subscriptions: news about a friend's wishlist in the bot.
-  const subscriptionMatch = path.match(/^\/api\/subscriptions\/(\d+)$/);
+  const subscriptionMatch = path.match(
+    new RegExp(`^/api/subscriptions/(${ACCOUNT_ID_PART})$`),
+  );
   if (subscriptionMatch && (method === "PUT" || method === "DELETE")) {
     const target = subscriptionMatch[1];
     if (method === "DELETE") {
@@ -912,7 +970,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     return { ok: true, owner: await profile(db, invite.owner_id) };
   }
   // ---- Lists and gifts ----
-  const listMatch = path.match(/^\/api\/lists\/(\d+)$/);
+  const listMatch = path.match(new RegExp(`^/api/lists/(${ACCOUNT_ID_PART})$`));
   if (listMatch && method === "GET") {
     const owner = listMatch[1];
     if (!(await canView(db, owner, user, guest))) missing();
@@ -1257,7 +1315,9 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       ),
     };
   }
-  const shareList = path.match(/^\/api\/lists\/(\d+)\/share-links$/);
+  const shareList = path.match(
+    new RegExp(`^/api/lists/(${ACCOUNT_ID_PART})/share-links$`),
+  );
   if (
     (path === "/api/guest-links" || shareList) &&
     (method === "GET" || method === "POST")
@@ -1548,6 +1608,7 @@ export default {
       ),
       stmt(env.DB, "DELETE FROM sessions WHERE expires_at<?", now()),
       stmt(env.DB, "DELETE FROM login_nonces WHERE expires_at<?", now()),
+      stmt(env.DB, "DELETE FROM login_handoffs WHERE expires_at<?", now()),
       cleanupHelperJobs(env.DB),
       cleanupBotStates(env.DB),
       stmt(

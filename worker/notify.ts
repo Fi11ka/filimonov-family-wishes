@@ -70,7 +70,10 @@ export class Outbox {
     public env: Env,
     public db: D1Database,
   ) {}
-  /** Sends to users who allow notifications and whose chat is not known to be blocked. */
+  /**
+   * Sends to users who allow notifications and whose chat is not known to be blocked.
+   * The chat is the person's Telegram identity; people without Telegram are skipped.
+   */
   send(ids: string[], text: string, keyboard?: Keyboard) {
     const unique = [...new Set(ids)];
     if (!unique.length || !this.env.BOT_TOKEN) return;
@@ -79,14 +82,15 @@ export class Outbox {
         const rows = (
           await stmt(
             this.db,
-            `SELECT id FROM users WHERE id IN (${unique.map(() => "?").join(",")}) AND notify=1 AND bot_blocked_at IS NULL`,
+            `SELECT u.id,i.subject AS chat FROM users u JOIN identities i ON i.user_id=u.id AND i.provider='telegram'
+            WHERE u.id IN (${unique.map(() => "?").join(",")}) AND u.notify=1 AND u.bot_blocked_at IS NULL`,
             ...unique,
-          ).all<{ id: string }>()
+          ).all<{ id: string; chat: string }>()
         ).results;
         await Promise.all(
-          rows.map(async ({ id }) => {
+          rows.map(async ({ id, chat }) => {
             const r = await telegramCall(this.env, "sendMessage", {
-              chat_id: id,
+              chat_id: chat,
               text,
               parse_mode: "HTML",
               link_preview_options: { is_disabled: true },

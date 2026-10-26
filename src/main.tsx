@@ -1,3 +1,4 @@
+import { ACCOUNT_ID_PART } from "../shared/account-id";
 import { eventDay, untilText, upcomingEvents } from "../shared/events";
 import { formatPrice, sharePrice } from "../shared/price";
 import { EventPage, EventsList, WishlistEvents } from "./events";
@@ -36,6 +37,8 @@ import {
   Minimize2,
   Bell,
   BellRing,
+  Globe,
+  Send,
   SlidersHorizontal,
 } from "lucide-react";
 import { useFullscreen } from "./fullscreen";
@@ -48,7 +51,9 @@ import {
   guestCodes,
   guestToken,
   openBot,
+  openInBrowser,
   openTarget,
+  redeemHandoff,
   RequestError,
   setGuestCode,
   authShare,
@@ -125,6 +130,7 @@ function App() {
   const [bookings, setBookings] = useState<Booking[]>([]),
     [busy, setBusy] = useState(false),
     [menu, setMenu] = useState(false),
+    [opening, setOpening] = useState(false),
     [webSession, setWebSession] = useState(false);
   const [today, setToday] = useState(() => new Date());
   useEffect(() => {
@@ -313,16 +319,20 @@ function App() {
       telegram.setHeaderColor("#f8f6fc");
       telegram.setBackgroundColor("#f8f6fc");
     }
-    void refresh().then(async () => {
+    // «В браузере» from the Mini App: sign in with its one-time code first.
+    const handoff = redeemHandoff().catch((e) => notice((e as Error).message));
+    void handoff.then(refresh).then(async () => {
       // Buttons in bot messages open a friend's list or «Мои брони».
       if (demo || !signedIn() || guestToken) return;
-      if (/^l_\d+$/.test(openTarget)) {
+      if (new RegExp(`^l_(${ACCOUNT_ID_PART})$`).test(openTarget)) {
         setTab("friends");
         await loadList(openTarget.slice(2));
       } else if (openTarget === "b") await navigate("bookings");
       else {
         const e = openTarget.match(
-          /^e_(\d+)_([a-z0-9_]+)_(\d{4}-\d{2}-\d{2})$/,
+          new RegExp(
+            `^e_(${ACCOUNT_ID_PART})_([a-z0-9_]+)_(\\d{4}-\\d{2}-\\d{2})$`,
+          ),
         );
         if (e) openEvent(e[1], e[2], e[3]);
       }
@@ -635,6 +645,37 @@ function App() {
                 )}
               </button>
             )}
+            {/* Switch between the Mini App and the website, keeping the account. */}
+            {telegram?.initData
+              ? user &&
+                !demo && (
+                  <button
+                    className="switch-app"
+                    disabled={opening}
+                    onClick={() => {
+                      setOpening(true);
+                      void openInBrowser()
+                        .catch((e) => notice((e as Error).message))
+                        .finally(() => setOpening(false));
+                    }}
+                    aria-label="Открыть в браузере"
+                    title="Открыть сайт в браузере — вы уже будете в своём аккаунте"
+                  >
+                    <Globe size={16} />
+                    <span>В браузере</span>
+                  </button>
+                )
+              : (user || demo) && (
+                  <a
+                    className="switch-app"
+                    href={telegramLink()}
+                    aria-label="Открыть в Telegram"
+                    title="Открыть мини-приложение в Telegram"
+                  >
+                    <Send size={16} />
+                    <span>В Telegram</span>
+                  </a>
+                )}
             <span className="profile-name">
               {user ? handle(user) || user.name.split(" ")[0] : "Гость"}
             </span>

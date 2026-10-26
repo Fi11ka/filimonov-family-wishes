@@ -3,6 +3,7 @@
 // Updates arrive by webhook; Telegram proves itself with the secret_token header.
 import { MAX_HEARTS, legacyPriority } from "../shared/hearts";
 import { formatPrice, parsePriceText } from "../shared/price";
+import { isAccountId } from "../shared/account-id";
 import { giftInfo, now, pair, saveUser, stmt, type Env } from "./core";
 import {
   archiveGift,
@@ -152,7 +153,10 @@ class Chat {
     public env: Env,
     public db: D1Database,
     public out: Outbox,
+    /** The account (its ID may differ from the Telegram ID once other sign-ins exist). */
     public user: Identity,
+    /** The private chat with this person: their Telegram user ID. */
+    public chatId: string,
     /** The message a pressed inline button belongs to; replies replace it. */
     public messageId?: number,
   ) {}
@@ -168,7 +172,7 @@ class Chat {
           ? { inline_keyboard: keyboard }
           : undefined;
     const payload = {
-      chat_id: this.user.id,
+      chat_id: this.chatId,
       text,
       parse_mode: "HTML",
       link_preview_options: { is_disabled: true },
@@ -323,7 +327,7 @@ class Chat {
       )?.currency || "RUB";
     if (link) {
       await telegramCall(this.env, "sendChatAction", {
-        chat_id: this.user.id,
+        chat_id: this.chatId,
         action: "typing",
       });
       try {
@@ -410,7 +414,7 @@ class Chat {
   ): Promise<{ seen: ScreenshotResult | null; note: string }> {
     if (!this.env.AI) return { seen: null, note: "" };
     await telegramCall(this.env, "sendChatAction", {
-      chat_id: this.user.id,
+      chat_id: this.chatId,
       action: "typing",
     });
     try {
@@ -545,10 +549,18 @@ async function handleUpdate(update: Update, env: Env, out: Outbox, rate: Rate) {
   const from = callback?.from || message?.from;
   if (!from || from.is_bot || !Number.isSafeInteger(from.id)) return;
   if (message && message.chat.type !== "private") return;
-  const user = identity(from);
-  const chat = new Chat(env, db, out, user, callback?.message?.message_id);
+  const telegram = identity(from);
   try {
-    await saveUser(db, user);
+    // The sender's account is found through their Telegram sign-in (never duplicated).
+    const user = await saveUser(db, telegram);
+    const chat = new Chat(
+      env,
+      db,
+      out,
+      user,
+      telegram.id,
+      callback?.message?.message_id,
+    );
     // Writing to the bot means it can write back.
     await stmt(
       db,
@@ -568,7 +580,7 @@ async function handleUpdate(update: Update, env: Env, out: Outbox, rate: Rate) {
       e instanceof ApiError
         ? esc(e.message)
         : "Не получилось. Попробуйте ещё раз.";
-    await telegramCall(env, "sendMessage", { chat_id: user.id, text });
+    await telegramCall(env, "sendMessage", { chat_id: telegram.id, text });
   }
 }
 async function onMessage(chat: Chat, m: NonNullable<Update["message"]>) {
@@ -724,7 +736,7 @@ async function onButton(chat: Chat, data: string) {
     ]);
   }
   // ---- Answers to notifications ----
-  if ((kind === "fa" || kind === "fd") && /^\d+$/.test(a)) {
+  if ((kind === "fa" || kind === "fd") && isAccountId(a)) {
     const [x, y] = pair(uid, a);
     const r = await stmt(
       chat.db,

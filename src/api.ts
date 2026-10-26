@@ -1,5 +1,5 @@
 export { BOT } from "./telegram-links";
-import { telegramAppLink } from "./telegram-links";
+import { closesAfterSwitch, telegramAppLink } from "./telegram-links";
 export const telegram = (
   window as unknown as {
     Telegram?: {
@@ -10,6 +10,10 @@ export const telegram = (
         setHeaderColor: (c: string) => void;
         setBackgroundColor: (c: string) => void;
         openTelegramLink: (u: string) => void;
+        /** Opens a link outside Telegram, in the system browser. */
+        openLink?: (u: string) => void;
+        /** Closes the Mini App. */
+        close?: () => void;
         HapticFeedback?: { notificationOccurred: (type: string) => void };
         platform?: string;
         isVersionAtLeast?: (version: string) => boolean;
@@ -50,6 +54,24 @@ export function openBot(url: string) {
   if (telegram?.initData) telegram.openTelegramLink(url);
   else window.open(url, "_blank", "noopener");
 }
+/**
+ * «В браузере» from the Mini App opens the site with #login=<one-time code>.
+ * The code is taken out of the address at once, before anything else runs,
+ * so it does not stay in the history or in a copied link.
+ */
+export const handoffCode = (() => {
+  const hash = new URLSearchParams(location.hash.slice(1));
+  const code = hash.get("login") || "";
+  if (!code) return "";
+  hash.delete("login");
+  const rest = hash.toString();
+  history.replaceState(
+    null,
+    "",
+    location.pathname + location.search + (rest ? `#${rest}` : ""),
+  );
+  return /^[A-Za-z0-9_-]{43}$/.test(code) ? code : "";
+})();
 /** Friend invitation opened from t.me/…?startapp=f_<token> */
 export const friendInvite = start.startsWith("f_") ? start.slice(2) : "";
 export const demo = new URLSearchParams(location.search).get("demo") === "1";
@@ -92,6 +114,28 @@ export function setGuestCode(giftId: string, code: string | null) {
   }
 }
 export const signedIn = () => !!telegram?.initData || !!sessionToken();
+/** Website only: turns the one-time code from the Mini App into a normal sign-in. */
+export async function redeemHandoff() {
+  if (!handoffCode || telegram?.initData) return false;
+  const r = await api<{ token: string }>("/api/auth/handoff/redeem", "POST", {
+    code: handoffCode,
+  });
+  setSessionToken(r.token);
+  return true;
+}
+/** Mini App: opens this site in the system browser, already signed in, then closes itself. */
+export async function openInBrowser() {
+  const { code } = await api<{ code: string }>("/api/auth/handoff", "POST");
+  const url = `${location.origin}${location.pathname}#login=${code}`;
+  if (!telegram?.openLink) {
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+  telegram.openLink(url);
+  if (telegram.close && closesAfterSwitch(telegram.platform))
+    // A short pause lets Telegram hand the link to the browser first.
+    setTimeout(() => telegram?.close?.(), 400);
+}
 export const apiConfigured = !!import.meta.env.VITE_API_URL;
 export class RequestError extends Error {
   constructor(
