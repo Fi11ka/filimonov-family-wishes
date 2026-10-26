@@ -12,6 +12,9 @@ export const currencies = [
   "BYN",
 ] as const;
 export type Currency = (typeof currencies)[number];
+export const isCurrency = (value: unknown): value is Currency =>
+  typeof value === "string" &&
+  (currencies as readonly string[]).includes(value);
 export const MAX_MINOR = 100000000000;
 export interface ParsedPrice {
   min: number | null;
@@ -39,7 +42,7 @@ export function currencyCode(value: unknown): Currency | null {
     .trim()
     .toUpperCase();
   if (v === "RUR") return "RUB";
-  return (currencies as readonly string[]).includes(v) ? (v as Currency) : null;
+  return isCurrency(v) ? v : null;
 }
 export function detectCurrency(text: string): Currency | null {
   // BYN must win over the generic "руб" rule.
