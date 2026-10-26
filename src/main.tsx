@@ -1,3 +1,4 @@
+import { ACCOUNT_ID_PART } from "../shared/account-id";
 import { eventDay, untilText, upcomingEvents } from "../shared/events";
 import { formatPrice, sharePrice } from "../shared/price";
 import { EventPage, EventsList, WishlistEvents } from "./events";
@@ -307,13 +308,15 @@ function App() {
     void refresh().then(async () => {
       // Buttons in bot messages open a friend's list or «Мои брони».
       if (demo || !signedIn() || guestToken) return;
-      if (/^l_\d+$/.test(openTarget)) {
+      if (new RegExp(`^l_(${ACCOUNT_ID_PART})$`).test(openTarget)) {
         setTab("friends");
         await loadList(openTarget.slice(2));
       } else if (openTarget === "b") await navigate("bookings");
       else {
         const e = openTarget.match(
-          /^e_(\d+)_([a-z0-9_]+)_(\d{4}-\d{2}-\d{2})$/,
+          new RegExp(
+            `^e_(${ACCOUNT_ID_PART})_([a-z0-9_]+)_(\\d{4}-\\d{2}-\\d{2})$`,
+          ),
         );
         if (e) openEvent(e[1], e[2], e[3]);
       }

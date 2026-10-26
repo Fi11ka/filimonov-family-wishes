@@ -16,10 +16,18 @@ function dataUrl(bytes: Uint8Array) {
     binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return `data:${type};base64,${btoa(binary)}`;
 }
-/** The current Telegram profile photo of the user, compressed by Telegram, or null if hidden/missing. */
-export async function telegramAvatar(env: Env, user: Identity) {
+/**
+ * The current Telegram profile photo of a person (by Telegram user ID, not
+ * account ID), compressed by Telegram, or null if hidden/missing. photoUrl is
+ * the link from signed sign-in data, if any.
+ */
+export async function telegramAvatar(
+  env: Env,
+  telegramId: string,
+  photoUrl?: string,
+) {
   const r = await telegramCall(env, "getUserProfilePhotos", {
-    user_id: Number(user.id),
+    user_id: Number(telegramId),
     limit: 1,
   });
   const sizes = (
@@ -34,9 +42,9 @@ export async function telegramAvatar(env: Env, user: Identity) {
     : null;
   if (fromBot) return fromBot;
   // The bot cannot see everyone's photos; the signed sign-in data may still carry a link.
-  if (!user.photo_url) return null;
+  if (!photoUrl) return null;
   try {
-    const got = await fetchBytes(new URL(user.photo_url), {
+    const got = await fetchBytes(new URL(photoUrl), {
       timeoutMs: 6000,
       maxBytes: MAX_BYTES,
       accept: "image/jpeg,image/png,image/webp",
@@ -48,21 +56,25 @@ export async function telegramAvatar(env: Env, user: Identity) {
   }
 }
 /** First sign-in only: put the Telegram photo in once, never over a photo the person chose. */
-export async function firstPhoto(env: Env, user: Identity) {
+export async function firstPhoto(
+  env: Env,
+  account: string,
+  telegram: Pick<Identity, "id" | "photo_url">,
+) {
   const first = await stmt(
     env.DB,
     "UPDATE users SET photo_checked=1 WHERE id=? AND photo_checked=0 RETURNING id",
-    user.id,
+    account,
   ).first();
   if (!first) return;
-  const photo = await telegramAvatar(env, user);
+  const photo = await telegramAvatar(env, telegram.id, telegram.photo_url);
   if (photo)
     await stmt(
       env.DB,
       "UPDATE users SET photo=?,photo_at=? WHERE id=? AND photo=''",
       photo,
       now(),
-      user.id,
+      account,
     ).run();
 }
 /** A photo picked on the device and compressed in the browser. */
