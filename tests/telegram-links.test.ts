@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { telegramAppLink } from "../src/telegram-links";
+import { closesAfterSwitch, telegramAppLink } from "../src/telegram-links";
 test("the default family link targets the Main Mini App, not just the bot chat", () => {
   assert.equal(
     telegramAppLink(),
@@ -27,4 +27,19 @@ test("a crafted parameter cannot change the destination or add Telegram actions"
     url.searchParams.get("startapp"),
     "g_token&domain=evil&start=other",
   );
+});
+test("«В браузере» closes the Mini App except in Telegram Web", () => {
+  for (const p of [
+    "android",
+    "ios",
+    "tdesktop",
+    "macos",
+    "unigram",
+    "unknown",
+    "",
+  ])
+    assert.equal(closesAfterSwitch(p), true, p);
+  for (const p of ["web", "weba", "webk"])
+    assert.equal(closesAfterSwitch(p), false, p);
+  assert.equal(closesAfterSwitch(), true);
 });
