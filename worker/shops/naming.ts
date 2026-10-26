@@ -1,7 +1,7 @@
 // Shop titles are long and often foreign ("KnitPro Nova Metal Deluxe … 8mm").
 // A wish needs a short Russian name ("Набор спиц"); brand, model, colour and
 // sizes belong in the hint for relatives. Cloudflare Workers AI does the
-// rewrite; without it (or on any failure) the shop title is kept unchanged.
+// rewrite; without it (or on any failure) shortTitle() trims Russian titles by rules.
 
 export interface WishName {
   title: string;
@@ -17,7 +17,7 @@ export type Namer = (
 ) => Promise<WishName | null>;
 
 export const NAMING_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
-const TIMEOUT_MS = 6000;
+const TIMEOUT_MS = 9000;
 
 const SYSTEM = `Ты помогаешь вести семейный вишлист подарков.
 По названию товара из интернет-магазина верни JSON с двумя полями.
@@ -69,7 +69,11 @@ export function parseWishName(raw: unknown): WishName | null {
   return { title: title[0].toUpperCase() + title.slice(1), details };
 }
 
-export function aiNamer(ai: AiBinding, model = NAMING_MODEL): Namer {
+export function aiNamer(
+  ai: AiBinding,
+  model = NAMING_MODEL,
+  timeoutMs = TIMEOUT_MS,
+): Namer {
   return async (title, shop) => {
     if (!title || isShortRussian(title)) return null;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -88,7 +92,7 @@ export function aiNamer(ai: AiBinding, model = NAMING_MODEL): Namer {
           temperature: 0.2,
         }),
         new Promise<null>((resolve) => {
-          timer = setTimeout(() => resolve(null), TIMEOUT_MS);
+          timer = setTimeout(() => resolve(null), timeoutMs);
         }),
       ]);
       return answer === null ? null : parseWishName(answer);
@@ -99,3 +103,5 @@ export function aiNamer(ai: AiBinding, model = NAMING_MODEL): Namer {
     }
   };
 }
+
+export { shortTitle } from "../../shared/short-title";

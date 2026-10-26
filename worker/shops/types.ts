@@ -14,6 +14,10 @@ export interface ProductInfo {
   blocked?: boolean;
   /** Explicitly reported by the shop; missing price alone is not proof. */
   unavailable?: boolean;
+  /** The title was restored from the product address (transliterated slug). */
+  titleFromLink?: boolean;
+  /** Full product address when the link was a short one (ozon.ru/t/…). */
+  canonicalUrl?: string;
 }
 export interface Page {
   url: URL;
@@ -24,6 +28,8 @@ export interface Page {
 export interface ShopContext {
   page(url: URL, accept?: string): Promise<Page>;
   json(url: URL, headers?: Record<string, string>): Promise<unknown>;
+  /** Where a short link leads (redirects only; the final page is not read). */
+  resolve?(url: URL): Promise<URL>;
   /** Overall time for one lookup; longer when pages go through the home helper. */
   budgetMs?: number;
   /** Whether the home helper was used, or was needed but offline. */

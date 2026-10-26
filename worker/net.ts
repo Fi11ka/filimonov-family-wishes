@@ -83,6 +83,35 @@ async function follow(start: URL, limits: Limits, signal: AbortSignal) {
     return { url, res };
   }
 }
+/**
+ * Follows redirects without reading any page, until `done(url)` says the address
+ * is final. Every hop passes the same public-address check as fetchBytes.
+ */
+export async function resolveRedirects(
+  start: URL,
+  done: (url: URL) => boolean,
+  headers: Record<string, string>,
+  max = 3,
+) {
+  let url = publicHttpsUrl(start.href);
+  const t = timeout(6000);
+  try {
+    for (let hop = 0; hop < max && !done(url); hop++) {
+      const res = await fetch(url.href, {
+        headers,
+        redirect: "manual",
+        signal: t.signal,
+      });
+      await res.body?.cancel();
+      const location = res.headers.get("location");
+      if (res.status < 300 || res.status >= 400 || !location) break;
+      url = publicHttpsUrl(new URL(location, url).href);
+    }
+    return url;
+  } finally {
+    t.done();
+  }
+}
 function timeout(ms: number) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);

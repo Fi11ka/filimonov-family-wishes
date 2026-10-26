@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { findShop, lookupProduct, shops } from "../worker/shops";
 import type { Page, ShopContext } from "../worker/shops/types";
 import { wbImage, wbPrice } from "../worker/shops/wildberries";
+import { cartKind, readCart } from "../worker/shops/carts";
+import { chatShareText, parseChatList } from "../shared/chat-list";
+import { ozonSlugTitle } from "../worker/shops/ozon";
+import { shortTitle } from "../worker/shops/naming";
 import { publicHttpsUrl } from "../worker/net";
 import { productLink } from "../worker/shops/link";
 // Shops change markup often and block datacenter IPs, so these tests pin the
@@ -610,4 +614,331 @@ test("AliExpress preview preserves a price obtained from the original Russian ca
   );
   assert.equal(r.price?.min_minor, 123400);
   assert.equal(r.price?.currency, "RUB");
+});
+
+test("Wildberries: CDN host from the live route map, card and price history when the card API refuses", async () => {
+  const id = 1287301270;
+  const base =
+    "https://basket-45.wbcontent.net/vol12873/part1287301/1287301270";
+  const seen: string[] = [];
+  const ctx: ShopContext = {
+    async page(url) {
+      return { url, status: 403, html: "" };
+    },
+    async json(url) {
+      seen.push(url.href);
+      if (url.href === "https://cdn.wbbasket.ru/api/v3/upstreams")
+        return {
+          recommend: {
+            mediabasket_route_map: [
+              {
+                hosts: [
+                  {
+                    vol_range_from: 12678,
+                    vol_range_to: 13445,
+                    host: "basket-45.wbcontent.net",
+                  },
+                  {
+                    vol_range_from: 0,
+                    vol_range_to: 143,
+                    host: "evil.example.com",
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      if (url.href === `${base}/info/ru/card.json`)
+        return {
+          imt_name: "Шуба искусственная зимняя оверсайз из экомеха ламы",
+          selling: { brand_name: "ТЕЛОДВИЖЕНИЯ" },
+        };
+      if (url.href === `${base}/info/price-history.json`)
+        return [
+          { dt: 1, price: { RUB: 500000 } },
+          { dt: 2, price: { RUB: 430900 } },
+        ];
+      throw new Error("HTTP 403");
+    },
+  };
+  const r = await lookupProduct(
+    `https://www.wildberries.ru/catalog/${id}/detail.aspx`,
+    ctx,
+  );
+  assert.equal(r.image_url, `${base}/images/big/1.webp`);
+  assert.equal(r.title, "Шуба искусственная зимняя");
+  assert.match(r.details, /^ТЕЛОДВИЖЕНИЯ Шуба искусственная зимняя оверсайз/);
+  assert.deepEqual(r.price, {
+    min_minor: 430900,
+    max_minor: null,
+    currency: "RUB",
+  });
+  assert.ok(seen.some((u) => u.startsWith("https://card.wb.ru/")));
+  // Without the live map new products still get a host after the known ones.
+  assert.match(
+    wbImage(3_000_000_000),
+    /^https:\/\/basket-\d{2}\.wbbasket\.ru\/vol30000\//,
+  );
+  assert.match(
+    wbImage(1287301270),
+    /^https:\/\/basket-45\.wbbasket\.ru\/vol12873\//,
+  );
+});
+
+test("long Russian titles are shortened by rules when Workers AI is unavailable", () => {
+  const cases: [string, string | undefined][] = [
+    [
+      "ТЕЛОДВИЖЕНИЯ Шуба искусственная зимняя оверсайз из экомеха ламы",
+      "Шуба искусственная зимняя",
+    ],
+    ["NEED MORЕ Майка под пиджак с закрытой спиной", "Майка под пиджак"],
+    ["Nike Кроссовки мужские Air Max 90 белые", "Кроссовки мужские"],
+    [
+      "Подставка для ноутбука металлическая регулируемая",
+      "Подставка для ноутбука",
+    ],
+    [
+      "Набор деревянных мельниц для специй 2 шт с подставкой",
+      "Набор деревянных мельниц",
+    ],
+    ["Гель для волос", undefined],
+    ["KnitPro Nova Metal Deluxe Interchangeable 8mm", undefined],
+  ];
+  for (const [title, expected] of cases)
+    assert.equal(shortTitle(title)?.title, expected, title);
+  assert.equal(shortTitle(cases[0][0])?.details, cases[0][0]);
+});
+
+test("shared carts and wishlists: WB basket, WB wishlist and Ozon cart become product links", async () => {
+  const calls: string[] = [];
+  // Shape of Ozon's /modal/shareCartFrom answer (October 2026), trimmed.
+  const product = (id: number, title: string, prices: [string, string][]) => ({
+    product: {
+      id,
+      titleColumn: [{ type: "text", text: { text: title } }],
+      priceColumn: prices.map(([text, styleType]) => ({
+        type: "prices",
+        prices: {
+          elements: [{ price: [{ text }], priceStyle: { styleType } }],
+        },
+      })),
+      image: {
+        image: { url: `https://ir-20.ozone.ru/s3/multimedia-1-o/${id}.jpg` },
+      },
+    },
+  });
+  const ozonModal = {
+    widgetStates: {
+      "cartSplit-11722126-default-1": JSON.stringify({
+        cartItems: [
+          product(
+            871879794,
+            "Серьги: с жемчугом, бабочки, змейки, колечки. Набор сережек 5 пар под золото",
+            [
+              ["199 ₽", "CARD_PRICE"],
+              ["221 ₽", "SECOND_LVL"],
+            ],
+          ),
+          product(3959434846, "Серьги цветы", [["99 ₽", "CARD_PRICE"]]),
+        ],
+      }),
+      "master-3173885-default-1": "{}",
+    },
+  };
+  const ctx: ShopContext = {
+    async page(url) {
+      calls.push(url.href);
+      // The home helper's browser shows JSON inside <pre>.
+      const json = JSON.stringify(ozonModal)
+        .replace(/&/g, "&amp;")
+        .replace(/"/g, "&quot;");
+      return { url, status: 200, html: `<html><pre>${json}</pre></html>` };
+    },
+    async json(url) {
+      calls.push(url.href);
+      if (url.hostname === "wbx-api-gateway.wildberries.ru")
+        return {
+          items: [
+            { nmId: 183901471, chrtId: 1 },
+            { nmId: 183901471, chrtId: 2 },
+            { nmId: "bad" },
+            ...Array.from({ length: 120 }, (_, i) => ({ nmId: 1000 + i })),
+          ],
+        };
+      if (url.hostname === "wishlist.common.geo.paywb.com")
+        return {
+          result: {
+            title: "Мой праздник",
+            collections: [
+              { title: "Пижама", product: { id: 241436770, price: 97200 } },
+              { title: "Сломанная", product: { id: "x" } },
+            ],
+          },
+        };
+      throw new Error("HTTP 404");
+    },
+  };
+  const basket = await readCart(
+    new URL("https://www.wildberries.ru/basket?shareId=mvcrplqzzw"),
+    ctx,
+  );
+  assert.equal(
+    calls.at(-1),
+    "https://wbx-api-gateway.wildberries.ru/share-basket/api/v1/basket/mvcrplqzzw",
+  );
+  assert.equal(
+    basket.items[0].url,
+    "https://www.wildberries.ru/catalog/183901471/detail.aspx",
+  );
+  assert.equal(basket.items.length, 100);
+  assert.equal(basket.truncated, true);
+  const wishlist = await readCart(
+    new URL("https://wildberries.ru/wlg/hgsx34ey"),
+    ctx,
+  );
+  assert.deepEqual(wishlist, {
+    shop: "Wildberries",
+    kind: "shop",
+    title: "Мой праздник",
+    items: [
+      {
+        url: "https://www.wildberries.ru/catalog/241436770/detail.aspx",
+        title: "Пижама",
+        price_minor: 97200,
+      },
+    ],
+    truncated: false,
+  });
+  const ozonCart = await readCart(
+    new URL("https://www.ozon.ru/cart?share=c_34mIv4gBHSrJW2L4txPlj"),
+    ctx,
+  );
+  // Only the shared modal is read, not the recommendations on /cart.
+  assert.equal(
+    calls.at(-1),
+    "https://www.ozon.ru/api/entrypoint-api.bx/page/json/v2?url=%2Fmodal%2FshareCartFrom%3Fshare%3Dc_34mIv4gBHSrJW2L4txPlj",
+  );
+  assert.deepEqual(ozonCart.items, [
+    {
+      url: "https://www.ozon.ru/product/871879794/",
+      title: "Серьги",
+      details:
+        "Серьги: с жемчугом, бабочки, змейки, колечки. Набор сережек 5 пар под золото",
+      // Without the Ozon card discount.
+      price_minor: 22100,
+      image: "https://ir-20.ozone.ru/s3/multimedia-1-o/871879794.jpg",
+    },
+    {
+      url: "https://www.ozon.ru/product/3959434846/",
+      title: "Серьги цветы",
+      price_minor: 9900,
+      image: "https://ir-20.ozone.ru/s3/multimedia-1-o/3959434846.jpg",
+    },
+  ]);
+  for (const bad of [
+    "https://www.wildberries.ru/catalog/1/detail.aspx",
+    "https://www.ozon.ru/cart",
+    "https://example.com/basket?shareId=abcd",
+  ])
+    assert.equal(cartKind(new URL(bad)), null, bad);
+});
+
+test("a shared ChatGPT answer becomes a product list with current prices", async () => {
+  // Shape of chatgpt.com/s/… pages (October 2026): a turbo-stream chunk with the answer.
+  const answer =
+    'Теперь видно фотографии и цены.\n\n\ue200image_group\ue202{"query":["Ozon колье"]}\ue201\n\n' +
+    "**1\\. Колье многоуровневое, набор из 4 цепей золотого цвета**\n\n## 249 ₽\n\n~~252 ₽~~\n\n" +
+    "\ue200url\ue202Ссылка на Ozon\ue202https://ozon.ru/t/ye20lKQ\ue201\n\n---\n\n" +
+    "**2\\. Серьги «Цветы», золотой солнечный**\n\n## 99 ₽\n\nТочная ссылка на этот товар не установлена.\n\n" +
+    "**Итого за два товара: 348 ₽.**";
+  const stream = JSON.stringify([
+    { _1: 2 },
+    "fallbackMarkdown",
+    answer,
+    "assistant",
+  ]);
+  const html = `<html><script>window.__reactRouterContext.streamController.enqueue(${JSON.stringify(stream + "\n")});</script></html>`;
+  assert.equal(chatShareText(html), answer);
+  const ctx: ShopContext = {
+    async page(url) {
+      return { url, status: 200, html };
+    },
+    async json() {
+      throw new Error("HTTP 404");
+    },
+  };
+  const url = new URL(
+    "https://chatgpt.com/s/t_6ade956cc9348191bbfb209b85e54a86",
+  );
+  assert.equal(cartKind(url), "chatgpt");
+  const cart = await readCart(url, ctx);
+  assert.equal(cart.kind, "chat");
+  assert.deepEqual(cart.items, [
+    {
+      url: "https://ozon.ru/t/ye20lKQ",
+      title: "Колье многоуровневое",
+      details: "Колье многоуровневое, набор из 4 цепей золотого цвета",
+      price_minor: 24900,
+    },
+    { url: "", title: "Серьги «Цветы», золотой солнечный", price_minor: 9900 },
+  ]);
+  // Pasted text in other common shapes.
+  assert.deepEqual(
+    parseChatList(
+      "1. Наушники — 24 990 ₽ — https://www.ozon.ru/product/naushniki-123456/?utm_source=chatgpt.com\n" +
+        "2. **Плед**\nЦена: ~~3 000 ₽~~ 2 490 ₽\n[Ссылка](https://www.wildberries.ru/catalog/183901471/detail.aspx)\n\nИтого: 27 480 ₽",
+    ),
+    [
+      {
+        title: "Наушники",
+        price_minor: 2499000,
+        url: "https://www.ozon.ru/product/naushniki-123456/",
+      },
+      {
+        title: "Плед",
+        price_minor: 249000,
+        url: "https://www.wildberries.ru/catalog/183901471/detail.aspx",
+      },
+    ],
+  );
+});
+
+test("Ozon: a short link resolves without www and the name is restored from the product address", async () => {
+  const seen: string[] = [];
+  const ctx: ShopContext = {
+    async page(url) {
+      seen.push(url.href);
+      // ozon.ru/t/… redirects; the product page itself is an anti-bot stub.
+      return {
+        url: new URL(
+          "https://www.ozon.ru/product/zhurnalnyy-stolik-loft-76-h-40-h-47sm-reggi-12-120-seryy-grafit-1348747111/?from=share",
+        ),
+        status: 403,
+        html: "<html><title>Доступ ограничен</title></html>",
+      };
+    },
+    async json() {
+      throw new Error("HTTP 403");
+    },
+  };
+  const r = await lookupProduct("https://www.ozon.ru/t/ye20lKQ", ctx);
+  assert.equal(seen[0], "https://ozon.ru/t/ye20lKQ");
+  assert.equal(r.title, "Журнальный столик лофт");
+  assert.match(r.details, /^Журнальный столик лофт 76 х 40 х 47sm/);
+  assert.equal(
+    r.url,
+    "https://www.ozon.ru/product/zhurnalnyy-stolik-loft-76-h-40-h-47sm-reggi-12-120-seryy-grafit-1348747111/",
+  );
+  assert.equal(
+    ozonSlugTitle(
+      new URL(
+        "https://www.ozon.ru/product/kole-mnogourovnevoe-bizhuteriya-nabor-iz-4-tsepey-zolotogo-tsveta-ozherele-na-sheyu-4454405542/",
+      ),
+    ),
+    "Колье многоуровневое бижутерия набор из 4 цепей золотого цвета ожерелье на шею",
+  );
+  assert.equal(
+    ozonSlugTitle(new URL("https://www.ozon.ru/product/1348747111/")),
+    null,
+  );
 });
