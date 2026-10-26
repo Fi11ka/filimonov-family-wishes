@@ -15,6 +15,7 @@ import {
   type Identity,
 } from "./security";
 import { fetchBytes, imageType, publicHttpsUrl } from "./net";
+import { PHOTO_DATA_URL } from "./photo-data";
 import { JWKS_URL, liveJwks, verifyIdToken, type Jwk } from "./oidc";
 import { liveContext, lookupProduct } from "./shops";
 import { cartKind, readCart } from "./shops/carts";
@@ -1072,10 +1073,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       const b = await body(req);
       const photo = text(b.photo, 220000),
         from = text(b.from, 2048);
-      if (
-        !/^data:image\/(jpeg|webp|png);base64,[A-Za-z0-9+/]+=*$/.test(photo) ||
-        !/^https:\/\//.test(from)
-      )
+      if (!PHOTO_DATA_URL.test(photo) || !/^https:\/\//.test(from))
         fail(400, "VALIDATION", "Некорректное фото.");
       const before = await stmt(
         db,

@@ -1,4 +1,5 @@
 import { MAX_MINOR, isCurrency } from "../shared/price";
+import { PHOTO_DATA_URL } from "./photo-data";
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -190,11 +191,7 @@ export function giftInput(b: Record<string, unknown>) {
   )
     fail(400, "VALIDATION", "Выберите приоритет.");
   const photo = text(b.photo ?? "", 220000);
-  if (
-    photo &&
-    !/^data:image\/(jpeg|webp|png);base64,[A-Za-z0-9+/]+=*$/.test(photo)
-  )
-    https(photo);
+  if (photo && !PHOTO_DATA_URL.test(photo)) https(photo);
   return {
     title,
     description,
