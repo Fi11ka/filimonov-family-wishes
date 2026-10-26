@@ -187,21 +187,21 @@ test("import: messy rows become editable wishes, nothing is lost", () => {
     kamin.description,
     /Ещё ссылка:\nhttps:\/\/www\.ozon\.ru\/product\/biokamin-1\//,
   );
-  assert.equal(kamin.priority, 3); // red, labelled "высокий" in the legend
+  assert.equal(kamin.priority, 5); // red, labelled "высокий" in the legend: 5 hearts
   assert.deepEqual(kamin.image, {
     kind: "embedded",
     path: "xl/media/image1.png",
     type: "image/png",
   });
   assert.equal(by("Рубашка").archived, true);
-  assert.equal(by("Настольная игра").priority, 2); // yellow: between "низкий" and "высокий"
+  assert.equal(by("Настольная игра").priority, 3); // yellow: between "низкий" and "высокий"
   const tickets = by("Билеты в театр");
   assert.deepEqual(
     [tickets.priceMode, tickets.priceMin, tickets.priceMax],
     ["range", "1000", ""],
   );
   assert.equal(tickets.shopUrl, "https://theatre.example/tickets");
-  assert.equal(tickets.priority, 1); // green = "низкий"
+  assert.equal(tickets.priority, 2); // green = "низкий"
   assert.match(
     by("Книги").description,
     /Ещё:\n— Интерфейс\. Купер\n— Живая типографика/,

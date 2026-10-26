@@ -6,6 +6,8 @@ export type User = {
   birthday?: string | null;
   allow_resharing?: number;
   wishlist_updated_at?: number | null;
+  /** A few words under the wishlist title. */
+  about?: string | null;
 };
 export type Friend = User & { gift_count: number; subscribed?: boolean };
 export type Wish = {
@@ -28,7 +30,6 @@ export type Wish = {
   /** For people in a shared booking: how many friends joined the organizer. */
   group_joined?: number | null;
 };
-export const priorities = ["", "Будет приятно", "Очень хочется", "Мечта"];
 export const initials = (s: string) =>
   s
     .split(" ")

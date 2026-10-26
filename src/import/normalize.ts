@@ -1,3 +1,4 @@
+import { heartsFromLevel } from "../../shared/hearts";
 import { parsePriceText, type Currency } from "../../shared/price";
 import type { Cell, Sheet, SheetImage } from "./xlsx";
 // Turns a loosely filled spreadsheet into editable import rows. The rule is:
@@ -18,7 +19,8 @@ export interface ImportRow {
   currency: Currency;
   shopUrl: string;
   description: string;
-  priority: 1 | 2 | 3;
+  /** 1–5 hearts */
+  priority: number;
   archived: boolean;
   image: ImportImage | null;
   warnings: string[];
@@ -365,13 +367,13 @@ export function normalizeSheet(sheet: Sheet, currency: Currency): ImportRow[] {
       warnings.push("Название сокращено");
     }
     // Priority: words first, then the legend colour of the priority (or title) cell.
-    let priority: 1 | 2 | 3 = 2,
+    let priority = 3,
       archived = false,
       known = false;
     const word = priorityCell?.value ? levelOf(priorityCell.value) : undefined;
     if (word === "bought") archived = known = true;
     else if (typeof word === "number") {
-      priority = word;
+      priority = heartsFromLevel(word);
       known = true;
     } else if (priorityCell?.value && word === undefined)
       notes.push(`Приоритет в таблице: ${priorityCell.value}`);
@@ -379,7 +381,7 @@ export function normalizeSheet(sheet: Sheet, currency: Currency): ImportRow[] {
     const colour = fill ? legend.colours.get(fill) : undefined;
     if (colour === "bought") archived = true;
     else if (typeof colour === "number" && !(known && typeof word === "number"))
-      priority = colour;
+      priority = heartsFromLevel(colour);
     // Price
     let priceMode: ImportRow["priceMode"] = "none";
     if (parsed.min !== null || parsed.max !== null)

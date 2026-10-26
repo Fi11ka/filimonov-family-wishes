@@ -20,9 +20,16 @@ import {
   photoFromUrl,
   type ProductLookup,
 } from "./api";
-import { type Friend, type Wish, priorities } from "./types";
+import { type Friend, type Wish } from "./types";
+import { Hearts } from "./hearts";
 import { currencies } from "../shared/price";
 import { LookupState } from "./lookup-state";
+import {
+  DEFAULT_FRAMING,
+  PhotoFrame,
+  renderFramed,
+  type Framing,
+} from "./photo-frame";
 const modalStack: symbol[] = [];
 let originalBodyOverflow = "";
 export function Modal({
@@ -181,6 +188,10 @@ export function GiftForm({
   onDirty: () => void;
   onSavingChange: (saving: boolean) => void;
 }) {
+  const [framing, setFraming] = useState<Framing>(DEFAULT_FRAMING),
+    framingTouched = useRef(false),
+    // The editor needs pixels: pictures stored as links are loaded through the API.
+    [editSrc, setEditSrc] = useState("");
   const [photo, setPhoto] = useState(""),
     [photoLoading, setPhotoLoading] = useState(!!gift?.has_photo),
     [photoError, setPhotoError] = useState(false),
@@ -194,7 +205,7 @@ export function GiftForm({
   const [title, setTitle] = useState(gift?.title || ""),
     [shopUrl, setShopUrl] = useState(gift?.shop_url || ""),
     [description, setDescription] = useState(gift?.description || ""),
-    [priority, setPriority] = useState(gift?.priority || 2),
+    [priority, setPriority] = useState(gift?.priority || 3),
     [currency, setCurrency] = useState(gift?.currency || "EUR");
   const [priceMode, setPriceMode] = useState<"exact" | "range">(
       gift?.price_range ? "range" : "exact",
@@ -259,6 +270,18 @@ export function GiftForm({
           if (photoId === photoRequest.current) setPhotoLoading(false);
         });
   }, [gift]);
+  useEffect(() => {
+    let alive = true;
+    setEditSrc("");
+    if (photo.startsWith("data:")) setEditSrc(photo);
+    else if (/^https:\/\//.test(photo))
+      photoFromUrl(photo)
+        .then((data) => alive && setEditSrc(data))
+        .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [photo]);
   async function applyPhoto(
     load: () => Promise<string>,
     failNote: string,
@@ -276,6 +299,8 @@ export function GiftForm({
       if (id !== photoRequest.current || (valid && !valid())) return false;
       onDirty();
       setPhoto(value);
+      setFraming(DEFAULT_FRAMING);
+      framingTouched.current = false;
       setPhotoError(false);
       setPhotoNote("");
       return true;
@@ -447,6 +472,10 @@ export function GiftForm({
             max = priceMode === "range" ? toMinor(priceMax, "Цена «до»") : null;
           if (min !== null && max !== null && max < min)
             throw new Error("Цена «до» должна быть больше цены «от».");
+          const saved =
+            framingTouched.current && editSrc
+              ? await renderFramed(editSrc, framing)
+              : photo;
           await api(
             gift ? `/api/gifts/${gift.id}` : "/api/gifts",
             gift ? "PUT" : "POST",
@@ -459,7 +488,7 @@ export function GiftForm({
               shop_url: shopUrl.trim(),
               description,
               priority: Number(priority),
-              photo,
+              photo: saved,
             },
           );
           onSaved();
@@ -533,39 +562,61 @@ export function GiftForm({
             : lookupNote}
         </p>
       )}
-      <label className="photo-upload">
-        {photo ? (
-          <img src={photo} alt="Фото подарка" />
-        ) : photoNote && !photoLoading ? (
-          <span className="photo-fallback">
-            <ImageOff size={27} />
-            <strong>Нет картинки</strong>
-            <span>Выберите файл, вставьте Ctrl+V или ссылку на картинку</span>
-          </span>
+      {photo ? (
+        editSrc ? (
+          <PhotoFrame
+            src={editSrc}
+            framing={framing}
+            onChange={(f) => {
+              gate.current.edit("photo");
+              autoPhoto.current = false;
+              framingTouched.current = true;
+              setFraming(f);
+              onDirty();
+            }}
+          />
         ) : (
-          <>
-            <ImagePlus size={27} />
-            <strong>
-              {photoLoading ? "Готовим фото…" : "Добавить фотографию"}
-            </strong>
-            <span>Файл, Ctrl+V или ссылка · сожмём автоматически</span>
-          </>
-        )}
-        <input
-          type="file"
-          accept="image/*"
-          aria-label="Выбрать фотографию"
-          disabled={photoLoading || saving}
-          onChange={async (e) => {
-            const file = e.target.files?.[0];
-            if (!file) return;
-            await applyPhoto(
-              () => compressPhoto(file),
-              "Не удалось открыть фото.",
-            );
-          }}
-        />
-      </label>
+          <div className="photo-frame">
+            <img
+              className="photo-frame-canvas"
+              src={photo}
+              alt="Фото подарка"
+            />
+          </div>
+        )
+      ) : (
+        <label className="photo-upload">
+          {photoNote && !photoLoading ? (
+            <span className="photo-fallback">
+              <ImageOff size={27} />
+              <strong>Нет картинки</strong>
+              <span>Выберите файл, вставьте Ctrl+V или ссылку на картинку</span>
+            </span>
+          ) : (
+            <>
+              <ImagePlus size={27} />
+              <strong>
+                {photoLoading ? "Готовим фото…" : "Добавить фотографию"}
+              </strong>
+              <span>Файл, Ctrl+V или ссылка · сожмём автоматически</span>
+            </>
+          )}
+          <input
+            type="file"
+            accept="image/*"
+            aria-label="Выбрать фотографию"
+            disabled={photoLoading || saving}
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              await applyPhoto(
+                () => compressPhoto(file),
+                "Не удалось открыть фото.",
+              );
+            }}
+          />
+        </label>
+      )}
       {photoNote && (
         <p className="photo-note" role="status">
           {photoNote}
@@ -581,6 +632,26 @@ export function GiftForm({
           <ClipboardPaste size={15} />
           Вставить из буфера
         </button>
+        {photo && (
+          <label className="text-link file-link">
+            <ImagePlus size={15} />
+            Заменить фото
+            <input
+              type="file"
+              accept="image/*"
+              aria-label="Выбрать другую фотографию"
+              disabled={photoLoading || saving}
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                await applyPhoto(
+                  () => compressPhoto(file),
+                  "Не удалось открыть фото.",
+                );
+              }}
+            />
+          </label>
+        )}
         {photo && (
           <button
             type="button"
@@ -722,20 +793,13 @@ export function GiftForm({
           placeholder="Цвет, размер или другие важные детали"
         />
       </label>
-      <label>
-        Приоритет
-        <select
-          name="priority"
-          value={priority}
-          onChange={(e) => setPriority(Number(e.target.value))}
-        >
-          {[3, 2, 1].map((p) => (
-            <option key={p} value={p}>
-              {priorities[p]}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="field">
+        <span>Насколько хочется</span>
+        <Hearts value={priority} onChange={setPriority} size={24} />
+        <span className="small-text">
+          Чем больше сердечек, тем сильнее хочется.
+        </span>
+      </div>
       {error && (
         <div className="error" role="alert">
           {error}

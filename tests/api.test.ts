@@ -204,6 +204,7 @@ before(async () => {
   await migrate("migrations/0008_profile_and_sharing.sql");
   await migrate("migrations/0009_bot_notifications_group_gifts.sql");
   await migrate("migrations/0010_birthday_reminders.sql");
+  await migrate("migrations/0011_hearts_and_about.sql");
   assert.equal(
     (
       await db
@@ -752,9 +753,10 @@ test("website sign-in: Telegram id_token issues a revocable session for the same
   assert.ok(!stored.results.some((r: any) => r.token_hash === t));
   const profile = await me(t);
   assert.equal(profile.status, 200);
-  const { birthday, allow_resharing, wishlist_updated_at, ...identity } =
+  const { birthday, allow_resharing, wishlist_updated_at, about, ...identity } =
     profile.body.user;
   assert.equal(birthday, null);
+  assert.equal(about, null);
   assert.equal(allow_resharing, 1);
   assert.equal(typeof wishlist_updated_at, "number");
   assert.deepEqual(identity, {
@@ -1660,7 +1662,7 @@ test("bot webhook: secret required, menu, adding and editing one's own wishes", 
   await press(`p:3:${row.id}`);
   const saved: any = await db
     .prepare(
-      "SELECT price_minor,price_max_minor,price_range,priority FROM gifts WHERE id=?",
+      "SELECT price_minor,price_max_minor,price_range,hearts AS priority FROM gifts WHERE id=?",
     )
     .bind(row.id)
     .first();
@@ -1679,7 +1681,7 @@ test("bot webhook: secret required, menu, adding and editing one's own wishes", 
   assert.equal(
     (
       await db
-        .prepare("SELECT priority FROM gifts WHERE id=?")
+        .prepare("SELECT hearts AS priority FROM gifts WHERE id=?")
         .bind(other)
         .first()
     )?.priority,
@@ -1795,4 +1797,53 @@ test("bot setup sets the webhook, commands and the welcome text shown before Sta
   assert.match(description, /Нажмите «Запустить»/);
   assert.ok(description.length <= 512);
   assert.ok(last("setMyShortDescription").short_description.length <= 120);
+});
+
+test("priority is 1–5 hearts, kept in sync with the old column; the wishlist has a description", async () => {
+  const g = await gift(761, { priority: 5 });
+  assert.equal(
+    (await call("/lists/761", 761)).body.gifts.find((x: any) => x.id === g)
+      .priority,
+    5,
+  );
+  const row: any = await db
+    .prepare("SELECT hearts,priority FROM gifts WHERE id=?")
+    .bind(g)
+    .first();
+  assert.deepEqual({ ...row }, { hearts: 5, priority: 3 });
+  assert.equal(
+    (await call(`/gifts/${g}`, 761, "PUT", { ...input, priority: 1 })).status,
+    200,
+  );
+  assert.equal(
+    (await call("/lists/761", 761)).body.gifts.find((x: any) => x.id === g)
+      .priority,
+    1,
+  );
+  assert.equal(
+    (await call("/gifts", 761, "POST", { ...input, priority: 6 })).status,
+    400,
+  );
+  // The description is shown to friends with the list.
+  assert.equal(
+    (
+      await call("/me", 761, "PATCH", {
+        about: "  Люблю книги и всё фиолетовое  ",
+      })
+    ).body.user.about,
+    "Люблю книги и всё фиолетовое",
+  );
+  await befriend(761, 762);
+  assert.equal(
+    (await call("/lists/761", 762)).body.owner.about,
+    "Люблю книги и всё фиолетовое",
+  );
+  assert.equal(
+    (await call("/me", 761, "PATCH", { about: "x".repeat(501) })).status,
+    400,
+  );
+  assert.equal(
+    (await call("/me", 761, "PATCH", { about: "" })).body.user.about,
+    null,
+  );
 });

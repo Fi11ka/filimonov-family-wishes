@@ -1,6 +1,7 @@
 // @FilimonovFamilyWishes_bot: chat buttons «Добавить в вишлист», «Мои желания»,
 // «Открыть вишлист», editing one's own wishes and answers to notifications.
 // Updates arrive by webhook; Telegram proves itself with the secret_token header.
+import { MAX_HEARTS, legacyPriority } from "../shared/hearts";
 import { formatPrice, parsePriceText } from "../shared/price";
 import { giftInfo, now, pair, saveUser, stmt, type Env } from "./core";
 import {
@@ -53,7 +54,8 @@ export const BOT_DESCRIPTION =
   "Нажмите «Запустить», чтобы начать.";
 export const BOT_SHORT_DESCRIPTION =
   "Вишлист от задротов Насти, Дарины и Димы: желания, тайные брони, совместные подарки, дни рождения.";
-const priorities = ["", "Будет приятно", "Очень хочется", "Мечта"];
+/** "❤️❤️❤️🤍🤍" for 3 of 5 hearts. */
+const hearts = (n: number) => "❤️".repeat(n) + "🤍".repeat(MAX_HEARTS - n);
 export async function botRoute(
   req: Request,
   env: Env,
@@ -218,7 +220,7 @@ class Chat {
     const rows = (
       await stmt(
         this.db,
-        "SELECT id,title FROM gifts WHERE owner_id=? AND archived_at IS NULL ORDER BY priority DESC,created_at DESC,id LIMIT ? OFFSET ?",
+        "SELECT id,title FROM gifts WHERE owner_id=? AND archived_at IS NULL ORDER BY hearts DESC,created_at DESC,id LIMIT ? OFFSET ?",
         this.user.id,
         PAGE + 1,
         page * PAGE,
@@ -249,7 +251,7 @@ class Chat {
       headline,
       `<b>${esc(g.title)}</b>`,
       `💰 ${esc(formatPrice(g))}`,
-      `⭐ ${priorities[g.priority]}`,
+      hearts(g.priority),
       g.description ? `📝 ${esc(g.description)}` : "",
       g.shop_url ? `🔗 ${esc(g.shop_url)}` : "",
     ].filter(Boolean);
@@ -264,7 +266,7 @@ class Chat {
       ],
       [
         { text: "📷 Фото", callback_data: `e:photo:${g.id}` },
-        { text: "⭐ Важность", callback_data: `r:${g.id}` },
+        { text: "❤️ Важность", callback_data: `r:${g.id}` },
       ],
       [
         { text: "🗄 В архив", callback_data: `a:${g.id}` },
@@ -336,7 +338,7 @@ class Chat {
       price_minor: price.min,
       price_max_minor: price.range ? price.max : null,
       price_range: price.range,
-      priority: 2,
+      priority: 3,
       shop_url: link.slice(0, 2048),
       photo: image.length <= 220000 ? image : "",
     });
@@ -524,21 +526,25 @@ async function onButton(chat: Chat, data: string) {
   if (kind === "r") {
     const g = await chat.gift(a);
     if (!g) return;
-    return chat.say(`Насколько хочется «${esc(g.title)}»?`, [
-      [1, 2, 3].map((p) => ({
-        text: `${p === g.priority ? "✓ " : ""}${priorities[p]}`,
-        callback_data: `p:${p}:${g.id}`,
-      })),
-      [{ text: "← Назад", callback_data: `g:${g.id}` }],
-    ]);
+    return chat.say(
+      `Насколько хочется «${esc(g.title)}»? Чем больше сердечек, тем сильнее.`,
+      [
+        [1, 2, 3, 4, 5].map((p) => ({
+          text: `${p === g.priority ? "✓" : ""}${p} ❤️`,
+          callback_data: `p:${p}:${g.id}`,
+        })),
+        [{ text: "← Назад", callback_data: `g:${g.id}` }],
+      ],
+    );
   }
-  if (kind === "p" && ["1", "2", "3"].includes(a)) {
+  if (kind === "p" && ["1", "2", "3", "4", "5"].includes(a)) {
     const g = await chat.gift(b);
     if (!g) return;
     await stmt(
       chat.db,
-      "UPDATE gifts SET priority=?,updated_at=unixepoch() WHERE id=? AND owner_id=?",
+      "UPDATE gifts SET hearts=?,priority=?,updated_at=unixepoch() WHERE id=? AND owner_id=?",
       Number(a),
+      legacyPriority(Number(a)),
       g.id,
       uid,
     ).run();

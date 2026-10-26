@@ -30,6 +30,8 @@ import {
   BellOff,
 } from "lucide-react";
 import { useFullscreen } from "./fullscreen";
+import { Hearts } from "./hearts";
+import { WishlistAbout } from "./about";
 import {
   api,
   apiConfigured,
@@ -62,7 +64,6 @@ import {
   type User,
   type Friend,
   type Wish,
-  priorities,
   initials,
   handle,
   money,
@@ -618,6 +619,24 @@ function App() {
                             ? "Мой вишлист"
                             : `Вишлист: ${owner?.name || ownerFirst}`}
                   </h1>
+                  {owner &&
+                    showList &&
+                    tab !== "bookings" &&
+                    tab !== "archive" && (
+                      <WishlistAbout
+                        key={`${owner.id}:${owner.about || ""}`}
+                        owner={owner}
+                        own={own}
+                        onSaved={(updated) => {
+                          setOwner((o) =>
+                            o?.id === updated.id ? { ...o, ...updated } : o,
+                          );
+                          setUser((u) =>
+                            u?.id === updated.id ? { ...u, ...updated } : u,
+                          );
+                        }}
+                      />
+                    )}
                   {owner && showList && tab !== "bookings" && (
                     <div className="wishlist-meta">
                       {owner.birthday ? (
@@ -668,7 +687,7 @@ function App() {
                       onClick={() => setModal("import")}
                     >
                       <FileSpreadsheet size={18} />
-                      Из таблицы
+                      Добавить много
                     </button>
                     <button
                       className="button primary"
@@ -1172,7 +1191,7 @@ function App() {
               share: "Поделиться вишлистом",
               "add-friend": "Добавить друга",
               profile: "Мой профиль",
-              import: "Добавить из таблицы",
+              import: "Добавить много желаний",
               invite: "Приглашение в друзья",
             }[modal]
           }
@@ -1296,9 +1315,8 @@ function GiftCard({
     <article className={`gift-card ${mode === "archive" ? "archived" : ""}`}>
       <div className="photo-wrap">
         <Photo wish={g} />
-        <span className={`priority p${g.priority}`}>
-          {g.priority === 3 ? <Sparkles size={12} /> : <Heart size={12} />}{" "}
-          {priorities[g.priority]}
+        <span className="priority">
+          <Hearts value={g.priority} size={12} />
         </span>
         {mode === "own" && (
           <button

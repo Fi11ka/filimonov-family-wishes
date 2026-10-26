@@ -1,5 +1,6 @@
 // Gift changes made by the owner, from the website or from the bot, with the
 // notifications they cause. The owner's own answers never depend on bookings.
+import { legacyPriority } from "../shared/hearts";
 import { bookers, checkLimit, now, stmt } from "./core";
 import type { Outbox } from "./notify";
 import type { giftInput, Identity } from "./security";
@@ -20,7 +21,7 @@ export interface StoredGift {
 export function ownGift(db: D1Database, uid: string, id: string) {
   return stmt(
     db,
-    "SELECT id,owner_id,title,price_minor,price_max_minor,price_range,currency,shop_url,description,priority,archived_at FROM gifts WHERE id=? AND owner_id=?",
+    "SELECT id,owner_id,title,price_minor,price_max_minor,price_range,currency,shop_url,description,hearts AS priority,archived_at FROM gifts WHERE id=? AND owner_id=?",
     id,
     uid,
   ).first<StoredGift>();
@@ -37,7 +38,7 @@ export async function createGift(
   const id = crypto.randomUUID();
   await stmt(
     db,
-    "INSERT INTO gifts(id,owner_id,title,price_minor,price_max_minor,price_range,currency,shop_url,description,priority,photo,archived_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    "INSERT INTO gifts(id,owner_id,title,price_minor,price_max_minor,price_range,currency,shop_url,description,hearts,priority,photo,archived_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
     id,
     owner.id,
     g.title,
@@ -48,6 +49,7 @@ export async function createGift(
     g.shop_url,
     g.description,
     g.priority,
+    legacyPriority(g.priority),
     g.photo,
     archived ? now() : null,
   ).run();

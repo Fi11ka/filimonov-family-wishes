@@ -22,7 +22,7 @@ import {
   type ProductLookup,
 } from "../api";
 import { currencies, type Currency } from "../../shared/price";
-import { priorities } from "../types";
+import { Hearts } from "../hearts";
 import { readCsv } from "./csv";
 import { parseChatList } from "../../shared/chat-list";
 import { shortTitle } from "../../shared/short-title";
@@ -210,7 +210,7 @@ export function ImportDialog({
                   ? item.details || r?.details
                   : r?.details || item.details) ||
                 (r && item.title !== r.title ? item.title || "" : ""),
-              priority: 2,
+              priority: 3,
               archived: false,
               image: image ? { kind: "url", url: image } : null,
               warnings: [
@@ -819,19 +819,11 @@ function ImportRowEditor({
               <option key={c}>{c}</option>
             ))}
           </select>
-          <select
-            aria-label="Приоритет"
+          <Hearts
             value={row.priority}
-            onChange={(e) =>
-              onChange({ priority: Number(e.target.value) as 1 | 2 | 3 })
-            }
-          >
-            {[3, 2, 1].map((p) => (
-              <option key={p} value={p}>
-                {priorities[p]}
-              </option>
-            ))}
-          </select>
+            onChange={(priority) => onChange({ priority })}
+            size={16}
+          />
           <label className="check-inline">
             <input
               type="checkbox"

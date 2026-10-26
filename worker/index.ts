@@ -1,4 +1,5 @@
 import { validBirthday } from "../shared/birthday";
+import { legacyPriority } from "../shared/hearts";
 import {
   ApiError,
   fail,
@@ -57,7 +58,7 @@ interface Gift {
 }
 const BOT_LINK = "https://t.me/FilimonovFamilyWishes_bot";
 const giftColumns =
-  "g.id,g.owner_id,g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.shop_url,g.description,g.priority,CASE WHEN g.photo='' THEN 0 ELSE 1 END AS has_photo,g.created_at,g.updated_at";
+  "g.id,g.owner_id,g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.shop_url,g.description,g.hearts AS priority,CASE WHEN g.photo='' THEN 0 ELSE 1 END AS has_photo,g.created_at,g.updated_at";
 function missing(): never {
   return fail(404, "NOT_FOUND", "Список или подарок недоступен.");
 }
@@ -137,7 +138,7 @@ async function list(
     return (
       await stmt(
         db,
-        `SELECT ${giftColumns} FROM gifts g WHERE g.owner_id=? AND g.archived_at IS NULL ORDER BY g.priority DESC,g.created_at DESC,g.id`,
+        `SELECT ${giftColumns} FROM gifts g WHERE g.owner_id=? AND g.archived_at IS NULL ORDER BY g.hearts DESC,g.created_at DESC,g.id`,
         owner,
       ).all<Gift>()
     ).results;
@@ -148,7 +149,7 @@ async function list(
       WHEN EXISTS(SELECT 1 FROM reservation_members m WHERE m.gift_id=g.id AND m.user_id=?1) THEN 'invited'
       ELSE 'reserved' END AS reservation,
       CASE WHEN r.user_id=?1 OR EXISTS(SELECT 1 FROM reservation_members m WHERE m.gift_id=g.id AND m.user_id=?1) THEN (SELECT COUNT(*) FROM reservation_members m WHERE m.gift_id=g.id AND m.status='joined') END AS group_joined
-      FROM gifts g LEFT JOIN reservations r ON r.gift_id=g.id WHERE g.owner_id=?2 AND g.archived_at IS NULL ORDER BY g.priority DESC,g.created_at DESC,g.id`,
+      FROM gifts g LEFT JOIN reservations r ON r.gift_id=g.id WHERE g.owner_id=?2 AND g.archived_at IS NULL ORDER BY g.hearts DESC,g.created_at DESC,g.id`,
     guestView ? "" : user?.id || "",
     owner,
   ).all();
@@ -279,7 +280,7 @@ const NONCE_TTL = 600;
 function profile(db: D1Database, id: string) {
   return stmt(
     db,
-    "SELECT id,name,username,birthday,allow_resharing,wishlist_updated_at FROM users WHERE id=?",
+    "SELECT id,name,username,birthday,allow_resharing,wishlist_updated_at,about FROM users WHERE id=?",
     id,
   ).first<{
     id: string;
@@ -288,6 +289,7 @@ function profile(db: D1Database, id: string) {
     birthday: string | null;
     allow_resharing: number;
     wishlist_updated_at: number | null;
+    about: string | null;
   }>();
 }
 /** Binary passthrough for images and spreadsheets. Never rendered by the API origin. */
@@ -478,7 +480,13 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       fail(400, "VALIDATION", "Проверьте настройку доступа.");
     if (b.notify !== undefined && typeof b.notify !== "boolean")
       fail(400, "VALIDATION", "Проверьте настройку уведомлений.");
+    const about =
+      b.about === undefined || b.about === null ? b.about : text(b.about, 500);
     const updates = [];
+    if (about !== undefined)
+      updates.push(
+        stmt(db, "UPDATE users SET about=? WHERE id=?", about || null, uid),
+      );
     if (b.notify !== undefined)
       updates.push(
         stmt(db, "UPDATE users SET notify=? WHERE id=?", b.notify ? 1 : 0, uid),
@@ -811,7 +819,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     const rows = (
       await stmt(
         db,
-        `SELECT id,title,price_minor,price_max_minor,price_range,currency FROM gifts WHERE owner_id=? AND archived_at IS NULL AND created_at>? AND id IN (${ids.map(() => "?").join(",")}) ORDER BY priority DESC,created_at`,
+        `SELECT id,title,price_minor,price_max_minor,price_range,currency FROM gifts WHERE owner_id=? AND archived_at IS NULL AND created_at>? AND id IN (${ids.map(() => "?").join(",")}) ORDER BY hearts DESC,created_at`,
         uid,
         now() - 3600,
         ...ids,
@@ -873,7 +881,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         const v = giftInput(await body(req));
         await stmt(
           db,
-          "UPDATE gifts SET title=?,price_minor=?,price_max_minor=?,price_range=?,currency=?,shop_url=?,description=?,priority=?,photo=?,updated_at=unixepoch() WHERE id=? AND owner_id=?",
+          "UPDATE gifts SET title=?,price_minor=?,price_max_minor=?,price_range=?,currency=?,shop_url=?,description=?,hearts=?,priority=?,photo=?,updated_at=unixepoch() WHERE id=? AND owner_id=?",
           v.title,
           v.price_minor,
           v.price_max_minor,
@@ -882,6 +890,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
           v.shop_url,
           v.description,
           v.priority,
+          legacyPriority(v.priority),
           v.photo,
           id,
           uid,
