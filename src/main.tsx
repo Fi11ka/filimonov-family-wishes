@@ -3,7 +3,7 @@ import { eventDay, untilText, upcomingEvents } from "../shared/events";
 import { formatPrice, sharePrice } from "../shared/price";
 import { EventPage, EventsList, WishlistEvents } from "./events";
 import { ArchiveWish, ReserveDialog } from "./forms";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Gift,
@@ -54,6 +54,7 @@ import {
   openInBrowser,
   openTarget,
   redeemHandoff,
+  RequestError,
   setGuestCode,
   authShare,
   setSessionToken,
@@ -200,10 +201,13 @@ function App() {
     invite?: boolean;
   } | null>(null);
   const [guestName, setGuestName] = useState("");
-  const own =
-    !!user &&
-    owner?.id === user.id &&
-    !(guestToken && !authShare && tab === "friends");
+  /** Whose list the shared link opened for a signed-in user: it offers to add them as a friend. */
+  const [sharedOwner, setSharedOwner] = useState("");
+  const sharedOpened = useRef(false);
+  /** A link opened without an account: only that list, with bookings by name.
+   * Signed in, the link just opens the list and the rest of the app works as usual. */
+  const guestView = () => !!guestToken && !authShare && !signedIn();
+  const own = !!user && owner?.id === user.id;
   const notice = (message: string) => {
     setToast(message);
     setTimeout(() => setToast(""), 4500);
@@ -249,26 +253,31 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      if (guestToken && (!authShare || signedIn())) {
+      if (guestView()) {
         const d = await api("/api/guest");
         setOwner(d.owner);
         setGifts(d.gifts);
         setInvitations(d.invitations || []);
-        if (signedIn()) {
-          const me = await api("/api/me");
-          setUser(me.user);
-          setWebSession(!!me.web_session);
-        }
       } else if (signedIn()) {
         const me = await api("/api/me");
         setUser(me.user);
         setWebSession(!!me.web_session);
-        if (tab === "mine" || !owner) {
-          const d = await api(`/api/lists/${me.user.id}`);
-          setOwner(d.owner);
-          setGifts(d.gifts);
-          setInvitations(d.invitations || []);
-        } else if (owner) await loadList(owner.id);
+        let id = tab === "mine" || !owner ? me.user.id : owner.id;
+        if (guestToken && !sharedOpened.current) {
+          // First open of a shared link: show that list like a friend's one.
+          sharedOpened.current = true;
+          const shared = await api("/api/guest").catch(() => null);
+          if (!shared) notice("Ссылка не найдена или отозвана");
+          else if (shared.owner.id !== me.user.id) {
+            id = shared.owner.id;
+            setSharedOwner(id);
+            setTab("friends");
+          } else setTab("mine");
+        }
+        const d = await api(`/api/lists/${id}`);
+        setOwner(d.owner);
+        setGifts(d.gifts);
+        setInvitations(d.invitations || []);
         await loadFriends();
       }
     } catch (e) {
@@ -350,8 +359,8 @@ function App() {
       return;
     }
     if (next === "mine" && user) await loadList(user.id);
-    if (next === "friends" && guestToken) await refresh();
-    if (next === "friends" && !guestToken) {
+    if (next === "friends" && guestView()) await refresh();
+    if (next === "friends" && !guestView()) {
       setOwner(null);
       setGifts([]);
       try {
@@ -404,7 +413,7 @@ function App() {
     }
   }
   async function reserve(g: Wish) {
-    if (guestToken && !authShare) {
+    if (guestView()) {
       if (g.reservation === "reserved" && guestCodes()[g.id])
         await guarded(async () => {
           try {
@@ -561,7 +570,7 @@ function App() {
   const locked = !demo && !user && (!guestToken || authShare) && !loading;
   const viewingFriend = tab === "friends" && !!owner && !own;
   const showList =
-    tab === "mine" || tab === "archive" || !!guestToken || viewingFriend;
+    tab === "mine" || tab === "archive" || guestView() || viewingFriend;
   const ownerFirst = owner?.name.split(" ")[0] || "друга";
   return (
     <div className="app-shell">
@@ -711,38 +720,45 @@ function App() {
             </section>
           ) : (
             <>
-              {guestToken && (
+              {guestView() && (
                 <div className="guest-banner">
                   <LinkIcon size={18} />
-                  <span>
-                    {authShare
-                      ? "Вишлист по ссылке Telegram"
-                      : "Вишлист для близких · без регистрации"}
-                  </span>
-                  {user && (
-                    <a href={location.pathname}>
-                      Мой вишлист <ArrowUpRight size={14} />
-                    </a>
-                  )}
+                  <span>Вишлист для близких · без регистрации</span>
                 </div>
               )}
-              {guestToken && authShare && user && owner && !own && (
-                <button
-                  className="button secondary"
-                  disabled={busy}
-                  onClick={() =>
-                    void guarded(async () => {
-                      await api("/api/friends/requests", "POST", {
-                        user_id: owner.id,
-                      });
-                      notice("Запрос в друзья отправлен");
-                    }, "")
-                  }
-                >
-                  Добавить в друзья · {owner.name}
-                </button>
-              )}
-              {viewingFriend && !guestToken && (
+              {viewingFriend &&
+                owner?.id === sharedOwner &&
+                !friends.some((f) => f.id === owner.id) &&
+                !outgoing.some((f) => f.id === owner.id) && (
+                  <button
+                    className="button primary add-shared-friend"
+                    disabled={busy}
+                    onClick={() =>
+                      void guarded(async () => {
+                        // The owner's own link counts as their consent; a reshared one sends a request.
+                        const r = await api(
+                          "/api/friend-invites/accept",
+                          "POST",
+                          { token: guestToken },
+                        ).catch(async (e) => {
+                          if ((e as RequestError).status !== 404) throw e;
+                          return api("/api/friends/requests", "POST", {
+                            user_id: owner.id,
+                          });
+                        });
+                        notice(
+                          r.status === "pending"
+                            ? "Запрос в друзья отправлен"
+                            : `Вы теперь друзья с ${owner.name.split(" ")[0]}!`,
+                        );
+                        await loadFriends();
+                      }, "")
+                    }
+                  >
+                    <UserPlus size={17} /> Добавить в друзья · {owner.name}
+                  </button>
+                )}
+              {viewingFriend && (
                 <button
                   className="text-link back-to-friends"
                   onClick={() => void navigate("friends")}
@@ -764,7 +780,7 @@ function App() {
                           ? "Мои брони"
                           : tab === "archive"
                             ? "Архив"
-                            : tab === "friends" && !guestToken && !viewingFriend
+                            : tab === "friends" && !guestView() && !viewingFriend
                               ? "Друзья"
                               : own
                                 ? "Мой вишлист"
@@ -798,7 +814,7 @@ function App() {
                           notice={notice}
                           onProfile={() => setModal("profile")}
                           onOpen={
-                            user && (!guestToken || authShare)
+                            user
                               ? (e) => openEvent(owner.id, e.key, e.date)
                               : undefined
                           }
@@ -869,7 +885,7 @@ function App() {
                   </button>
                 </div>
               )}
-              {!error && tab === "friends" && !guestToken && !viewingFriend && (
+              {!error && tab === "friends" && !guestView() && !viewingFriend && (
                 <section className="family-section">
                   <div className="section-heading">
                     <span className="muted">
@@ -997,7 +1013,7 @@ function App() {
                       </div>
                     );
                   })()}
-                  {guestToken && !authShare && (
+                  {guestView() && (
                     <p className="list-help">
                       Нажмите «Забронировать» у подарка, который хотите купить.
                     </p>
@@ -1067,7 +1083,7 @@ function App() {
                         onClick={() => {
                           if (demo) notice("Демонстрационные данные");
                           else if (tab === "archive") void loadArchive();
-                          else if (guestToken) void refresh();
+                          else if (guestView()) void refresh();
                           else if (owner) void loadList(owner.id);
                         }}
                       >

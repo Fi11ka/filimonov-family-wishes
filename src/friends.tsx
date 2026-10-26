@@ -18,22 +18,24 @@ export function AddFriend({ onDone }: { onDone: (message: string) => void }) {
   const [mode, setMode] = useState<"nick" | "link">("nick"),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
-    [invite, setInvite] = useState<{
-      id: string;
-      telegram_url: string;
-      expires_at: number;
-    } | null>(null),
+    // The same Telegram link as in «Поделиться»: it opens the list and adds the friend.
+    [link, setLink] = useState(""),
     [active, setActive] = useState<{ id: string; expires_at: number }[]>([]);
-  async function reload() {
-    if (demo) return;
-    try {
-      setActive((await api("/api/friend-invites")).invites);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
   useEffect(() => {
-    if (mode === "link") void reload();
+    if (mode !== "link" || demo) return;
+    api("/api/guest-links")
+      .then((d) => (d.links.length === 2 ? d : api("/api/guest-links", "POST")))
+      .then((d) =>
+        setLink(
+          d.links.find((l: { kind: string }) => l.kind === "telegram")
+            ?.web_url || "",
+        ),
+      )
+      .catch((e) => setError((e as Error).message));
+    // Invitations made before the shared link keep working until revoked.
+    api("/api/friend-invites")
+      .then((d) => setActive(d.invites))
+      .catch(() => undefined);
   }, [mode]);
   return (
     <>
@@ -103,45 +105,23 @@ export function AddFriend({ onDone }: { onDone: (message: string) => void }) {
       ) : (
         <div className="share-result">
           <p className="muted">
-            Отправьте ссылку другу. После подтверждения вы увидите вишлисты друг
-            друга.
+            Это та же ссылка, что в «Поделиться». Друг откроет ваш вишлист и
+            одним нажатием добавит вас в друзья.
           </p>
-          {invite && <CopyValue value={invite.telegram_url} />}
+          {demo ? (
+            <p className="small-text">В демо ссылки не создаются.</p>
+          ) : (
+            link && <CopyValue value={link} />
+          )}
           {error && (
             <div className="error" role="alert">
               {error}
             </div>
           )}
-          <button
-            className="button primary full-width"
-            disabled={busy}
-            onClick={async () => {
-              if (demo) {
-                setError("В демо приглашения не создаются.");
-                return;
-              }
-              setBusy(true);
-              setError("");
-              try {
-                setInvite(await api("/api/friend-invites", "POST"));
-                await reload();
-              } catch (e) {
-                setError((e as Error).message);
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            <LinkIcon size={17} />
-            {invite ? "Заменить ссылку" : "Создать приглашение"}
-          </button>
-          <p className="small-text">
-            Срок — 30 дней. Новое приглашение заменит старое.
-          </p>
           {active.map((l) => (
             <div className="active-link" key={l.id}>
               <span>
-                Действует до{" "}
+                Старое приглашение, действует до{" "}
                 {new Date(l.expires_at * 1000).toLocaleDateString("ru-RU")}
               </span>
               <button
@@ -151,8 +131,7 @@ export function AddFriend({ onDone }: { onDone: (message: string) => void }) {
                   setBusy(true);
                   try {
                     await api(`/api/friend-invites/${l.id}`, "DELETE");
-                    setInvite(null);
-                    await reload();
+                    setActive(active.filter((a) => a.id !== l.id));
                   } catch (e) {
                     setError((e as Error).message);
                   } finally {

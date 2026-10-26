@@ -628,6 +628,47 @@ test("friend invite links: preview, confirm, revoke", async () => {
     404,
   );
 });
+test("the owner's «Поделиться» link for Telegram also adds a friend; a reshared one does not", async () => {
+  const own = (await call("/guest-links", 9101, "POST")).body.links;
+  const raw = own
+    .find((l: any) => l.kind === "telegram")
+    .web_url.split("startapp=s_")[1];
+  // A newcomer opens the shared list first, then confirms the friendship.
+  assert.equal((await call("/guest", 9102, "GET", undefined, raw)).status, 200);
+  const preview = await call("/friend-invites/preview", 9102, "POST", {
+    token: raw,
+  });
+  assert.equal(preview.body.owner.id, "9101");
+  assert.equal(preview.body.already_friends, false);
+  assert.equal(
+    (await call("/friend-invites/accept", 9102, "POST", { token: raw }))
+      .status,
+    200,
+  );
+  assert.equal((await call("/lists/9101", 9102)).status, 200);
+  assert.equal((await call("/lists/9102", 9101)).status, 200);
+  // The guest link without sign-in is not a friend invitation.
+  const guestRaw = own
+    .find((l: any) => l.kind === "guest")
+    .web_url.split("#guest=")[1];
+  assert.equal(
+    (await call("/friend-invites/accept", 9103, "POST", { token: guestRaw }))
+      .status,
+    404,
+  );
+  // A friend's reshared link only lets others view the list.
+  const reshared = (
+    await call("/lists/9101/share-links", 9102, "POST")
+  ).body.links
+    .find((l: any) => l.kind === "telegram")
+    .web_url.split("startapp=s_")[1];
+  assert.equal(
+    (await call("/friend-invites/accept", 9103, "POST", { token: reshared }))
+      .status,
+    404,
+  );
+  assert.equal((await call("/lists/9101", 9103)).status, 404);
+});
 test("removed friend loses list access and can cancel their own reservation", async () => {
   const g = await gift();
   assert.equal((await call(`/gifts/${g}/reservation`, 3, "POST")).status, 200);
