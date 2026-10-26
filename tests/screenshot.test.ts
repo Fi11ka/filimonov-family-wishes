@@ -65,7 +65,11 @@ test("only image data URLs from the form are accepted", () => {
   assert.equal(screenshotBytes("https://example.com/a.jpg"), null);
 });
 
-test("the vision model gets the image and the licence is accepted once", async () => {
+const shot = "data:image/jpeg;base64,AQID";
+const kind = (input: Record<string, unknown>) =>
+  input.prompt === "agree" ? "agree" : input.messages ? "messages" : "prompt";
+
+test("the image goes inside messages and the licence is accepted once", async () => {
   const calls: { model: string; input: Record<string, unknown> }[] = [];
   let agreed = false;
   const ai: AiBinding = {
@@ -82,31 +86,63 @@ test("the vision model gets the image and the licence is accepted once", async (
       return ozonAnswer;
     },
   };
-  const r = await readScreenshot(ai, new Uint8Array([1, 2, 3]));
+  const r = await readScreenshot(ai, shot);
   assert.equal(r?.title, "Пряжа для вязания");
   assert.deepEqual(
-    calls.map((c) => c.input.prompt ?? "image"),
-    ["image", "agree", "image"],
+    calls.map((c) => kind(c.input)),
+    ["messages", "agree", "messages"],
   );
   assert.equal(calls[0].model, SCREENSHOT_MODEL);
-  assert.deepEqual(calls[2].input.image, [1, 2, 3]);
+  const content = (calls[2].input.messages as { content: unknown[] }[])[0]
+    .content;
+  assert.deepEqual(content[1], {
+    type: "image_url",
+    image_url: { url: shot },
+  });
 });
 
-test("quota errors reach the caller; a slow model gives up", async () => {
+test("if messages with an image are refused, the prompt + bytes format is tried", async () => {
+  const calls: string[] = [];
+  const ai: AiBinding = {
+    async run(_model, input) {
+      calls.push(kind(input));
+      if (input.messages) throw new Error("5006: Error: oneOf at '/' not met");
+      assert.deepEqual(input.image, [1, 2, 3]);
+      return ozonAnswer;
+    },
+  };
+  assert.equal((await readScreenshot(ai, shot))?.price?.min_minor, 129900);
+  assert.deepEqual(calls, ["messages", "prompt"]);
+  // Both refused: the caller gets the last error to show its code.
   await assert.rejects(
     readScreenshot(
       {
         async run() {
+          throw new Error("5006: Error: oneOf at '/' not met");
+        },
+      },
+      shot,
+    ),
+    /5006/,
+  );
+});
+
+test("quota errors reach the caller; a slow model gives up", async () => {
+  const quota: string[] = [];
+  await assert.rejects(
+    readScreenshot(
+      {
+        async run(_model, input) {
+          quota.push(kind(input));
           throw new Error("4006: you have used up your daily free allocation");
         },
       },
-      new Uint8Array([1]),
+      shot,
     ),
     /allocation/,
   );
+  // Another format cannot help when the daily quota is over.
+  assert.deepEqual(quota, ["messages"]);
   const slow: AiBinding = { run: () => new Promise(() => undefined) };
-  assert.equal(
-    await readScreenshot(slow, new Uint8Array([1]), undefined, 20),
-    null,
-  );
+  assert.equal(await readScreenshot(slow, shot, undefined, 20), null);
 });
