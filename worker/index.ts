@@ -17,6 +17,7 @@ import { JWKS_URL, liveJwks, verifyIdToken, type Jwk } from "./oidc";
 import { liveContext, lookupProduct } from "./shops";
 import { cartKind, readCart } from "./shops/carts";
 import { aiNamer } from "./shops/naming";
+import { readScreenshot, screenshotBytes } from "./screenshot";
 import { cleanupHelperJobs, helperRoute, homeHelper } from "./helper";
 import {
   FRIEND_OF,
@@ -1210,6 +1211,41 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       liveContext(env.HELPER_TOKEN ? homeHelper(db) : null),
       env.AI ? aiNamer(env.AI) : undefined,
     );
+  }
+  if (path === "/api/fetch/screenshot" && method === "POST") {
+    const b = await body(req);
+    await rate(db, `screenshot:${uid}`, 6);
+    if (!env.AI)
+      fail(503, "AI_UNAVAILABLE", "Распознавание скриншотов не настроено.");
+    const image = screenshotBytes(text(b.image, 235000, true));
+    if (!image)
+      fail(400, "VALIDATION", "Выберите скриншот JPEG, PNG или WebP.");
+    let r;
+    try {
+      r = await readScreenshot(env.AI, image);
+    } catch (e) {
+      // Free Workers AI quota (10 000 neurons a day) is shared by the whole app.
+      if (
+        /allocation|quota|limit|4006|3036/i.test(String((e as Error)?.message))
+      )
+        fail(
+          429,
+          "AI_LIMIT",
+          "Бесплатный лимит распознавания на сегодня закончился. Он обновится в 03:00 по Москве, а пока заполните поля вручную.",
+        );
+      fail(
+        502,
+        "AI_FAILED",
+        "Не удалось распознать скриншот. Попробуйте ещё раз.",
+      );
+    }
+    if (!r)
+      fail(
+        422,
+        "SCREENSHOT_UNREADABLE",
+        "На скриншоте не нашлось названия или цены. Сделайте скриншот карточки товара целиком.",
+      );
+    return r;
   }
   if (path === "/api/fetch/image" && method === "POST") {
     const b = await body(req);

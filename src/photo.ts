@@ -7,11 +7,12 @@ export function encodePhoto(
   width: number,
   height: number,
   canvas: HTMLCanvasElement,
+  edges = [900, 720, 540, 360],
 ): string {
   if (!width || !height) throw new Error("У фотографии нет размеров.");
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Не удалось обработать фото.");
-  for (const edge of [900, 720, 540, 360]) {
+  for (const edge of edges) {
     const ratio = Math.min(1, edge / Math.max(width, height));
     canvas.width = Math.max(1, Math.round(width * ratio));
     canvas.height = Math.max(1, Math.round(height * ratio));
@@ -38,7 +39,10 @@ export function encodePhoto(
     "Не удалось сжать фото. Выберите фотографию меньшего размера.",
   );
 }
-export async function compressPhoto(file: Blob): Promise<string> {
+async function withImage<T>(
+  file: Blob,
+  use: (image: HTMLImageElement) => T,
+): Promise<T> {
   if (!PHOTO_TYPES.test(file.type) || file.size > 20 * 1024 * 1024)
     throw new Error("Выберите фотографию JPEG, PNG или WebP до 20 МБ.");
   const source = URL.createObjectURL(file);
@@ -50,13 +54,51 @@ export async function compressPhoto(file: Blob): Promise<string> {
         "Не удалось открыть фото. Для HEIC выберите экспорт в JPEG.",
       );
     });
-    return encodePhoto(
+    return use(image);
+  } finally {
+    URL.revokeObjectURL(source);
+  }
+}
+export async function compressPhoto(file: Blob): Promise<string> {
+  return withImage(file, (image) =>
+    encodePhoto(
       image,
       image.naturalWidth,
       image.naturalHeight,
       document.createElement("canvas"),
-    );
-  } finally {
-    URL.revokeObjectURL(source);
-  }
+    ),
+  );
+}
+/** A screenshot for the vision model: larger, so small text stays readable. */
+export async function compressScreenshot(file: Blob): Promise<string> {
+  return withImage(file, (image) =>
+    encodePhoto(
+      image,
+      image.naturalWidth,
+      image.naturalHeight,
+      document.createElement("canvas"),
+      [1120, 900, 720],
+    ),
+  );
+}
+/** Cuts the product photo out of a screenshot; box is [left, top, right, bottom] in shares. */
+export async function cropPhoto(
+  file: Blob,
+  box: [number, number, number, number],
+): Promise<string> {
+  return withImage(file, (image) => {
+    const w = image.naturalWidth,
+      h = image.naturalHeight;
+    const x = Math.round(box[0] * w),
+      y = Math.round(box[1] * h),
+      cw = Math.max(1, Math.round((box[2] - box[0]) * w)),
+      ch = Math.max(1, Math.round((box[3] - box[1]) * h));
+    const part = document.createElement("canvas");
+    part.width = cw;
+    part.height = ch;
+    const ctx = part.getContext("2d");
+    if (!ctx) throw new Error("Не удалось обработать фото.");
+    ctx.drawImage(image, x, y, cw, ch, 0, 0, cw, ch);
+    return encodePhoto(part, cw, ch, document.createElement("canvas"));
+  });
 }
