@@ -22,6 +22,10 @@ export const ACTIVE_LIMIT = 100,
 // Accepted friendship between ?1 and the gift owner column, in either order.
 export const FRIEND_OF = (owner: string) =>
   `EXISTS(SELECT 1 FROM friendships f WHERE f.status='accepted' AND ((f.user_a=?1 AND f.user_b=${owner}) OR (f.user_b=?1 AND f.user_a=${owner})))`;
+// A share link that still opens the owner's list: not revoked, not expired, and made
+// by the owner or by a friend while the owner allows resharing.
+export const LINK_ACTIVE = (link: string, at: string) =>
+  `${link}.revoked_at IS NULL AND ${link}.expires_at>${at} AND (${link}.created_by=${link}.owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=${link}.owner_id AND share_owner.allow_resharing=1))`;
 /** Friendship rows store the pair ordered (user_a < user_b). */
 export const pair = (x: string, y: string) => (x < y ? [x, y] : [y, x]);
 export async function friendship(db: D1Database, x: string, y: string) {

@@ -22,6 +22,7 @@ import { isQuotaError, readScreenshot, screenshotBytes } from "./screenshot";
 import { cleanupHelperJobs, helperRoute, homeHelper } from "./helper";
 import {
   FRIEND_OF,
+  LINK_ACTIVE,
   bookers,
   friendship,
   giftInfo,
@@ -150,7 +151,7 @@ async function canView(
   if (guest && /^[A-Za-z0-9_-]{43}$/.test(guest))
     return !!(await stmt(
       db,
-      "SELECT 1 AS ok FROM guest_links WHERE owner_id=? AND token_hash=? AND revoked_at IS NULL AND expires_at>? AND (kind='guest' OR ? IS NOT NULL) AND (created_by=owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=owner_id AND share_owner.allow_resharing=1))",
+      `SELECT 1 AS ok FROM guest_links WHERE owner_id=? AND token_hash=? AND ${LINK_ACTIVE("guest_links", "?")} AND (kind='guest' OR ? IS NOT NULL)`,
       owner,
       await hash(guest),
       now(),
@@ -491,7 +492,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     if (!guest || !/^[A-Za-z0-9_-]{43}$/.test(guest)) missing();
     const link = await stmt(
       db,
-      "SELECT owner_id,kind FROM guest_links WHERE token_hash=? AND revoked_at IS NULL AND expires_at>? AND (kind='guest' OR ? IS NOT NULL) AND (created_by=owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=owner_id AND share_owner.allow_resharing=1))",
+      `SELECT owner_id,kind FROM guest_links WHERE token_hash=? AND ${LINK_ACTIVE("guest_links", "?")} AND (kind='guest' OR ? IS NOT NULL)`,
       await hash(guest),
       now(),
       user?.id || null,
@@ -538,7 +539,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       `INSERT INTO reservations(gift_id,guest_name,guest_code_hash)
       SELECT g.id,?,? FROM gifts g JOIN guest_links l ON l.owner_id=g.owner_id
       WHERE g.id=? AND g.archived_at IS NULL AND l.token_hash=? AND l.kind='guest'
-      AND l.revoked_at IS NULL AND (l.created_by=l.owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=l.owner_id AND share_owner.allow_resharing=1)) AND l.expires_at>? ON CONFLICT(gift_id) DO NOTHING RETURNING gift_id`,
+      AND ${LINK_ACTIVE("l", "?")} ON CONFLICT(gift_id) DO NOTHING RETURNING gift_id`,
       name,
       await hash(code),
       guestReservation[1],
@@ -1242,7 +1243,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         SELECT id,?1 FROM gifts WHERE id=?2 AND owner_id<>?1 AND archived_at IS NULL AND (
           ${FRIEND_OF("gifts.owner_id")}
           OR ${PARTY_PEER("?1", "gifts.owner_id")}
-          OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=gifts.owner_id AND l.token_hash=?3 AND l.revoked_at IS NULL AND (l.created_by=l.owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=l.owner_id AND share_owner.allow_resharing=1)) AND l.expires_at>?4)
+          OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=gifts.owner_id AND l.token_hash=?3 AND ${LINK_ACTIVE("l", "?4")})
         ) ON CONFLICT(gift_id) DO NOTHING RETURNING gift_id`,
         uid,
         id,
@@ -1269,7 +1270,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         db,
         `SELECT r.gift_id,
         CASE WHEN r.user_id=?1 THEN 'organizer' ELSE m.status END AS role,
-        CASE WHEN m.user_id IS NOT NULL OR ${FRIEND_OF("g.owner_id")} OR ${PARTY_PEER("?1", "g.owner_id")} OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=g.owner_id AND l.revoked_at IS NULL AND (l.created_by=l.owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=l.owner_id AND share_owner.allow_resharing=1)) AND l.expires_at>?2) THEN 1 ELSE 0 END AS visible,
+        CASE WHEN m.user_id IS NOT NULL OR ${FRIEND_OF("g.owner_id")} OR ${PARTY_PEER("?1", "g.owner_id")} OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=g.owner_id AND ${LINK_ACTIVE("l", "?2")}) THEN 1 ELSE 0 END AS visible,
         g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.owner_id,ou.name AS owner_name,org.name AS organizer_name,
         ou.birthday,ou.gender,ou.event_title,ou.event_date,
         CASE WHEN g.archived_at IS NULL THEN 0 ELSE 1 END AS archived
