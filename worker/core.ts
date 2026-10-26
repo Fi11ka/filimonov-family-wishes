@@ -33,27 +33,75 @@ export async function friendship(db: D1Database, x: string, y: string) {
     b,
   ).first<{ status: "pending" | "accepted"; requested_by: string }>();
 }
+/**
+ * Finds or creates the account of a person signed in with Telegram (Mini App,
+ * website, bot). `user` carries the Telegram user ID; the result carries the
+ * account ID, which is the same number for every account created through
+ * Telegram, but may differ once other sign-in methods link to an account.
+ *
+ * Never duplicates an account: without an identity row (e.g. one missed by a
+ * migration) an existing account with the Telegram ID gets the identity back.
+ */
 export async function saveUser(db: D1Database, user: Identity) {
+  const telegramId = user.id;
+  const account =
+    (
+      await stmt(
+        db,
+        "SELECT user_id FROM identities WHERE provider='telegram' AND subject=?",
+        telegramId,
+      ).first<{ user_id: string }>()
+    )?.user_id ?? telegramId;
   await db.batch([
-    // A Telegram username can move to another account; the newest owner keeps it.
+    // A Telegram username can move to another person; the newest owner keeps it.
+    // users.username is kept as a copy for display and for the previous Worker version.
     ...(user.username
       ? [
           stmt(
             db,
+            "UPDATE identities SET username=NULL WHERE provider='telegram' AND username=? AND subject<>?",
+            user.username,
+            telegramId,
+          ),
+          stmt(
+            db,
             "UPDATE users SET username=NULL WHERE username=? AND id<>?",
             user.username,
-            user.id,
+            account,
           ),
         ]
       : []),
     stmt(
       db,
       `INSERT INTO users(id,name,username) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,username=excluded.username WHERE name<>excluded.name OR username IS NOT excluded.username`,
-      user.id,
+      account,
       user.name,
       user.username,
     ),
+    stmt(
+      db,
+      `INSERT INTO identities(provider,subject,user_id,username,name) VALUES('telegram',?,?,?,?)
+      ON CONFLICT(provider,subject) DO UPDATE SET username=excluded.username,name=excluded.name
+      WHERE username IS NOT excluded.username OR name IS NOT excluded.name`,
+      telegramId,
+      account,
+      user.username,
+      user.name,
+    ),
   ]);
+  return { ...user, id: account };
+}
+/** The Telegram user ID (= private chat ID) of an account, or null without Telegram. */
+export async function telegramIdOf(db: D1Database, account: string) {
+  return (
+    (
+      await stmt(
+        db,
+        "SELECT subject FROM identities WHERE provider='telegram' AND user_id=? ORDER BY created_at LIMIT 1",
+        account,
+      ).first<{ subject: string }>()
+    )?.subject ?? null
+  );
 }
 export async function activeCount(
   db: D1Database,

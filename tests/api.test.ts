@@ -251,6 +251,7 @@ before(async () => {
   await migrate("migrations/0012_events.sql");
   await migrate("migrations/0013_event_page.sql");
   await migrate("migrations/0014_profile_photo.sql");
+  await migrate("migrations/0015_identities.sql");
   assert.equal(
     (
       await db
@@ -1682,10 +1683,7 @@ test("group gifts: the organizer buys alone, everyone else leaves and is told", 
     (await messages(963, 2))[1].text,
     /купит «Велосипед» сам\(а\): совместный подарок отменён/,
   );
-  assert.match(
-    (await messages(964, 2))[1].text,
-    /купит «Велосипед» сам\(а\)/,
-  );
+  assert.match((await messages(964, 2))[1].text, /купит «Велосипед» сам\(а\)/);
   assert.equal((await call("/reservations", 963)).body.reservations.length, 0);
   assert.equal((await call("/reservations", 964)).body.reservations.length, 0);
   // The booking itself stays with the organizer, now without members.
@@ -2498,4 +2496,245 @@ test("profile photo from Telegram: the signed photo_url is used when the bot can
     BOT,
   );
   assert.equal(identity.photo_url, undefined);
+});
+
+// ---- Sign-in methods (identities) ----
+const tma = (id: number, username: string | null = `user_${id}`) => ({
+  Authorization: `tma ${signed(id, {}, username)}`,
+});
+const asTelegram = (
+  path: string,
+  id: number,
+  method = "GET",
+  value?: unknown,
+  username: string | null = `user_${id}`,
+) => call(path, undefined, method, value, undefined, tma(id, username));
+const countUsers = async () =>
+  (await db.prepare("SELECT COUNT(*) AS n FROM users").first<{ n: number }>())!
+    .n;
+const botSecret = createHash("sha256").update(`webhook:${BOT}`).digest("hex");
+const botHook = (update: unknown) =>
+  call("/telegram/webhook", undefined, "POST", update, undefined, {
+    "X-Telegram-Bot-Api-Secret-Token": botSecret,
+    Origin: "",
+  });
+test("identities: the migration gives every Telegram account its sign-in, and new sign-ins get one", async () => {
+  const legacy = await db
+    .prepare(
+      "SELECT user_id,username,name FROM identities WHERE provider='telegram' AND subject='999100'",
+    )
+    .first();
+  assert.deepEqual(legacy, {
+    user_id: "999100",
+    username: null,
+    name: "Migration fixture",
+  });
+  await call("/me", 7300);
+  // Every account with a Telegram ID has exactly its own Telegram sign-in.
+  const missing = await db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM users u WHERE u.id NOT GLOB '*[^0-9]*' AND NOT EXISTS(
+        SELECT 1 FROM identities i WHERE i.provider='telegram' AND i.subject=u.id AND i.user_id=u.id)`,
+    )
+    .first<{ n: number }>();
+  assert.equal(missing?.n, 0);
+  assert.equal(
+    (
+      await db
+        .prepare(
+          "SELECT username FROM identities WHERE provider='telegram' AND subject='7300'",
+        )
+        .first<{ username: string }>()
+    )?.username,
+    "user_7300",
+  );
+});
+test("identities: an account whose sign-in row is missing gets it back and is never duplicated", async () => {
+  await befriend(7301, 7300);
+  await gift(7301);
+  await db
+    .prepare(
+      "DELETE FROM identities WHERE provider='telegram' AND subject='7301'",
+    )
+    .run();
+  const before = await countUsers();
+  const me = await call("/me", 7301);
+  assert.equal(me.status, 200);
+  assert.equal(me.body.user.id, "7301");
+  assert.equal(await countUsers(), before);
+  assert.equal(
+    (
+      await db
+        .prepare(
+          "SELECT user_id FROM identities WHERE provider='telegram' AND subject='7301'",
+        )
+        .first<{ user_id: string }>()
+    )?.user_id,
+    "7301",
+  );
+  // Gifts and friends are still there.
+  assert.equal((await call("/lists/7301", 7301)).body.gifts.length, 1);
+  assert.equal((await call("/lists/7301", 7300)).status, 200);
+});
+test("identities: a Telegram sign-in linked to another account works in the app, the bot and notifications", async () => {
+  // Future case: the account was created another way (a_<uuid>) and Telegram 7302 was linked to it.
+  const account = "a_7302aaaa-0000-4000-8000-000000007302";
+  await db.batch([
+    db
+      .prepare("INSERT INTO users(id,name) VALUES(?,'Linked person')")
+      .bind(account),
+    db
+      .prepare(
+        "INSERT INTO identities(provider,subject,user_id) VALUES('telegram','7302',?)",
+      )
+      .bind(account),
+  ]);
+  const before = await countUsers();
+  const me = await asTelegram("/me", 7302);
+  assert.equal(me.status, 200, me.raw);
+  assert.equal(me.body.user.id, account);
+  assert.equal(me.body.user.username, "user_7302");
+  assert.equal(
+    await countUsers(),
+    before,
+    "no account with the Telegram ID is created",
+  );
+  // Own gifts belong to the account.
+  const g = await asTelegram("/gifts", 7302, "POST", input);
+  assert.equal(g.status, 200, g.raw);
+  assert.equal(
+    (
+      await db
+        .prepare("SELECT owner_id FROM gifts WHERE id=?")
+        .bind(g.body.id)
+        .first()
+    )?.owner_id,
+    account,
+  );
+  // Found by the Telegram nickname; the request notification goes to the Telegram chat.
+  await call("/me", 7303);
+  const req = await call("/friends/requests", 7303, "POST", {
+    username: "user_7302",
+  });
+  assert.equal(req.status, 200, req.raw);
+  const note = (await messages(7302)).at(-1);
+  assert.match(note.text, /User 7303/);
+  assert.deepEqual(
+    note.reply_markup.inline_keyboard[0].map((b: any) => b.callback_data),
+    ["fa:7303", "fd:7303"],
+  );
+  assert.ok(!telegram.some((c) => c.body.chat_id === account));
+  // «Принять» in the chat works for the linked account.
+  const sent = (await messages(7302)).length;
+  await botHook({
+    callback_query: {
+      id: "q",
+      from: { id: 7302, first_name: "Linked" },
+      data: "fa:7303",
+      message: { message_id: 9, chat: { id: 7302, type: "private" } },
+    },
+  });
+  await messages(7302, sent + 1);
+  const [a, b] = [account, "7303"].sort();
+  assert.equal(
+    (
+      await db
+        .prepare("SELECT status FROM friendships WHERE user_a=? AND user_b=?")
+        .bind(a, b)
+        .first()
+    )?.status,
+    "accepted",
+  );
+  // The new friend sees the list and the photo through the a_ account ID.
+  const list = await call(`/lists/${account}`, 7303);
+  assert.equal(list.status, 200, list.raw);
+  assert.equal(list.body.gifts.length, 1);
+  const webp = `data:image/webp;base64,${Buffer.from("RIFF\x10\0\0\0WEBPVP8 ").toString("base64")}`;
+  assert.equal(
+    (await asTelegram("/me/photo", 7302, "PUT", { photo: webp })).status,
+    200,
+  );
+  assert.equal((await call(`/users/${account}/photo`, 7303)).body.photo, webp);
+  // The bot finds the same account and answers in the Telegram chat.
+  const replies = (await messages(7302)).length;
+  await botHook({
+    message: {
+      message_id: 1,
+      from: { id: 7302, first_name: "Linked", username: "user_7302" },
+      chat: { id: 7302, type: "private" },
+      text: "/start",
+    },
+  });
+  await messages(7302, replies + 1);
+  assert.equal(await countUsers(), before + 1, "only 7303 was added");
+  assert.ok(
+    (
+      await db
+        .prepare("SELECT bot_chat_at FROM users WHERE id=?")
+        .bind(account)
+        .first()
+    )?.bot_chat_at,
+  );
+});
+test("identities: a person without Telegram gets no messages and nothing breaks", async () => {
+  const account = "a_7304bbbb-0000-4000-8000-000000007304";
+  await db
+    .prepare("INSERT INTO users(id,name) VALUES(?,'No Telegram')")
+    .bind(account)
+    .run();
+  await call("/me", 7305);
+  const calls = telegram.length;
+  const r = await call("/friends/requests", 7305, "POST", { user_id: account });
+  assert.equal(r.status, 200, r.raw);
+  await settle();
+  assert.ok(
+    telegram.slice(calls).every((c) => c.method !== "sendMessage"),
+    "nothing is sent for an account without Telegram",
+  );
+  // Not findable by a Telegram nickname, and invalid IDs are still refused.
+  assert.equal(
+    (
+      await call("/friends/requests", 7305, "POST", {
+        username: "no_such_nick",
+      })
+    ).status,
+    404,
+  );
+  for (const bad of [
+    "a_1",
+    "7305x",
+    "../7305",
+    "a_7304BBBB-0000-4000-8000-000000007304",
+  ])
+    assert.equal(
+      (await call("/friends/requests", 7305, "POST", { user_id: bad })).status,
+      400,
+      bad,
+    );
+});
+test("identities: a Telegram nickname moves to its newest owner in sign-ins and in the copy", async () => {
+  await asTelegram("/me", 7306, "GET", undefined, "moving_nick");
+  await asTelegram("/me", 7307, "GET", undefined, "moving_nick");
+  const rows = (
+    await db
+      .prepare(
+        "SELECT subject,username FROM identities WHERE provider='telegram' AND subject IN ('7306','7307') ORDER BY subject",
+      )
+      .all()
+  ).results;
+  assert.deepEqual(rows, [
+    { subject: "7306", username: null },
+    { subject: "7307", username: "moving_nick" },
+  ]);
+  assert.equal(
+    (await db.prepare("SELECT username FROM users WHERE id='7306'").first())
+      ?.username,
+    null,
+  );
+  await call("/me", 7308);
+  const r = await call("/friends/requests", 7308, "POST", {
+    username: "moving_nick",
+  });
+  assert.equal(r.status, 200, r.raw);
+  assert.equal((await call("/friends", 7307)).body.incoming[0]?.id, "7308");
 });

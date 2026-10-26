@@ -9,6 +9,7 @@ import {
   validEventDate,
   type EventSpec,
 } from "../shared/events";
+import { ACCOUNT_ID_PART, isAccountId } from "../shared/account-id";
 import { fail, text, usernameOf, type Identity } from "./security";
 import { FRIEND_OF, now, stmt } from "./core";
 import type { Outbox } from "./notify";
@@ -325,7 +326,7 @@ export async function eventRoute(
       value !== undefined &&
       (!Array.isArray(value) ||
         value.length > GUEST_LIMIT ||
-        !value.every((v) => typeof v === "string" && /^\d+$/.test(v)))
+        !value.every(isAccountId))
     )
       fail(400, "VALIDATION", `Выберите до ${GUEST_LIMIT} друзей.`);
     // People who are not friends are added by their Telegram username.
@@ -346,7 +347,8 @@ export async function eventRoute(
       ? (
           await stmt(
             db,
-            `SELECT id,username FROM users WHERE username IN (${wantedNames.map(() => "?").join(",")})`,
+            // Nicknames are Telegram ones: look them up among Telegram sign-ins.
+            `SELECT user_id AS id,username FROM identities WHERE provider='telegram' AND username IN (${wantedNames.map(() => "?").join(",")})`,
             ...wantedNames,
           ).all<{ id: string; username: string }>()
         ).results
@@ -447,7 +449,9 @@ export async function eventRoute(
     return { invitations: await invitations(db, uid, uid) };
   }
   const page = path.match(
-    /^\/api\/events\/(\d+)\/([a-z0-9_]+)\/(\d{4}-\d{2}-\d{2})$/,
+    new RegExp(
+      `^/api/events/(${ACCOUNT_ID_PART})/([a-z0-9_]+)/(\\d{4}-\\d{2}-\\d{2})$`,
+    ),
   );
   if (page && method === "GET") {
     // The event page: anyone who sees the wishlist; the guests and the
