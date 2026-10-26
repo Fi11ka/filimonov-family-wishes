@@ -17,6 +17,7 @@ import { productLink } from "./link";
 import { dns } from "./dns";
 import type { HomeHelper } from "../helper";
 import { shortTitle, type Namer } from "./naming";
+import { slugTitle } from "./slug";
 /** Order matters only for overlapping hosts; the generic parser is always last. */
 export const shops: Shop[] = [
   wildberries,
@@ -134,6 +135,11 @@ export async function lookupProduct(
       : shop === generic
         ? null
         : shop.name;
+  // The shop did not give a name: most shops write it into the address.
+  if (!info.title) {
+    const fromLink = slugTitle(new URL(info.canonicalUrl || url.href));
+    if (fromLink) info = { ...info, title: fromLink, titleFromLink: true };
+  }
   let title = info.title || "",
     details = "";
   // Workers AI first; if it is unavailable or slow, shorten by rules.
@@ -142,7 +148,7 @@ export async function lookupProduct(
       ? await namer(
           title,
           info.titleFromLink
-            ? `${shopName}. Название восстановлено из адреса ссылки транслитом, без мягких знаков — исправь орфографию`
+            ? `${shopName || url.hostname}. Название восстановлено из адреса ссылки транслитом, без мягких знаков — исправь орфографию`
             : shopName,
         )
       : null) || (title ? shortTitle(title) : null);

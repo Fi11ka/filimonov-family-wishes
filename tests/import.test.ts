@@ -257,3 +257,67 @@ test("tracking wrappers are unwrapped or dropped", () => {
   assert.equal(unwrapLink("https://clck.yandex.ru/redir/xyz"), null);
   assert.equal(unwrapLink("https://shop.example/"), "https://shop.example/");
 });
+
+test("import: tables of any layout — no header, other header words, columns in any order", () => {
+  const titles = (csv: string) =>
+    normalizeSheet(readCsv(csv, "list.csv"), "RUB").map((r) => ({
+      title: r.title,
+      price: r.priceMin,
+      url: r.shopUrl,
+      note: r.description,
+    }));
+  // No header at all: link first, then the name, then the price.
+  assert.deepEqual(
+    titles(
+      "https://www.ozon.ru/product/1/;Наушники Sony WH-1000XM5;24 990 ₽\nhttps://shop.example/2;Плед шерстяной;3000\n",
+    ),
+    [
+      {
+        title: "Наушники Sony WH-1000XM5",
+        price: "24990",
+        url: "https://www.ozon.ru/product/1/",
+        note: "",
+      },
+      {
+        title: "Плед шерстяной",
+        price: "3000",
+        url: "https://shop.example/2",
+        note: "",
+      },
+    ],
+  );
+  // Row numbers, a header the importer half-knows, a price column named oddly.
+  assert.deepEqual(
+    titles(
+      "№;Хотелка;Размер;Сколько стоит;Где\n1;Кроссовки;38;5 990 руб;https://shop.example/a\n2;Шапка;M;1200 ₽;\n",
+    ),
+    [
+      {
+        title: "Кроссовки",
+        price: "5990",
+        url: "https://shop.example/a",
+        note: "Размер: 38",
+      },
+      { title: "Шапка", price: "1200", url: "", note: "Размер: M" },
+    ],
+  );
+  // English headers and a header that is not on the first line.
+  assert.deepEqual(
+    titles(
+      "Мой список на Новый год;;\n;;\nItem;Price;Link\nLEGO Technic;7 500;https://shop.example/l\n",
+    ),
+    [
+      {
+        title: "LEGO Technic",
+        price: "7500",
+        url: "https://shop.example/l",
+        note: "",
+      },
+    ],
+  );
+  // A long first data line is never taken for a header.
+  assert.equal(
+    titles("Подарок для мамы на юбилей;2000 ₽\nКнига;500 ₽\n")[0].title,
+    "Подарок для мамы на юбилей",
+  );
+});

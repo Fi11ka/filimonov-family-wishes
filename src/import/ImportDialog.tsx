@@ -53,7 +53,9 @@ export function ImportDialog({
   onImported: (message: string) => void;
 }) {
   const [step, setStep] = useState<Step>("source"),
-    [source, setSource] = useState<"google" | "file" | "cart">("google"),
+    [source, setSource] = useState<"google" | "file" | "cart" | "text">(
+      "google",
+    ),
     [url, setUrl] = useState(""),
     [pasted, setPasted] = useState(""),
     [promptCopied, setPromptCopied] = useState(false),
@@ -117,7 +119,7 @@ export function ImportDialog({
       if (pasted) {
         // A ChatGPT answer pasted as text: parsed here, links are looked up below.
         const items = parseChatList(pasted, ACTIVE_LIMIT + 1).map((i) => {
-          const named = shortTitle(i.title);
+          const named = i.title ? shortTitle(i.title) : null;
           return {
             ...i,
             title: named?.title || i.title,
@@ -126,12 +128,12 @@ export function ImportDialog({
         });
         if (!items.length)
           throw new Error(
-            "В тексте не нашлось товаров. Нужны названия с ценой в рублях или ссылкой на товар.",
+            "В тексте не нашлось товаров. Нужны строки «Название | Цена | Ссылка», таблица или ссылки на товары.",
           );
         cart = {
           shop: "ChatGPT",
           kind: "chat",
-          title: "Список из ChatGPT",
+          title: "Список из текста",
           items: items.slice(0, ACTIVE_LIMIT),
           truncated: items.length > ACTIVE_LIMIT,
         };
@@ -173,7 +175,11 @@ export function ImportDialog({
             const min = ownPrice
                 ? item.price_minor!
                 : (r?.price?.min_minor ?? item.price_minor ?? null),
-              max = !ownPrice && r?.price ? r.price.max_minor : null;
+              max = ownPrice
+                ? (item.price_max_minor ?? null)
+                : r?.price
+                  ? r.price.max_minor
+                  : null;
             const image = r?.image_url || item.image || "";
             made[i] = {
               key: `cart-${i}`,
@@ -415,95 +421,105 @@ export function ImportDialog({
             className={source === "cart" ? "selected" : ""}
             onClick={() => setSource("cart")}
           >
-            <ShoppingCart size={15} /> Корзина WB / Ozon / ChatGPT
+            <ShoppingCart size={15} /> Корзина WB / Ozon
+          </button>
+          <button
+            className={source === "text" ? "selected" : ""}
+            onClick={() => setSource("text")}
+          >
+            <MessageSquare size={15} /> Из текста
           </button>
         </div>
         {source === "cart" ? (
-          <>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void loadCart();
+            }}
+          >
+            <p className="muted">
+              В корзине Wildberries или Ozon нажмите «Поделиться» и вставьте
+              ссылку. Подходит и ссылка на вишлист Wildberries. Перед
+              сохранением откроется предпросмотр: лишнее можно снять.
+            </p>
+            <label>
+              Ссылка на корзину или вишлист
+              <input
+                type="url"
+                required
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://www.wildberries.ru/basket?shareId=…"
+              />
+            </label>
+            <button className="button primary full-width" disabled={!!busy}>
+              {busy || "Открыть"}
+            </button>
+          </form>
+        ) : source === "text" ? (
+          <div className="chat-import">
+            <p className="muted">
+              Вставьте список товаров: по строке на товар в виде «Название |
+              Цена | Ссылка», таблицу или просто ссылки. По ссылкам подтянутся
+              фото и недостающие данные.
+            </p>
+            <p className="small-text">
+              <strong>Много товаров на Ozon или на других сайтах?</strong> Если
+              сайт не даёт импортировать товары в карточки, отправьте в ChatGPT
+              этот промт и что угодно о своих желаниях: ссылки, скриншоты
+              корзины, таблицу, файл или просто опишите словами. Ответ ChatGPT
+              (кнопка «Копировать» над блоком кода) вставьте сюда — все товары
+              появятся в карточках.
+            </p>
+            <details>
+              <summary>Показать промт</summary>
+              <pre className="chat-prompt">{CHAT_PROMPT}</pre>
+            </details>
+            <button
+              type="button"
+              className="button secondary full-width"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(CHAT_PROMPT);
+                  setPromptCopied(true);
+                  setTimeout(() => setPromptCopied(false), 2500);
+                } catch {
+                  setError(
+                    "Не удалось скопировать. Откройте промт и скопируйте вручную.",
+                  );
+                }
+              }}
+            >
+              <Copy size={15} />{" "}
+              {promptCopied
+                ? "Промт скопирован"
+                : "Скопировать промт для ChatGPT"}
+            </button>
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                void loadCart();
+                void loadCart(pasted.trim());
               }}
             >
-              <p className="muted">
-                В корзине Wildberries или Ozon нажмите «Поделиться» и вставьте
-                ссылку. Подходят и ссылка на вишлист Wildberries, и ссылка на
-                ответ ChatGPT (кнопка «Поделиться» в чате). Перед сохранением
-                откроется предпросмотр: лишнее можно снять.
-              </p>
               <label>
-                Ссылка на корзину, вишлист или ответ ChatGPT
-                <input
-                  type="url"
-                  required
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://www.wildberries.ru/basket?shareId=…"
+                Список товаров
+                <textarea
+                  rows={7}
+                  value={pasted}
+                  onChange={(e) => setPasted(e.target.value)}
+                  placeholder={
+                    "Колье многоуровневое | 249 | https://ozon.ru/t/…\nСерьги «Цветы» | 99 |\nhttps://www.wildberries.ru/catalog/…"
+                  }
                 />
               </label>
-              <button className="button primary full-width" disabled={!!busy}>
-                {busy || "Открыть"}
+              <button
+                className="button primary full-width"
+                disabled={!!busy || !pasted.trim()}
+              >
+                {busy || "Разобрать список"}
               </button>
             </form>
-            <div className="chat-import">
-              <h4>
-                <MessageSquare size={16} /> Много товаров на Ozon или на других
-                сайтах?
-              </h4>
-              <p className="small-text">
-                Если сайт не даёт импортировать товары в карточки, отправьте в
-                ChatGPT ссылки на товары и скриншоты своей корзины вместе с этим
-                промтом. Потом нажмите в ChatGPT «Поделиться» и вставьте ссылку
-                на ответ в поле выше — все товары появятся в карточках. Можно и
-                просто скопировать текст ответа в поле ниже.
-              </p>
-              <details>
-                <summary>Показать промт</summary>
-                <pre className="chat-prompt">{CHAT_PROMPT}</pre>
-              </details>
-              <button
-                type="button"
-                className="button secondary full-width"
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(CHAT_PROMPT);
-                    setPromptCopied(true);
-                    setTimeout(() => setPromptCopied(false), 2500);
-                  } catch {
-                    setError(
-                      "Не удалось скопировать. Откройте промт и скопируйте вручную.",
-                    );
-                  }
-                }}
-              >
-                <Copy size={15} />{" "}
-                {promptCopied ? "Промт скопирован" : "Скопировать промт"}
-              </button>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void loadCart(pasted.trim());
-                }}
-              >
-                <label>
-                  Или вставьте текст ответа ChatGPT
-                  <textarea
-                    rows={4}
-                    value={pasted}
-                    onChange={(e) => setPasted(e.target.value)}
-                    placeholder="1. Колье многоуровневое — 249 ₽ — https://ozon.ru/t/…"
-                  />
-                </label>
-                <button
-                  className="button secondary full-width"
-                  disabled={!!busy || !pasted.trim()}
-                >
-                  Разобрать текст
-                </button>
-              </form>
-            </div>
-          </>
+          </div>
         ) : source === "google" ? (
           <form
             onSubmit={(e) => {

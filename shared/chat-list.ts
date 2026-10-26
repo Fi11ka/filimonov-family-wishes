@@ -1,13 +1,66 @@
-// A product list written by ChatGPT (or pasted from anywhere): one item per
-// numbered or bold title, with a price in roubles and a link to the product.
-// Used for shared ChatGPT links (Worker) and for pasted text (browser).
-import { parseAmount } from "./price";
+// A product list pasted as text: the answer of ChatGPT to CHAT_PROMPT
+// ("Название | Цена | Ссылка" lines), a table copied from anywhere, a list of
+// links, or a free-form list with numbered/bold titles, prices and links.
+import { parseAmount, parsePriceText } from "./price";
 export interface ChatItem {
+  /** Empty when only a link was given; the shop lookup names it. */
   title: string;
   /** Kopecks; the current price, never the crossed-out one. */
   price_minor: number | null;
+  /** Upper bound of a price range ("1000-3000"). */
+  price_max_minor?: number | null;
   url: string;
   image?: string;
+}
+const EMPTY = /^(нет|не указан[аоы]?|неизвестн[оа]|—|–|-|n\/a|none|null)$/i;
+/** "Название | Цена | Ссылка", a Markdown table row or tab-separated cells. */
+function fieldsOf(line: string): ChatItem | "skip" | null {
+  const t = line.replace(/^\|/, "").replace(/\|$/, "");
+  const parts = t.includes("|")
+    ? t.split("|")
+    : t.includes("\t")
+      ? t.split("\t")
+      : null;
+  if (!parts || parts.length < 2) return null;
+  const cells = parts.map((p) => p.trim().replace(/^\*\*|\*\*$/g, ""));
+  if (cells.every((c) => !c || /^:?-{2,}:?$/.test(c))) return "skip";
+  // The header line of the answer or of a table.
+  if (
+    cells.some((c) => /^(название|наименование|товар|name|item)$/i.test(c)) &&
+    cells.some((c) => /^(цена|стоимость|price|ссылка|link|url)$/i.test(c))
+  )
+    return "skip";
+  const url =
+    cells
+      .map((c) => c.match(SHOP_URL)?.[0])
+      .find(Boolean)
+      ?.replace(/[.,;]+$/, "") || "";
+  let price: ReturnType<typeof parsePriceText> | null = null,
+    priceCell = -1;
+  cells.forEach((c, i) => {
+    if (price || !c || SHOP_URL.test(c) || EMPTY.test(c)) return;
+    const p = parsePriceText(c.replace(/~~[^~]*~~/g, ""));
+    if (
+      p.exact &&
+      (p.min !== null || p.max !== null) &&
+      /^[\d\s  .,–—-]*(₽|руб\.?|р\.|rub)?$|^(от|до)\s/i.test(c.trim())
+    ) {
+      price = p;
+      priceCell = i;
+    }
+  });
+  const title =
+    cells.find(
+      (c, i) => c && i !== priceCell && !SHOP_URL.test(c) && !EMPTY.test(c),
+    ) || "";
+  const parsed = price as ReturnType<typeof parsePriceText> | null;
+  if (!title && !url) return null;
+  return {
+    title: title.replace(/^\d+[.)]\s*/, "").slice(0, 200),
+    price_minor: parsed ? (parsed.min ?? null) : null,
+    price_max_minor: parsed && parsed.range ? parsed.max : null,
+    url,
+  };
 }
 const PRICE = /(\d[\d\s  ]*(?:[.,]\d{1,2})?)\s*(?:₽|руб\.?|р\.)/i;
 const SHOP_URL = /https:\/\/[^\s)\]<>"'«»]+/i;
@@ -46,10 +99,28 @@ function priceOf(line: string): number | null {
 }
 export function parseChatList(input: string, limit = 100): ChatItem[] {
   const items: ChatItem[] = [];
+  // Lines in "Name | Price | Link" form are wishes even with a name only.
+  const structured = new Set<ChatItem>();
   let current: ChatItem | null = null;
   for (const raw of plain(input).split(/\r?\n/)) {
-    const line = raw.trim();
+    const line = raw.trim().replace(/^```\w*$/, "");
     if (!line || /^[-*_]{3,}$/.test(line)) continue;
+    // One product per line: "Name | Price | Link", a table row, or just a link.
+    const fields = fieldsOf(line);
+    if (fields === "skip") continue;
+    const bare = line.match(/^(?:[-*•]\s*|\d+[.)]\s*)?(https:\/\/\S+)$/)?.[1];
+    if (fields || bare) {
+      if (current) items.push(current);
+      current = null;
+      const item = fields || {
+        title: "",
+        price_minor: null,
+        url: bare!.replace(/[.,;]+$/, ""),
+      };
+      structured.add(item);
+      items.push(item);
+      continue;
+    }
     const title = titleOf(line);
     if (title) {
       if (current) items.push(current);
@@ -76,7 +147,9 @@ export function parseChatList(input: string, limit = 100): ChatItem[] {
   }
   if (current) items.push(current);
   return items
-    .filter((i) => i.url || i.price_minor !== null)
+    .filter(
+      (i) => i.url || i.price_minor !== null || (structured.has(i) && i.title),
+    )
     .map((i) => {
       // Tracking added by ChatGPT is not part of the product address.
       try {
@@ -91,43 +164,4 @@ export function parseChatList(input: string, limit = 100): ChatItem[] {
       return i;
     })
     .slice(0, limit);
-}
-/**
- * The answer text inside a shared ChatGPT page. The page streams its data as
- * React Router "turbo-stream" chunks: enqueue("…JSON…"). Message texts are plain
- * strings in that array; the one listing the most products is the answer.
- */
-export function chatShareText(html: string): string {
-  const chunks = [...html.matchAll(/enqueue\(("(?:[^"\\]|\\.)*")\)/g)];
-  let stream = "";
-  for (const c of chunks)
-    try {
-      stream += JSON.parse(c[1]);
-    } catch {
-      // a chunk that is not a plain string literal
-    }
-  let best = "",
-    bestCount = 0;
-  for (const line of stream.split("\n")) {
-    let values: unknown;
-    try {
-      values = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!Array.isArray(values)) continue;
-    for (const v of values)
-      if (
-        typeof v === "string" &&
-        v.length > 40 &&
-        /₽|руб|https:\/\//i.test(v)
-      ) {
-        const n = parseChatList(v).length;
-        if (n > bestCount || (n === bestCount && n > 0)) {
-          best = v;
-          bestCount = n;
-        }
-      }
-  }
-  return best;
 }

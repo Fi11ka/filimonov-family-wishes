@@ -4,8 +4,9 @@ import { findShop, lookupProduct, shops } from "../worker/shops";
 import type { Page, ShopContext } from "../worker/shops/types";
 import { wbImage, wbPrice } from "../worker/shops/wildberries";
 import { cartKind, readCart } from "../worker/shops/carts";
-import { chatShareText, parseChatList } from "../shared/chat-list";
+import { parseChatList } from "../shared/chat-list";
 import { ozonSlugTitle } from "../worker/shops/ozon";
+import { slugTitle } from "../worker/shops/slug";
 import { shortTitle } from "../worker/shops/naming";
 import { publicHttpsUrl } from "../worker/net";
 import { productLink } from "../worker/shops/link";
@@ -305,9 +306,10 @@ test("anti-bot and storefront pages never become a gift title or photo", async (
       },
     }),
   );
+  // The storefront gives nothing; the name comes from the address instead.
   assert.deepEqual(
     [storefront.title, storefront.image_url, storefront.blocked],
-    ["", "", true],
+    ["Osmo Pocket 3", "", true],
   );
 });
 test("URL policy rejects internal targets before any request", () => {
@@ -843,63 +845,64 @@ test("shared carts and wishlists: WB basket, WB wishlist and Ozon cart become pr
     assert.equal(cartKind(new URL(bad)), null, bad);
 });
 
-test("a shared ChatGPT answer becomes a product list with current prices", async () => {
-  // Shape of chatgpt.com/s/… pages (October 2026): a turbo-stream chunk with the answer.
-  const answer =
-    'Теперь видно фотографии и цены.\n\n\ue200image_group\ue202{"query":["Ozon колье"]}\ue201\n\n' +
-    "**1\\. Колье многоуровневое, набор из 4 цепей золотого цвета**\n\n## 249 ₽\n\n~~252 ₽~~\n\n" +
-    "\ue200url\ue202Ссылка на Ozon\ue202https://ozon.ru/t/ye20lKQ\ue201\n\n---\n\n" +
-    "**2\\. Серьги «Цветы», золотой солнечный**\n\n## 99 ₽\n\nТочная ссылка на этот товар не установлена.\n\n" +
-    "**Итого за два товара: 348 ₽.**";
-  const stream = JSON.stringify([
-    { _1: 2 },
-    "fallbackMarkdown",
-    answer,
-    "assistant",
-  ]);
-  const html = `<html><script>window.__reactRouterContext.streamController.enqueue(${JSON.stringify(stream + "\n")});</script></html>`;
-  assert.equal(chatShareText(html), answer);
-  const ctx: ShopContext = {
-    async page(url) {
-      return { url, status: 200, html };
-    },
-    async json() {
-      throw new Error("HTTP 404");
-    },
-  };
-  const url = new URL(
-    "https://chatgpt.com/s/t_6ade956cc9348191bbfb209b85e54a86",
-  );
-  assert.equal(cartKind(url), "chatgpt");
-  const cart = await readCart(url, ctx);
-  assert.equal(cart.kind, "chat");
-  assert.deepEqual(cart.items, [
-    {
-      url: "https://ozon.ru/t/ye20lKQ",
-      title: "Колье многоуровневое",
-      details: "Колье многоуровневое, набор из 4 цепей золотого цвета",
-      price_minor: 24900,
-    },
-    { url: "", title: "Серьги «Цветы», золотой солнечный", price_minor: 9900 },
-  ]);
-  // Pasted text in other common shapes.
+test("pasted lists: the prompt's lines, tables, bare links and free-form answers", () => {
+  // The format CHAT_PROMPT asks ChatGPT for, inside a code block.
   assert.deepEqual(
     parseChatList(
-      "1. Наушники — 24 990 ₽ — https://www.ozon.ru/product/naushniki-123456/?utm_source=chatgpt.com\n" +
-        "2. **Плед**\nЦена: ~~3 000 ₽~~ 2 490 ₽\n[Ссылка](https://www.wildberries.ru/catalog/183901471/detail.aspx)\n\nИтого: 27 480 ₽",
+      "```\nНазвание | Цена | Ссылка\nКолье многоуровневое | 249 | https://ozon.ru/t/ye20lKQ?utm_source=chatgpt.com\n" +
+        "Серьги «Цветы» | 99 |\nПлед | 1000-3000 | https://www.wildberries.ru/catalog/1/detail.aspx\n" +
+        "Книга «Мастер и Маргарита» |  | нет\n```",
     ),
     [
       {
-        title: "Наушники",
-        price_minor: 2499000,
-        url: "https://www.ozon.ru/product/naushniki-123456/",
+        title: "Колье многоуровневое",
+        price_minor: 24900,
+        price_max_minor: null,
+        url: "https://ozon.ru/t/ye20lKQ",
+      },
+      {
+        title: "Серьги «Цветы»",
+        price_minor: 9900,
+        price_max_minor: null,
+        url: "",
       },
       {
         title: "Плед",
-        price_minor: 249000,
-        url: "https://www.wildberries.ru/catalog/183901471/detail.aspx",
+        price_minor: 100000,
+        price_max_minor: 300000,
+        url: "https://www.wildberries.ru/catalog/1/detail.aspx",
+      },
+      {
+        title: "Книга «Мастер и Маргарита»",
+        price_minor: null,
+        price_max_minor: null,
+        url: "",
       },
     ],
+  );
+  // A Markdown table, tab-separated cells and plain links.
+  assert.deepEqual(
+    parseChatList(
+      "| Название | Цена | Ссылка |\n|---|---|---|\n| Наушники | 24 990 ₽ | https://shop.example/a |\nКружка\t500\thttps://shop.example/b\n- https://ozon.ru/t/abc\n",
+    ).map((i) => [i.title, i.price_minor, i.url]),
+    [
+      ["Наушники", 2499000, "https://shop.example/a"],
+      ["Кружка", 50000, "https://shop.example/b"],
+      ["", null, "https://ozon.ru/t/abc"],
+    ],
+  );
+  // A free-form answer with bold titles and crossed-out old prices.
+  assert.deepEqual(
+    parseChatList(
+      "Вот список:\n\n**1\\. Колье многоуровневое**\n\n## 249 ₽\n\n~~252 ₽~~\n\nСсылка: https://ozon.ru/t/ye20lKQ\n\n---\n\n**Итого: 249 ₽**",
+    ).map((i) => [i.title, i.price_minor, i.url]),
+    [["Колье многоуровневое", 24900, "https://ozon.ru/t/ye20lKQ"]],
+  );
+  assert.equal(
+    cartKind(
+      new URL("https://chatgpt.com/s/t_6ade956cc9348191bbfb209b85e54a86"),
+    ),
+    "chatgpt",
   );
 });
 
@@ -940,5 +943,37 @@ test("Ozon: a short link resolves without www and the name is restored from the 
   assert.equal(
     ozonSlugTitle(new URL("https://www.ozon.ru/product/1348747111/")),
     null,
+  );
+});
+
+test("names from addresses: DNS, Ozon and other shops when the page is closed", () => {
+  const cases: [string, string | null][] = [
+    [
+      "https://www.dns-shop.ru/product/0bcabdaf10297734/142-noutbuk-apple-macbook-pro-m5-max-cernyj/",
+      "Ноутбук Apple Macbook Pro M5 Max черный",
+    ],
+    [
+      "https://www.dns-shop.ru/product/abcdef1234567890/smartfon-samsung-galaxy-s25-ultra-512-gb-seryj/",
+      "Смартфон Samsung Galaxy S25 Ultra 512 гб серый",
+    ],
+    [
+      "https://www.ozon.ru/product/zhurnalnyy-stolik-loft-76-h-40-h-47sm-reggi-12-120-seryy-grafit-1348747111/",
+      "Журнальный столик лофт 76 х 40 х 47sm регги 12 120 серый графит",
+    ],
+    [
+      "https://www.citilink.ru/product/robot-pylesos-xiaomi-robot-vacuum-s10-belyi-1849613/",
+      "Робот пылесос Xiaomi робот Vacuum S10 белый",
+    ],
+    [
+      "https://market.yandex.ru/product--osmo-pocket-3/18925911",
+      "Osmo Pocket 3",
+    ],
+    ["https://shop.example/item/12345", null],
+  ];
+  for (const [url, expected] of cases)
+    assert.equal(slugTitle(new URL(url)), expected, url);
+  assert.equal(
+    shortTitle("Ноутбук Apple Macbook Pro M5 Max черный")?.title,
+    "Ноутбук Apple Macbook",
   );
 });

@@ -35,16 +35,19 @@ type Field =
 const HEADERS: [Field, RegExp][] = [
   [
     "title",
-    /^(подарок|название|желание|товар|наименование|что|title|name|item|gift)/i,
+    /^(подар|название|желани|товар|наименован|что|предмет|вещь|позици|хотелк|идея|хочу|title|name|item|gift|product|wish)/i,
   ],
-  ["image", /^(картинк|фото|изображ|image|photo|picture)/i],
+  ["image", /^(картинк|фото|изображ|image|photo|picture|pic)/i],
   ["recipient", /^(кому|для кого|получател|recipient|for)/i],
-  ["price", /^(цена|стоимост|бюджет|price|cost)/i],
-  ["priority", /^(приоритет|важност|priority)/i],
-  ["link", /^(ссылк|link|url|магазин|где купить)/i],
+  ["price", /^(цена|стоимост|бюджет|сумма|руб|₽|price|cost|amount)/i],
+  ["priority", /^(приоритет|важност|желанност|очередн|priority|rank)/i],
+  [
+    "link",
+    /^(ссылк|link|url|магазин|где купить|где|сайт|маркетплейс|shop|store)/i,
+  ],
   [
     "comment",
-    /^(коммент|описани|примечани|подсказк|детали|note|description|comment)/i,
+    /^(коммент|описани|примечани|подсказк|детали|заметк|note|description|comment|details)/i,
   ],
   ["currency", /^(валют|currency)/i],
 ];
@@ -180,29 +183,120 @@ function validShopUrl(u: string) {
     return false;
   }
 }
-export function normalizeSheet(sheet: Sheet, currency: Currency): ImportRow[] {
-  // Header: the first row (within the first 10) that names a title column.
+/** A cell that is only a price: "2 490 ₽", "1000-3000", "от 500", "2490". */
+function looksLikePrice(value: string) {
+  const v = value.trim();
+  if (!v || v.length > 40 || URL_RE.test(v)) return false;
+  URL_RE.lastIndex = 0;
+  const p = parsePriceText(v);
+  if (!p.exact || (p.min === null && p.max === null)) return false;
+  // Bare small numbers are more often a quantity, a size or a row number.
+  return !!p.currency || p.range || (p.min ?? p.max ?? 0) >= 10000;
+}
+/**
+ * Which column holds what. A header row is looked up among the first ten rows
+ * by known words in any order; columns it does not name are recognised by their
+ * contents: links, prices, priority words, and the most wordy column is the title.
+ */
+export function detectColumns(sheet: Sheet) {
   let headerRow = -1;
   const columns = new Map<Field, number>();
+  const labels = new Map<number, string>();
   for (let r = 0; r < Math.min(10, sheet.rows.length) && headerRow < 0; r++) {
     const row = sheet.rows[r] || [];
-    if (
-      !row.some(
-        (c) =>
-          c &&
-          /^(подарок|название|желание|товар|наименование|title|name|item|gift)/i.test(
-            c.value,
-          ),
-      )
-    )
-      continue;
-    headerRow = r;
+    const found = new Map<Field, number>();
     row.forEach((cell, c) => {
-      const field = HEADERS.find(([, re]) => cell && re.test(cell.value))?.[0];
-      if (field && !columns.has(field)) columns.set(field, c);
+      const v = cell?.value.trim() || "";
+      // Headers are short: "Подарок для мамы на юбилей" is data.
+      if (!v || v.length > 30 || v.split(/\s+/).length > 3 || URL_RE.test(v))
+        return;
+      URL_RE.lastIndex = 0;
+      const field = HEADERS.find(([, re]) => re.test(v))?.[0];
+      if (field && !found.has(field)) found.set(field, c);
+    });
+    // One known word is enough for the title; otherwise two different ones.
+    if (!found.has("title") && found.size < 2) continue;
+    headerRow = r;
+    found.forEach((c, f) => columns.set(f, c));
+    row.forEach((cell, c) => {
+      if (cell?.value.trim()) labels.set(c, cell.value.trim().slice(0, 40));
     });
   }
-  if (headerRow < 0) columns.set("title", 0);
+  const data = sheet.rows.slice(headerRow + 1, headerRow + 81);
+  const width = Math.max(0, ...data.map((r) => r?.length || 0));
+  const used = () => new Set(columns.values());
+  const stats = Array.from({ length: width }, (_, c) => {
+    let filled = 0,
+      urls = 0,
+      prices = 0,
+      levels = 0,
+      words = 0,
+      letters = 0;
+    for (const row of data) {
+      const cell = row?.[c];
+      const v = cell?.value.trim() || "";
+      if (!v && !cell?.link) continue;
+      filled++;
+      if (urlsIn(cell).length) urls++;
+      if (looksLikePrice(v)) prices++;
+      // Priority by content only from words: bare digits are usually row numbers.
+      else if (!/^\d+$/.test(v) && levelOf(v) !== undefined) levels++;
+      const text = textWithoutUrls(cell);
+      if (/[A-Za-zА-ЯЁа-яё]{2,}/.test(text) && !looksLikePrice(text)) {
+        words++;
+        letters += text.length;
+      }
+    }
+    return { c, filled, urls, prices, levels, words, letters };
+  });
+  const pick = (
+    field: Field,
+    score: (s: (typeof stats)[number]) => number,
+    enough: (s: (typeof stats)[number]) => boolean,
+  ) => {
+    if (columns.has(field)) return;
+    const taken = used();
+    const best = stats
+      .filter((s) => !taken.has(s.c) && s.filled && enough(s))
+      .sort((a, b) => score(b) - score(a) || a.c - b.c)[0];
+    if (best) columns.set(field, best.c);
+  };
+  pick(
+    "link",
+    (s) => s.urls,
+    (s) => s.urls >= Math.max(1, s.filled * 0.3),
+  );
+  pick(
+    "price",
+    (s) => s.prices,
+    (s) => s.prices >= Math.max(1, s.filled * 0.6),
+  );
+  pick(
+    "priority",
+    (s) => s.levels,
+    (s) => s.levels >= Math.max(1, s.filled * 0.6),
+  );
+  // The title: the column with the most words, preferring longer texts.
+  pick(
+    "title",
+    (s) => s.words * 1000 + s.letters / Math.max(1, s.words),
+    (s) => s.words > 0,
+  );
+  if (!columns.has("title")) columns.set("title", columns.get("link") ?? 0);
+  // Row numbers 1, 2, 3… carry nothing worth keeping.
+  const skip = new Set<number>();
+  for (const st of stats) {
+    if (used().has(st.c) || st.filled < 2) continue;
+    const values = data
+      .map((r) => r?.[st.c]?.value.trim() || "")
+      .filter(Boolean);
+    if (values.every((v, i) => v === String(Number(values[0]) + i)))
+      skip.add(st.c);
+  }
+  return { headerRow, columns, labels, skip };
+}
+export function normalizeSheet(sheet: Sheet, currency: Currency): ImportRow[] {
+  const { headerRow, columns, labels, skip } = detectColumns(sheet);
   const lastHeaderCol =
     headerRow < 0 ? 0 : (sheet.rows[headerRow]?.length || 1) - 1;
   const legend = findLegend(sheet, headerRow, lastHeaderCol);
@@ -232,18 +326,20 @@ export function normalizeSheet(sheet: Sheet, currency: Currency): ImportRow[] {
         !urlsIn(cell).length
       )
         return;
-      if (
-        c === linkCol ||
-        (!mapped.has(c) && c > (linkCol ?? lastHeaderCol)) ||
-        (headerRow < 0 && c > 0)
-      )
+      // Everything the columns above did not take is kept in the hint.
+      if (c === linkCol || (!mapped.has(c) && !skip.has(c)))
         extraCells.push(cell);
     });
     const urls = [
       ...new Set([...urlsIn(titleCell), ...extraCells.flatMap(urlsIn)]),
     ];
     const extraText = extraCells
-      .map(textWithoutUrls)
+      .map((cell) => {
+        const text = textWithoutUrls(cell);
+        const c = row.indexOf(cell);
+        const label = c !== linkCol ? labels.get(c) : undefined;
+        return text && label ? `${label}: ${text}` : text;
+      })
       .filter((t) => t && !/^#(N\/A|REF!|VALUE!|ERROR!)/i.test(t));
     const priceCell = at(r, "price");
     const parsed = parsePriceText(priceCell?.value);
