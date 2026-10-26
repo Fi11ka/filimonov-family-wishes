@@ -35,14 +35,22 @@ export function shortTitle(title: string): ShortName | null {
       break;
     }
     const clean = w.replace(/[,;:)]+$/, "");
-    if (!/^[А-ЯЁа-яё-]+$/.test(clean)) break;
-    kept.push(clean);
+    if (!/^[А-ЯЁа-яё-]+$/.test(clean)) {
+      // "Ноутбук Apple MacBook": one word alone says too little, keep the brand and model.
+      if (kept.length === 1)
+        for (const next of words.slice(i, i + 2)) {
+          if (!/^[A-Za-z][A-Za-z0-9-]*$/.test(next)) break;
+          kept.push(next);
+        }
+      break;
+    }
+    kept.push(clean.toLowerCase());
     if (clean !== w) break;
   }
   const name = kept.join(" ");
   if (!name || name === original) return null;
   return {
-    title: name[0].toUpperCase() + name.slice(1).toLowerCase(),
+    title: name[0].toUpperCase() + name.slice(1),
     details: original,
   };
 }

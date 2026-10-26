@@ -7,6 +7,7 @@ import {
   openGraph,
   priceFromText,
 } from "./html";
+import { slugWords } from "./slug";
 import type { Page, ProductInfo, Shop, ShopContext } from "./types";
 // Ozon embeds widget states as JSON strings. The same states are returned by the
 // composer API, which is tried when the page itself is an anti-bot stub.
@@ -51,96 +52,10 @@ function statesFromHtml(html: string) {
     states[m[1]] = m[2].replace(/&quot;/g, '"').replace(/&amp;/g, "&");
   return states;
 }
-// Ozon slugs are Russian names in Latin letters without ь/ъ:
-// "zhurnalnyy-stolik-loft-…-1348747111" → "журналный столик лофт …".
-const TRANSLIT: [string, string][] = [
-  ["shch", "щ"],
-  ["sch", "щ"],
-  ["zh", "ж"],
-  ["kh", "х"],
-  ["ts", "ц"],
-  ["ch", "ч"],
-  ["sh", "ш"],
-  ["yu", "ю"],
-  ["ya", "я"],
-  ["yo", "ё"],
-  ["iy", "ий"],
-  ["yy", "ый"],
-  ["ey", "ей"],
-  ["oy", "ой"],
-  ["ay", "ай"],
-  ["uy", "уй"],
-  ["a", "а"],
-  ["b", "б"],
-  ["v", "в"],
-  ["g", "г"],
-  ["d", "д"],
-  ["e", "е"],
-  ["z", "з"],
-  ["i", "и"],
-  ["k", "к"],
-  ["l", "л"],
-  ["m", "м"],
-  ["n", "н"],
-  ["o", "о"],
-  ["p", "п"],
-  ["r", "р"],
-  ["s", "с"],
-  ["t", "т"],
-  ["u", "у"],
-  ["f", "ф"],
-  ["h", "х"],
-  ["c", "ц"],
-  ["y", "ы"],
-  ["j", "дж"],
-  ["w", "в"],
-  ["x", "кс"],
-  ["q", "к"],
-];
-function cyrillic(word: string) {
-  // Numbers, sizes and model codes stay as they are.
-  if (!/^[a-z]+$/.test(word)) return word;
-  let out = "";
-  for (let i = 0; i < word.length;) {
-    // "e" at the start of a word is usually "э": "elektricheskiy", "ekomekh".
-    if (i === 0 && word[0] === "e" && word.length > 2) {
-      out += "э";
-      i++;
-      continue;
-    }
-    // "iy", "ey"… are "ий", "ей" only before a consonant or at the end:
-    // "bizhuteriya" is "бижутерия", "sheyu" is "шею".
-    const [lat, cyr] = TRANSLIT.find(
-      ([l]) =>
-        word.startsWith(l, i) &&
-        !(l.length === 2 && l[1] === "y" && /[aeiouy]/.test(word[i + 2] || "")),
-    )!;
-    out += cyr;
-    i += lat.length;
-  }
-  return out;
-}
 /** Name from /product/<slug>-<id>/; null for addresses without a slug. */
 export function ozonSlugTitle(url: URL): string | null {
   const slug = url.pathname.match(/^\/product\/([a-z0-9-]+)-\d{5,}\/?$/i)?.[1];
-  if (!slug) return null;
-  const words = slug
-    .toLowerCase()
-    .split("-")
-    .filter(Boolean)
-    .map(cyrillic)
-    // Sellers repeat words: "kole-kole".
-    .filter((w, i, all) => w !== all[i - 1]);
-  const title = words
-    .join(" ")
-    .replace(/(\d) h (\d)/g, "$1 х $2")
-    // The most frequent lost soft signs: "журнальный", "спальное", "колье".
-    .replace(/л(н(?:ый|ая|ое|ые|ого|ой))(?=\s|$)/g, "ль$1")
-    .replace(/(^|\s)коле(?=\s|$)/g, "$1колье")
-    .replace(/(^|\s)ожереле(?=\s|$)/g, "$1ожерелье")
-    .trim();
-  if (!/[а-яё]/.test(title)) return null;
-  return (title[0].toUpperCase() + title.slice(1)).slice(0, 120);
+  return slug ? slugWords(slug, true) : null;
 }
 export const ozon: Shop & {
   read(page: Page, url: URL, ctx: ShopContext): Promise<ProductInfo>;

@@ -1,7 +1,6 @@
 // Shared carts and wishlists: the list of product links. Each product is then
 // looked up like a single link (/api/fetch/product), so photos, prices and
 // short names come from the same shop modules.
-import { chatShareText, parseChatList } from "../../shared/chat-list";
 import { parsePriceText } from "../../shared/price";
 import { shortTitle } from "./naming";
 import type { ShopContext } from "./types";
@@ -15,9 +14,8 @@ export interface CartItem {
   price_minor?: number | null;
 }
 export interface Cart {
-  shop: "Wildberries" | "Ozon" | "ChatGPT";
-  /** "chat": names and prices were written by a person or ChatGPT and win over the shop's. */
-  kind: "shop" | "chat";
+  shop: "Wildberries" | "Ozon";
+  kind: "shop";
   title: string;
   items: CartItem[];
   /** The cart had more products than one import takes. */
@@ -26,7 +24,11 @@ export interface Cart {
 export const CART_LIMIT = 100;
 const wbHost = /(^|\.)wildberries\.(ru|by|kz|am|kg|uz)$/;
 const ozonHost = /(^|\.)ozon\.(ru|by|kz)$/;
-/** Recognised links: WB basket (?shareId=), WB wishlist (/wlg/…), Ozon cart (?share=), shared ChatGPT answer. */
+/**
+ * Recognised links: WB basket (?shareId=), WB wishlist (/wlg/…), Ozon cart
+ * (?share=). ChatGPT links are recognised only to explain that they cannot be
+ * opened from the server: chatgpt.com does not let it in.
+ */
 export function cartKind(url: URL) {
   if (
     /^(chatgpt\.com|chat\.openai\.com)$/.test(url.hostname) &&
@@ -60,7 +62,7 @@ function finish(shop: Cart["shop"], title: string, items: CartItem[]): Cart {
     });
   return {
     shop,
-    kind: shop === "ChatGPT" ? "chat" : "shop",
+    kind: "shop",
     title,
     items: unique.slice(0, CART_LIMIT),
     truncated: unique.length > CART_LIMIT,
@@ -68,20 +70,6 @@ function finish(shop: Cart["shop"], title: string, items: CartItem[]): Cart {
 }
 export async function readCart(url: URL, ctx: ShopContext): Promise<Cart> {
   const kind = cartKind(url);
-  if (kind === "chatgpt") {
-    // The shared page carries the whole answer; links stay as ChatGPT wrote them.
-    const page = await ctx.page(url);
-    return finish(
-      "ChatGPT",
-      "Список из ChatGPT",
-      parseChatList(chatShareText(page.html), CART_LIMIT + 1).map((i) => ({
-        url: i.url,
-        title: i.title,
-        price_minor: i.price_minor,
-        ...(i.image ? { image: i.image } : {}),
-      })),
-    );
-  }
   if (kind === "wb-basket") {
     // The same call the WB site makes when someone opens a shared basket.
     const data = (await ctx.json(

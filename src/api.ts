@@ -177,6 +177,7 @@ export interface CartItem {
   details?: string;
   image?: string;
   price_minor?: number | null;
+  price_max_minor?: number | null;
 }
 export interface Cart {
   shop: string;

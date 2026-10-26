@@ -1156,11 +1156,17 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     const b = await body(req);
     await rate(db, `sheet:${uid}`, 5);
     const target = publicHttpsUrl(text(b.url, 2048, true));
+    if (cartKind(target) === "chatgpt")
+      fail(
+        400,
+        "CHATGPT_LINK",
+        "Ссылки на ChatGPT не открываются с сервера. Скопируйте ответ ChatGPT и вставьте его на вкладке «Из текста».",
+      );
     if (!cartKind(target))
       fail(
         400,
         "VALIDATION",
-        "Вставьте ссылку «Поделиться» из корзины Wildberries или Ozon, ссылку на вишлист Wildberries или на ответ ChatGPT.",
+        "Вставьте ссылку «Поделиться» из корзины Wildberries или Ozon либо ссылку на вишлист Wildberries.",
       );
     let cart;
     try {
@@ -1181,9 +1187,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         "CART_EMPTY",
         cart.shop === "Ozon"
           ? "Не удалось прочитать корзину Ozon: магазин закрылся от сервера. Если настроен домашний помощник, проверьте, что он запущен."
-          : cart.shop === "ChatGPT"
-            ? "В ответе ChatGPT не нашлось списка товаров с ценами или ссылками. Скопируйте текст ответа и вставьте его в поле ниже."
-            : "В этой ссылке не нашлось товаров.",
+          : "В этой ссылке не нашлось товаров.",
       );
     return cart;
   }
