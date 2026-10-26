@@ -268,7 +268,6 @@ before(async () => {
   await migrate("migrations/0016_login_handoff.sql");
   await migrate("migrations/0017_welcome.sql");
   await migrate("migrations/0018_followers.sql");
-  await migrate("migrations/0019_notifications.sql");
   assert.equal(
     (
       await db
@@ -2476,59 +2475,6 @@ const botHook = (update: unknown) =>
     "X-Telegram-Bot-Api-Secret-Token": botSecret,
     Origin: "",
   });
-test("«Уведомления»: every bot message is in the app; reading it in the bot or in the app marks it read", async () => {
-  for (const id of [9401, 9402, 9403]) await call("/me", id);
-  await call("/follows/9401", 9402, "POST");
-  await messages(9401);
-  await settle();
-  let inbox = (await call("/notifications", 9401)).body;
-  assert.equal(inbox.unread, 1);
-  assert.match(inbox.items[0].text, /User 9402.*хочет подписаться/);
-  assert.equal(inbox.items[0].open, "f");
-  assert.equal(inbox.items[0].read, false);
-  // Nobody else sees it.
-  assert.equal((await call("/notifications", 9402)).body.items.length, 0);
-  assert.deepEqual((await call("/notifications?count=1", 9401)).body, {
-    unread: 1,
-  });
-  // Anything done in the bot chat means its messages were seen.
-  await botHook({
-    message: {
-      message_id: 2,
-      from: { id: 9401, first_name: "User 9401" },
-      chat: { id: 9401, type: "private" },
-      text: "/start",
-    },
-  });
-  inbox = (await call("/notifications", 9401)).body;
-  assert.equal(inbox.unread, 0);
-  assert.equal(inbox.items[0].read, true);
-  // Opening the app from a bot button reads what that button leads to.
-  await call("/followers/9402/approve", 9401, "POST");
-  await messages(9402);
-  await settle();
-  assert.equal((await call("/notifications", 9402)).body.items[0].open, "l_9401");
-  await call("/notifications/read", 9402, "POST", { open: "l_9401" });
-  assert.equal((await call("/notifications", 9402)).body.unread, 0);
-  // People without the bot still get it in the app; opening the section reads all.
-  await call("/me", 9403, "PATCH", { is_private: false, notify: false });
-  await call("/follows/9403", 9402, "POST");
-  await settle();
-  inbox = (await call("/notifications", 9403)).body;
-  assert.equal(inbox.unread, 1);
-  assert.match(inbox.items[0].text, /подписывается на вас/);
-  assert.ok(
-    !telegram.some(
-      (c) => c.method === "sendMessage" && c.body.chat_id === "9403",
-    ),
-  );
-  assert.equal(
-    (await call("/notifications/read", 9403, "POST", {})).status,
-    400,
-  );
-  await call("/notifications/read", 9403, "POST", { all: true });
-  assert.equal((await call("/notifications", 9403)).body.unread, 0);
-});
 test("identities: the migration gives every Telegram account its sign-in, and new sign-ins get one", async () => {
   const legacy = await db
     .prepare(

@@ -81,7 +81,6 @@ import {
 import { GiftForm, Share, Modal, Confirm } from "./forms";
 import { Profile } from "./friends";
 import { Features, Welcome } from "./welcome";
-import { Notifications as NotesList } from "./notifications";
 import { telegramAppLink } from "./telegram-links";
 import { Face } from "./avatar";
 import { ImportDialog } from "./import/ImportDialog";
@@ -108,14 +107,7 @@ import {
   money,
 } from "./types";
 import "./style.css";
-type Tab =
-  | "mine"
-  | "friends"
-  | "bookings"
-  | "events"
-  | "archive"
-  | "event"
-  | "notifications";
+type Tab = "mine" | "friends" | "bookings" | "events" | "archive" | "event";
 type ModalKind = "gift" | "share" | "profile" | "import";
 /** «Подписки»: whom I follow, my followers, requests to follow me. */
 type People = {
@@ -175,8 +167,6 @@ function App() {
     [menu, setMenu] = useState(false),
     [opening, setOpening] = useState(false),
     [webSession, setWebSession] = useState(false);
-  /** Unread «Уведомления»: the badge on the bell in the header. */
-  const [unread, setUnread] = useState(0);
   const [today, setToday] = useState(() => new Date());
   useEffect(() => {
     const timer = setInterval(() => setToday(new Date()), 60000);
@@ -257,39 +247,6 @@ function App() {
     setTimeout(() => setToast(null), 4500);
   };
   const fullscreen = useFullscreen((message) => notice(message, "error"));
-  async function countUnread() {
-    if (demo || !signedIn()) return;
-    const r = await api("/api/notifications?count=1").catch(() => null);
-    if (r) setUnread(r.unread);
-  }
-  useEffect(() => {
-    if (!user) return;
-    void countUnread();
-    // The bot may write any time; check now and then and when the app comes back.
-    const timer = setInterval(() => void countUnread(), 60000);
-    const back = () => {
-      if (document.visibilityState === "visible") void countUnread();
-    };
-    document.addEventListener("visibilitychange", back);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", back);
-    };
-  }, [user?.id]);
-  /** Where a notification leads: a profile, «Мои брони», an event, or the followers. */
-  async function openNote(target: string) {
-    const e = target.match(
-      new RegExp(`^e_(${ACCOUNT_ID_PART})_([a-z0-9_]+)_(\\d{4}-\\d{2}-\\d{2})$`),
-    );
-    if (new RegExp(`^l_(${ACCOUNT_ID_PART})$`).test(target)) {
-      if (target.slice(2) === user?.id) await navigate("mine");
-      else await openPerson(target.slice(2));
-    } else if (target === "b") await navigate("bookings");
-    else if (target === "f") {
-      setPeopleTab("followers");
-      await navigate("friends");
-    } else if (e) openEvent(e[1], e[2], e[3]);
-  }
   async function loadList(id: string) {
     setLoading(true);
     setError("");
@@ -455,11 +412,6 @@ function App() {
       // Buttons in bot messages open a profile or «Мои брони».
       if (demo || !signedIn() || guestToken || profileTarget || legacyLink)
         return;
-      // Opened from a bot button: that message has been seen.
-      if (openTarget)
-        void api("/api/notifications/read", "POST", { open: openTarget })
-          .then(countUnread)
-          .catch(() => undefined);
       if (new RegExp(`^l_(${ACCOUNT_ID_PART})$`).test(openTarget))
         await openPerson(openTarget.slice(2));
       else if (openTarget === "b") await navigate("bookings");
@@ -897,19 +849,6 @@ function App() {
                     <span>В Telegram</span>
                   </a>
                 )}
-            {user && !demo && (
-              <button
-                className={`icon-button notes-button ${tab === "notifications" ? "active" : ""}`}
-                onClick={() => void navigate("notifications")}
-                aria-label={unread ? `Уведомления: ${unread} новых` : "Уведомления"}
-                title="Уведомления"
-              >
-                <Bell size={18} />
-                {unread > 0 && (
-                  <span className="nav-count">{unread > 99 ? "99+" : unread}</span>
-                )}
-              </button>
-            )}
             {/* The bot chat: notifications, reminders and answers to requests. */}
             <button
               className="switch-app"
@@ -1027,9 +966,7 @@ function App() {
                 <div className="title-main">
                   <div className="title-line">
                   <h1>
-                    {tab === "notifications"
-                      ? "Уведомления"
-                      : tab === "event"
+                    {tab === "event"
                       ? "Мероприятие"
                       : tab === "events"
                         ? "Мероприятия"
@@ -1520,12 +1457,6 @@ function App() {
                       : openList(eventRef.owner))
                   }
                   onOpenList={(id, named) => void openList(id, named)}
-                />
-              )}
-              {tab === "notifications" && user && (
-                <NotesList
-                  onOpen={(target) => void openNote(target)}
-                  onRead={() => setUnread(0)}
                 />
               )}
               {tab === "events" && user && (

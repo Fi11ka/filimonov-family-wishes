@@ -850,54 +850,6 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     ]);
     return { ok: true };
   }
-  // ---- «Уведомления»: the bot's messages in the app ----
-  if (path === "/api/notifications" && method === "GET") {
-    const unread =
-      (
-        await stmt(
-          db,
-          "SELECT COUNT(*) AS n FROM notifications WHERE user_id=? AND read_at IS NULL",
-          uid,
-        ).first<{ n: number }>()
-      )?.n || 0;
-    // The header polls only the count.
-    if (url.searchParams.get("count") === "1") return { unread };
-    const items = (
-      await stmt(
-        db,
-        "SELECT id,text,open,created_at,read_at IS NOT NULL AS read FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 100",
-        uid,
-      ).all<{
-        id: number;
-        text: string;
-        open: string | null;
-        created_at: number;
-        read: number;
-      }>()
-    ).results.map((n) => ({ ...n, read: !!n.read }));
-    return { items, unread };
-  }
-  if (path === "/api/notifications/read" && method === "POST") {
-    // Everything (the section was opened), or what a bot button opened the app on.
-    const b = await body(req);
-    if (b.all === true)
-      await stmt(
-        db,
-        "UPDATE notifications SET read_at=? WHERE user_id=? AND read_at IS NULL",
-        now(),
-        uid,
-      ).run();
-    else if (typeof b.open === "string" && /^[A-Za-z0-9_-]{1,120}$/.test(b.open))
-      await stmt(
-        db,
-        "UPDATE notifications SET read_at=? WHERE user_id=? AND read_at IS NULL AND open=?",
-        now(),
-        uid,
-        b.open,
-      ).run();
-    else fail(400, "VALIDATION", "Укажите, что отметить прочитанным.");
-    return { ok: true };
-  }
   // ---- Followers (docs/FOLLOWERS.md) ----
   if (path === "/api/people" && method === "GET") {
     // Only the person sees their followers and whom they follow.
@@ -1661,12 +1613,6 @@ export default {
         Math.floor(now() / 60) - 1440,
       ),
       stmt(env.DB, "DELETE FROM sessions WHERE expires_at<?", now()),
-      // «Уведомления» keep 90 days of history.
-      stmt(
-        env.DB,
-        "DELETE FROM notifications WHERE created_at<?",
-        now() - 90 * 86400,
-      ),
       stmt(env.DB, "DELETE FROM login_nonces WHERE expires_at<?", now()),
       stmt(env.DB, "DELETE FROM login_handoffs WHERE expires_at<?", now()),
       cleanupHelperJobs(env.DB),

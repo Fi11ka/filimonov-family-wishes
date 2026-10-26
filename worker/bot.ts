@@ -561,22 +561,13 @@ async function handleUpdate(update: Update, env: Env, out: Outbox, rate: Rate) {
       telegram.id,
       callback?.message?.message_id,
     );
-    // Writing to the bot means it can write back, and that the chat was open:
-    // the bot's messages delivered so far count as read in the app too.
-    await db.batch([
-      stmt(
-        db,
-        "UPDATE users SET bot_chat_at=?,bot_blocked_at=NULL WHERE id=?",
-        now(),
-        user.id,
-      ),
-      stmt(
-        db,
-        "UPDATE notifications SET read_at=? WHERE user_id=? AND read_at IS NULL AND tg_message_id IS NOT NULL",
-        now(),
-        user.id,
-      ),
-    ]);
+    // Writing to the bot means it can write back.
+    await stmt(
+      db,
+      "UPDATE users SET bot_chat_at=?,bot_blocked_at=NULL WHERE id=?",
+      now(),
+      user.id,
+    ).run();
     await rate(db, `bot:${user.id}`, 30);
     if (callback) {
       await telegramCall(env, "answerCallbackQuery", {
