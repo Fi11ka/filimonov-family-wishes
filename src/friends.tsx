@@ -1,4 +1,5 @@
 import { validBirthday } from "../shared/birthday";
+import { isGender } from "../shared/events";
 import React, { useEffect, useState } from "react";
 import {
   AtSign,
@@ -333,6 +334,7 @@ export function Profile({
 }) {
   const [month, setMonth] = useState(user?.birthday?.slice(0, 2) || "");
   const [day, setDay] = useState(user?.birthday?.slice(3) || "");
+  const [gender, setGender] = useState<string>(user?.gender || "");
   const [allow, setAllow] = useState(user?.allow_resharing !== 0);
   const [notifications, setNotifications] = useState<Notifications | null>(
     null,
@@ -397,6 +399,7 @@ export function Profile({
           try {
             const values = {
               birthday: day && month ? `${month}-${day}` : null,
+              gender: isGender(gender) ? gender : null,
               allow_resharing: allow,
               ...(notifications ? { notify } : {}),
             };
@@ -448,6 +451,22 @@ export function Profile({
             </select>
           </div>
         </fieldset>
+        <fieldset>
+          <legend>Пол</legend>
+          <select
+            aria-label="Пол"
+            value={gender}
+            onChange={(e) => setGender(e.target.value)}
+          >
+            <option value="">Не указан</option>
+            <option value="female">Женский</option>
+            <option value="male">Мужской</option>
+          </select>
+          <p className="small-text">
+            Виден только вам. По нему в вишлист добавляется 8 Марта или 23
+            Февраля.
+          </p>
+        </fieldset>
         <label className="setting-toggle">
           <input
             type="checkbox"
@@ -471,8 +490,9 @@ export function Profile({
             </label>
             <p className="small-text">
               Бот напишет о заявках в друзья, днях рождения друзей, новых
-              желаниях друзей, на которых вы подписаны, приглашениях скинуться и
-              об удалённых подарках из ваших броней.
+              желаниях и мероприятиях друзей, на которых вы подписаны,
+              приглашениях на мероприятия и скинуться, об удалённых подарках из
+              ваших броней.
             </p>
             {notify && !notifications.bot_connected && (
               <p className="small-text">

@@ -179,3 +179,21 @@ export function formatPrice(p: {
   if (min !== null) return formatAmount(min, p.currency);
   return "Цена не указана";
 }
+/** One person's part of a shared gift: every amount divided by the number of people. */
+export function sharePrice(
+  p: {
+    price_minor: number | null;
+    price_max_minor?: number | null;
+    price_range?: number | boolean;
+    currency: string;
+  },
+  people: number,
+) {
+  const part = (v: number | null | undefined) =>
+    v === null || v === undefined ? null : Math.round(v / Math.max(1, people));
+  return formatPrice({
+    ...p,
+    price_minor: part(p.price_minor),
+    price_max_minor: part(p.price_max_minor),
+  });
+}

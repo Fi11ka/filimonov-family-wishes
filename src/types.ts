@@ -1,4 +1,5 @@
 import { formatPrice } from "../shared/price";
+import type { EventSpec, Gender } from "../shared/events";
 export type User = {
   id: string;
   name: string;
@@ -8,6 +9,17 @@ export type User = {
   wishlist_updated_at?: number | null;
   /** A few words under the wishlist title. */
   about?: string | null;
+  /** Only in one's own profile. */
+  gender?: Gender | null;
+  events?: EventSpec[];
+};
+/** Friends the owner invited to an event; seen by the owner and those guests. */
+export type Invitation = {
+  key: string;
+  date: string;
+  title: string;
+  mode: "hero" | "everyone";
+  guests: { id: string; name: string; username: string | null }[];
 };
 export type Friend = User & { gift_count: number; subscribed?: boolean };
 export type Wish = {
@@ -29,6 +41,8 @@ export type Wish = {
   reservation?: "available" | "mine" | "invited" | "reserved";
   /** For people in a shared booking: how many friends joined the organizer. */
   group_joined?: number | null;
+  /** For guests of the owner's event: who of them booked it. */
+  booked_by?: string[];
 };
 export const initials = (s: string) =>
   s
@@ -53,6 +67,8 @@ export type Booking = {
   owner_name: string;
   organizer_name: string | null;
   archived: number;
+  /** The owner's events, to know by when to buy. */
+  owner_events: EventSpec[];
   members: {
     id: string;
     name: string;

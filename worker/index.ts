@@ -41,6 +41,8 @@ import {
 } from "./gifts";
 import { botRoute, cleanupBotStates } from "./bot";
 import { birthdayReminders } from "./birthdays";
+import { bookerNames, eventRoute, invitations } from "./events";
+import { eventSpecs, isGender } from "../shared/events";
 export type { Env } from "./core";
 interface Gift {
   id: string;
@@ -163,7 +165,16 @@ async function list(
     guestView ? "" : user?.id || "",
     owner,
   ).all();
-  return r.results;
+  // Guests of an event see who booked; the owner returned above and never does.
+  const names =
+    guestView || !user ? null : await bookerNames(db, owner, user.id);
+  return names?.size
+    ? r.results.map((g) =>
+        g.reservation === "reserved" && names.has(g.id as string)
+          ? { ...g, booked_by: names.get(g.id as string) }
+          : g,
+      )
+    : r.results;
 }
 /** Whether the bot can write to the user: they pressed Start and did not block it. */
 async function notifications(db: D1Database, uid: string) {
@@ -287,20 +298,27 @@ const telegramKeys = liveJwks(async () => {
   return keys;
 });
 const NONCE_TTL = 600;
-function profile(db: D1Database, id: string) {
-  return stmt(
+/** A user's card with their events; gender is shown only to the person themself. */
+async function profile(db: D1Database, id: string, self = false) {
+  const p = await stmt(
     db,
-    "SELECT id,name,username,birthday,allow_resharing,wishlist_updated_at,about FROM users WHERE id=?",
+    "SELECT id,name,username,birthday,gender,event_title,event_date,allow_resharing,wishlist_updated_at,about FROM users WHERE id=?",
     id,
   ).first<{
     id: string;
     name: string;
     username: string | null;
     birthday: string | null;
+    gender: string | null;
+    event_title: string | null;
+    event_date: string | null;
     allow_resharing: number;
     wishlist_updated_at: number | null;
     about: string | null;
   }>();
+  if (!p) return null;
+  const { gender, event_title: _, event_date: __, ...rest } = p;
+  return { ...rest, ...(self ? { gender } : {}), events: eventSpecs(p) };
 }
 /** Binary passthrough for images and spreadsheets. Never rendered by the API origin. */
 function binary(bytes: Uint8Array, type: string) {
@@ -404,8 +422,12 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     ).first<{ owner_id: string; kind: string }>();
     if (!link) missing();
     return {
-      owner: await profile(db, link.owner_id),
+      owner: await profile(db, link.owner_id, user?.id === link.owner_id),
       gifts: await list(db, link.owner_id, user, link.kind === "guest"),
+      invitations:
+        link.kind === "guest"
+          ? []
+          : await invitations(db, link.owner_id, user?.id || null),
       can_reserve:
         link.kind === "guest" || (!!user && user.id !== link.owner_id),
       is_owner: user?.id === link.owner_id,
@@ -471,7 +493,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   const uid = user.id;
   if (path === "/api/me" && method === "GET")
     return {
-      user: await profile(db, uid),
+      user: await profile(db, uid, true),
       web_session: !!session,
       notifications: await notifications(db, uid),
     };
@@ -488,6 +510,8 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       typeof b.allow_resharing !== "boolean"
     )
       fail(400, "VALIDATION", "Проверьте настройку доступа.");
+    if (b.gender !== undefined && b.gender !== null && !isGender(b.gender))
+      fail(400, "VALIDATION", "Выберите пол.");
     if (b.notify !== undefined && typeof b.notify !== "boolean")
       fail(400, "VALIDATION", "Проверьте настройку уведомлений.");
     const about =
@@ -500,6 +524,10 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     if (b.notify !== undefined)
       updates.push(
         stmt(db, "UPDATE users SET notify=? WHERE id=?", b.notify ? 1 : 0, uid),
+      );
+    if (b.gender !== undefined)
+      updates.push(
+        stmt(db, "UPDATE users SET gender=? WHERE id=?", b.gender, uid),
       );
     if (b.birthday !== undefined)
       updates.push(
@@ -526,7 +554,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     }
     if (updates.length) await db.batch(updates);
     return {
-      user: await profile(db, uid),
+      user: await profile(db, uid, true),
       notifications: await notifications(db, uid),
     };
   }
@@ -784,18 +812,19 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   if (listMatch && method === "GET") {
     const owner = listMatch[1];
     if (!(await canView(db, owner, user, guest))) missing();
-    const p = await profile(db, owner);
+    const p = await profile(db, owner, owner === uid);
     if (!p) missing();
     return {
       owner: p,
       gifts: await list(db, owner, user),
+      invitations: await invitations(db, owner, uid),
       is_owner: owner === uid,
       can_reserve: owner !== uid,
     };
   }
   if (path === "/api/archive" && method === "GET")
     return {
-      owner: await profile(db, uid),
+      owner: await profile(db, uid, true),
       gifts: (
         await stmt(
           db,
@@ -1030,6 +1059,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         CASE WHEN r.user_id=?1 THEN 'organizer' ELSE m.status END AS role,
         CASE WHEN m.user_id IS NOT NULL OR ${FRIEND_OF("g.owner_id")} OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=g.owner_id AND l.revoked_at IS NULL AND (l.created_by=l.owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=l.owner_id AND share_owner.allow_resharing=1)) AND l.expires_at>?2) THEN 1 ELSE 0 END AS visible,
         g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.owner_id,ou.name AS owner_name,org.name AS organizer_name,
+        ou.birthday,ou.gender,ou.event_title,ou.event_date,
         CASE WHEN g.archived_at IS NULL THEN 0 ELSE 1 END AS archived
       FROM reservations r JOIN gifts g ON g.id=r.gift_id JOIN users ou ON ou.id=g.owner_id
       LEFT JOIN users org ON org.id=r.user_id
@@ -1057,23 +1087,34 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         ).results
       : [];
     return {
-      reservations: rows.map(({ visible, ...r }) => ({
-        ...r,
-        ...(visible
-          ? {}
-          : {
-              title: "Подарок из закрытого списка",
-              price_minor: null,
-              price_max_minor: null,
-            }),
-        // Invitees see who organizes, not the other invitees.
-        members:
-          r.role === "invited"
-            ? []
-            : members
-                .filter((m) => m.gift_id === r.gift_id)
-                .map(({ gift_id: _, ...m }) => m),
-      })),
+      reservations: rows.map(
+        ({ visible, birthday, gender, event_title, event_date, ...r }) => ({
+          ...r,
+          // When to buy by: the owner's events, while their list is visible.
+          owner_events: visible
+            ? eventSpecs({
+                birthday: birthday as string | null,
+                gender: gender as string | null,
+                event_title: event_title as string | null,
+                event_date: event_date as string | null,
+              })
+            : [],
+          ...(visible
+            ? {}
+            : {
+                title: "Подарок из закрытого списка",
+                price_minor: null,
+                price_max_minor: null,
+              }),
+          // Invitees see who organizes, not the other invitees.
+          members:
+            r.role === "invited"
+              ? []
+              : members
+                  .filter((m) => m.gift_id === r.gift_id)
+                  .map(({ gift_id: _, ...m }) => m),
+        }),
+      ),
     };
   }
   const shareList = path.match(/^\/api\/lists\/(\d+)\/share-links$/);
@@ -1169,6 +1210,16 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     ).run();
     return { ok: true };
   }
+  const events = await eventRoute(
+    db,
+    out,
+    user,
+    path,
+    method,
+    () => body(req),
+    (key, max) => rate(db, key, max),
+  );
+  if (events) return events;
   // ---- Fetching from other sites (user-initiated, authenticated, rate-limited) ----
   if (path === "/api/fetch/cart" && method === "POST") {
     // Shared WB basket / WB wishlist / Ozon cart → product links for the import preview.
@@ -1361,6 +1412,10 @@ export default {
       stmt(
         env.DB,
         "DELETE FROM birthday_notices WHERE birthday_on<date('now','-30 days')",
+      ),
+      stmt(
+        env.DB,
+        "DELETE FROM event_parties WHERE event_on<date('now','-30 days')",
       ),
     ]);
   },

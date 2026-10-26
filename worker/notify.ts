@@ -1,6 +1,7 @@
 // Telegram Bot API calls and notifications. Messages never tell a wishlist owner
 // who booked their gifts: owners are not recipients of any booking event.
 import { formatPrice } from "../shared/price";
+import { daysLeft, eventDay } from "../shared/events";
 import { now, stmt, type Env } from "./core";
 export type Button =
   | { text: string; callback_data: string }
@@ -48,6 +49,8 @@ export const openButton = (env: Env, text: string, open?: string): Button => ({
 type Named = { id: string; name: string; username?: string | null };
 const who = (u: Named) =>
   `<b>${esc(u.name)}</b>${u.username ? ` (@${esc(u.username)})` : ""}`;
+type EventLike = { title: string; date: string; days: number };
+const when = (e: EventLike) => `${eventDay(e.date)}, ${daysLeft(e.days)}`;
 type GiftLike = {
   id: string;
   title: string;
@@ -165,6 +168,29 @@ export class Outbox {
           ? `🎉 ${who(owner)} отметил(а) «${esc(gift.title)}» как подаренный и убрал(а) его в архив. Бронь в «Моих бронях» можно удалить.`
           : `⚠️ ${who(owner)} убрал(а) в архив «${esc(gift.title)}» — подарок, который вы забронировали${how === "bought_self" ? " (купил(а) сам(а))" : ""}. Если вы его ещё не купили, отмените бронь.`;
     this.send(booked, text, [[openButton(this.env, "Мои брони", "b")]]);
+  }
+  /** The owner added their own event: subscribers learn how many days are left. */
+  async eventAdded(owner: Named, event: EventLike) {
+    this.send(
+      await this.subscribers(owner.id),
+      `📅 ${who(owner)} добавил(а) мероприятие «${esc(event.title)}»: ${when(event)}.`,
+      [[openButton(this.env, "Открыть вишлист", `l_${owner.id}`)]],
+    );
+  }
+  eventInvite(
+    owner: Named,
+    event: EventLike,
+    mode: "hero" | "everyone",
+    ids: string[],
+  ) {
+    this.send(
+      ids,
+      `🎉 ${who(owner)} приглашает вас на «${esc(event.title)}»: ${when(event)}.\n\n` +
+        (mode === "everyone"
+          ? "Это праздник для всех: участники видят, кто из них что забронировал в вишлистах друг друга. В своём вишлисте никто этого не видит."
+          : `В вишлисте ${esc(owner.name)} вы увидите, кто из приглашённых что забронировал. ${esc(owner.name)} этого не видит.`),
+      [[openButton(this.env, "Открыть вишлист", `l_${owner.id}`)]],
+    );
   }
   friendRequest(from: Named, to: string) {
     this.send(
