@@ -209,6 +209,8 @@ export function merge(...parts: ProductInfo[]): ProductInfo {
     if (!out.price && p.price) out.price = p.price;
     if (p.blocked) out.blocked = true;
     if (p.unavailable) out.unavailable = true;
+    if (p.titleFromLink && out.title === p.title) out.titleFromLink = true;
+    if (!out.canonicalUrl && p.canonicalUrl) out.canonicalUrl = p.canonicalUrl;
   }
   return out;
 }

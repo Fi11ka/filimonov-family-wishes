@@ -180,6 +180,8 @@ export interface CartItem {
 }
 export interface Cart {
   shop: string;
+  /** "chat": names and prices from ChatGPT or a person win over the shop's. */
+  kind: "shop" | "chat";
   title: string;
   items: CartItem[];
   truncated: boolean;

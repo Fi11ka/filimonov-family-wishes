@@ -1160,7 +1160,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       fail(
         400,
         "VALIDATION",
-        "Вставьте ссылку «Поделиться» из корзины Wildberries или Ozon либо ссылку на вишлист Wildberries.",
+        "Вставьте ссылку «Поделиться» из корзины Wildberries или Ozon, ссылку на вишлист Wildberries или на ответ ChatGPT.",
       );
     let cart;
     try {
@@ -1181,7 +1181,9 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         "CART_EMPTY",
         cart.shop === "Ozon"
           ? "Не удалось прочитать корзину Ozon: магазин закрылся от сервера. Если настроен домашний помощник, проверьте, что он запущен."
-          : "В этой ссылке не нашлось товаров.",
+          : cart.shop === "ChatGPT"
+            ? "В ответе ChatGPT не нашлось списка товаров с ценами или ссылками. Скопируйте текст ответа и вставьте его в поле ниже."
+            : "В этой ссылке не нашлось товаров.",
       );
     return cart;
   }

@@ -1,4 +1,9 @@
-import { decodeHtml, fetchBytes, publicHttpsUrl } from "../net";
+import {
+  decodeHtml,
+  fetchBytes,
+  publicHttpsUrl,
+  resolveRedirects,
+} from "../net";
 import { aliexpressCom } from "./aliexpress-com";
 import { aliexpressRu } from "./aliexpress-ru";
 import { amazon } from "./amazon";
@@ -51,6 +56,13 @@ export function liveContext(helper?: HomeHelper | null): ShopContext {
         accept,
       });
       return { url: f.url, status: f.status, html: decodeHtml(f) };
+    },
+    async resolve(url) {
+      // A plain User-Agent: Ozon answers a full Chrome one without a real
+      // browser behind it with an anti-bot page instead of the redirect.
+      return resolveRedirects(url, (u) => u.pathname.startsWith("/product/"), {
+        "User-Agent": "Mozilla/5.0",
+      });
     },
     async json(url, headers) {
       const f = await fetchBytes(url, {
@@ -126,8 +138,14 @@ export async function lookupProduct(
     details = "";
   // Workers AI first; if it is unavailable or slow, shorten by rules.
   const named =
-    (title && namer ? await namer(title, shopName) : null) ||
-    (title ? shortTitle(title) : null);
+    (title && namer
+      ? await namer(
+          title,
+          info.titleFromLink
+            ? `${shopName}. Название восстановлено из адреса ссылки транслитом, без мягких знаков — исправь орфографию`
+            : shopName,
+        )
+      : null) || (title ? shortTitle(title) : null);
   if (named && named.title !== title) {
     // Nothing from the shop title is lost: it goes to the hint if the model
     // did not list the details itself.
@@ -136,7 +154,7 @@ export async function lookupProduct(
   }
   return {
     shop: shopName,
-    url: url.href,
+    url: info.canonicalUrl || url.href,
     title,
     details,
     image_url: info.image || "",

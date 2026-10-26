@@ -4,6 +4,8 @@ import { findShop, lookupProduct, shops } from "../worker/shops";
 import type { Page, ShopContext } from "../worker/shops/types";
 import { wbImage, wbPrice } from "../worker/shops/wildberries";
 import { cartKind, readCart } from "../worker/shops/carts";
+import { chatShareText, parseChatList } from "../shared/chat-list";
+import { ozonSlugTitle } from "../worker/shops/ozon";
 import { shortTitle } from "../worker/shops/naming";
 import { publicHttpsUrl } from "../worker/net";
 import { productLink } from "../worker/shops/link";
@@ -796,6 +798,7 @@ test("shared carts and wishlists: WB basket, WB wishlist and Ozon cart become pr
   );
   assert.deepEqual(wishlist, {
     shop: "Wildberries",
+    kind: "shop",
     title: "Мой праздник",
     items: [
       {
@@ -838,4 +841,104 @@ test("shared carts and wishlists: WB basket, WB wishlist and Ozon cart become pr
     "https://example.com/basket?shareId=abcd",
   ])
     assert.equal(cartKind(new URL(bad)), null, bad);
+});
+
+test("a shared ChatGPT answer becomes a product list with current prices", async () => {
+  // Shape of chatgpt.com/s/… pages (October 2026): a turbo-stream chunk with the answer.
+  const answer =
+    'Теперь видно фотографии и цены.\n\n\ue200image_group\ue202{"query":["Ozon колье"]}\ue201\n\n' +
+    "**1\\. Колье многоуровневое, набор из 4 цепей золотого цвета**\n\n## 249 ₽\n\n~~252 ₽~~\n\n" +
+    "\ue200url\ue202Ссылка на Ozon\ue202https://ozon.ru/t/ye20lKQ\ue201\n\n---\n\n" +
+    "**2\\. Серьги «Цветы», золотой солнечный**\n\n## 99 ₽\n\nТочная ссылка на этот товар не установлена.\n\n" +
+    "**Итого за два товара: 348 ₽.**";
+  const stream = JSON.stringify([
+    { _1: 2 },
+    "fallbackMarkdown",
+    answer,
+    "assistant",
+  ]);
+  const html = `<html><script>window.__reactRouterContext.streamController.enqueue(${JSON.stringify(stream + "\n")});</script></html>`;
+  assert.equal(chatShareText(html), answer);
+  const ctx: ShopContext = {
+    async page(url) {
+      return { url, status: 200, html };
+    },
+    async json() {
+      throw new Error("HTTP 404");
+    },
+  };
+  const url = new URL(
+    "https://chatgpt.com/s/t_6ade956cc9348191bbfb209b85e54a86",
+  );
+  assert.equal(cartKind(url), "chatgpt");
+  const cart = await readCart(url, ctx);
+  assert.equal(cart.kind, "chat");
+  assert.deepEqual(cart.items, [
+    {
+      url: "https://ozon.ru/t/ye20lKQ",
+      title: "Колье многоуровневое",
+      details: "Колье многоуровневое, набор из 4 цепей золотого цвета",
+      price_minor: 24900,
+    },
+    { url: "", title: "Серьги «Цветы», золотой солнечный", price_minor: 9900 },
+  ]);
+  // Pasted text in other common shapes.
+  assert.deepEqual(
+    parseChatList(
+      "1. Наушники — 24 990 ₽ — https://www.ozon.ru/product/naushniki-123456/?utm_source=chatgpt.com\n" +
+        "2. **Плед**\nЦена: ~~3 000 ₽~~ 2 490 ₽\n[Ссылка](https://www.wildberries.ru/catalog/183901471/detail.aspx)\n\nИтого: 27 480 ₽",
+    ),
+    [
+      {
+        title: "Наушники",
+        price_minor: 2499000,
+        url: "https://www.ozon.ru/product/naushniki-123456/",
+      },
+      {
+        title: "Плед",
+        price_minor: 249000,
+        url: "https://www.wildberries.ru/catalog/183901471/detail.aspx",
+      },
+    ],
+  );
+});
+
+test("Ozon: a short link resolves without www and the name is restored from the product address", async () => {
+  const seen: string[] = [];
+  const ctx: ShopContext = {
+    async page(url) {
+      seen.push(url.href);
+      // ozon.ru/t/… redirects; the product page itself is an anti-bot stub.
+      return {
+        url: new URL(
+          "https://www.ozon.ru/product/zhurnalnyy-stolik-loft-76-h-40-h-47sm-reggi-12-120-seryy-grafit-1348747111/?from=share",
+        ),
+        status: 403,
+        html: "<html><title>Доступ ограничен</title></html>",
+      };
+    },
+    async json() {
+      throw new Error("HTTP 403");
+    },
+  };
+  const r = await lookupProduct("https://www.ozon.ru/t/ye20lKQ", ctx);
+  assert.equal(seen[0], "https://ozon.ru/t/ye20lKQ");
+  assert.equal(r.title, "Журнальный столик лофт");
+  assert.match(r.details, /^Журнальный столик лофт 76 х 40 х 47sm/);
+  assert.equal(
+    r.url,
+    "https://www.ozon.ru/product/zhurnalnyy-stolik-loft-76-h-40-h-47sm-reggi-12-120-seryy-grafit-1348747111/",
+  );
+  assert.equal(
+    ozonSlugTitle(
+      new URL(
+        "https://www.ozon.ru/product/kole-mnogourovnevoe-bizhuteriya-nabor-iz-4-tsepey-zolotogo-tsveta-ozherele-na-sheyu-4454405542/",
+      ),
+    ),
+    "Колье многоуровневое бижутерия набор из 4 цепей золотого цвета ожерелье на шею",
+  );
+  assert.equal(
+    ozonSlugTitle(new URL("https://www.ozon.ru/product/1348747111/")),
+    null,
+  );
 });

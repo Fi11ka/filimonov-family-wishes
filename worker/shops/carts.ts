@@ -1,6 +1,7 @@
 // Shared carts and wishlists: the list of product links. Each product is then
 // looked up like a single link (/api/fetch/product), so photos, prices and
 // short names come from the same shop modules.
+import { chatShareText, parseChatList } from "../../shared/chat-list";
 import { parsePriceText } from "../../shared/price";
 import { shortTitle } from "./naming";
 import type { ShopContext } from "./types";
@@ -14,7 +15,9 @@ export interface CartItem {
   price_minor?: number | null;
 }
 export interface Cart {
-  shop: "Wildberries" | "Ozon";
+  shop: "Wildberries" | "Ozon" | "ChatGPT";
+  /** "chat": names and prices were written by a person or ChatGPT and win over the shop's. */
+  kind: "shop" | "chat";
   title: string;
   items: CartItem[];
   /** The cart had more products than one import takes. */
@@ -23,8 +26,13 @@ export interface Cart {
 export const CART_LIMIT = 100;
 const wbHost = /(^|\.)wildberries\.(ru|by|kz|am|kg|uz)$/;
 const ozonHost = /(^|\.)ozon\.(ru|by|kz)$/;
-/** Recognised links: WB basket (?shareId=), WB wishlist (/wlg/…), Ozon cart (?share=). */
+/** Recognised links: WB basket (?shareId=), WB wishlist (/wlg/…), Ozon cart (?share=), shared ChatGPT answer. */
 export function cartKind(url: URL) {
+  if (
+    /^(chatgpt\.com|chat\.openai\.com)$/.test(url.hostname) &&
+    /^\/(s|share)\/[A-Za-z0-9_-]{6,80}\/?$/.test(url.pathname)
+  )
+    return "chatgpt" as const;
   if (wbHost.test(url.hostname)) {
     if (/^[A-Za-z0-9_-]{4,64}$/.test(url.searchParams.get("shareId") || ""))
       return "wb-basket" as const;
@@ -43,14 +51,16 @@ const wbProduct = (id: number) =>
   `https://www.wildberries.ru/catalog/${id}/detail.aspx`;
 function finish(shop: Cart["shop"], title: string, items: CartItem[]): Cart {
   const seen = new Set<string>();
+  // Items without a link (ChatGPT could not find one) are kept.
   const unique = items
-    .filter((i) => !seen.has(i.url) && seen.add(i.url))
+    .filter((i) => !i.url || (!seen.has(i.url) && seen.add(i.url)))
     .map((i) => {
       const named = i.title ? shortTitle(i.title) : null;
       return named ? { ...i, title: named.title, details: named.details } : i;
     });
   return {
     shop,
+    kind: shop === "ChatGPT" ? "chat" : "shop",
     title,
     items: unique.slice(0, CART_LIMIT),
     truncated: unique.length > CART_LIMIT,
@@ -58,6 +68,20 @@ function finish(shop: Cart["shop"], title: string, items: CartItem[]): Cart {
 }
 export async function readCart(url: URL, ctx: ShopContext): Promise<Cart> {
   const kind = cartKind(url);
+  if (kind === "chatgpt") {
+    // The shared page carries the whole answer; links stay as ChatGPT wrote them.
+    const page = await ctx.page(url);
+    return finish(
+      "ChatGPT",
+      "Список из ChatGPT",
+      parseChatList(chatShareText(page.html), CART_LIMIT + 1).map((i) => ({
+        url: i.url,
+        title: i.title,
+        price_minor: i.price_minor,
+        ...(i.image ? { image: i.image } : {}),
+      })),
+    );
+  }
   if (kind === "wb-basket") {
     // The same call the WB site makes when someone opens a shared basket.
     const data = (await ctx.json(
