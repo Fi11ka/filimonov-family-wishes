@@ -173,6 +173,18 @@ const input = {
   priority: 3,
   photo: "data:image/png;base64,aGVsbG8=",
 };
+/**
+ * YYYY-MM-DD n days from today as the worker counts days: from the calendar
+ * date where it runs (shared/events.ts dayOf). That is UTC on Cloudflare and
+ * in CI, but the computer's time zone under Miniflare, so a UTC date would be
+ * a day behind after midnight in Moscow.
+ */
+const isoIn = (n: number) => {
+  const d = new Date();
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate() + n))
+    .toISOString()
+    .slice(0, 10);
+};
 async function gift(id = 1, overrides = {}) {
   const r = await call("/gifts", id, "POST", { ...input, ...overrides });
   assert.equal(r.status, 200, r.raw);
@@ -1812,10 +1824,8 @@ test("birthday reminders reach followers with the bell on a week and a day befor
   await call("/me", 754);
   // 752 turned the bell on about 751; 755 follows 751 without it.
   assert.equal((await call("/subscriptions/751", 752, "PUT")).status, 200);
-  const inDays = (n: number) =>
-    new Date(Date.now() + n * 86400000).toISOString().slice(5, 10);
-  await call("/me", 751, "PATCH", { birthday: inDays(7) });
-  await call("/me", 753, "PATCH", { birthday: inDays(3) });
+  await call("/me", 751, "PATCH", { birthday: isoIn(7).slice(5) });
+  await call("/me", 753, "PATCH", { birthday: isoIn(3).slice(5) });
   await gift(751, { title: "Плед" });
   await settle();
   const worker = await mf.getWorker();
@@ -1924,8 +1934,6 @@ test("priority is 1–5 hearts, kept in sync with the old column; the wishlist h
   );
 });
 
-const isoIn = (n: number) =>
-  new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
 test("events: gender only for oneself, one own event replaces the last, subscribers hear days left", async () => {
   await befriend(801, 802);
   await call("/subscriptions/801", 802, "PUT");
@@ -2091,11 +2099,10 @@ test("«праздник для всех»: guests see names in each other's lis
     (e: any) => e.key === "new_year",
   );
   assert.ok(ny);
-  const year = new Date().getUTCFullYear();
+  const today = isoIn(0);
+  const year = Number(today.slice(0, 4));
   const date =
-    new Date().toISOString().slice(0, 10) === `${year}-01-01`
-      ? `${year}-01-01`
-      : `${year + 1}-01-01`;
+    today === `${year}-01-01` ? `${year}-01-01` : `${year + 1}-01-01`;
   const set = (mode: string) =>
     call("/events/guests", 821, "PUT", {
       key: "new_year",
