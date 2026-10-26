@@ -768,8 +768,8 @@ async function onButton(chat: Chat, data: string) {
     );
   }
 }
-/** The biggest size of a Telegram photo that fits a wish photo (data URL ≤ 220 000 chars). */
-async function telegramPhoto(
+/** The biggest size of a Telegram photo that fits maxBytes (wish photos: data URL ≤ 220 000 chars). */
+export async function telegramPhoto(
   env: Env,
   sizes: { file_id: string; file_size?: number; width: number }[],
   maxBytes = 150_000,

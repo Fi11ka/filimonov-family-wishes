@@ -1,4 +1,4 @@
-import { fail, usernameOf, type Identity } from "./security";
+import { fail, telegramPhotoUrl, usernameOf, type Identity } from "./security";
 // Telegram Login (OpenID Connect). The official telegram-login.js popup returns
 // a signed id_token; it is verified here with Telegram's published keys.
 // https://core.telegram.org/bots/telegram-login#validating-id-tokens
@@ -142,6 +142,9 @@ export async function verifyIdToken(
     id: String(id),
     name: String(name || "Участник").slice(0, 160),
     username: usernameOf(claims.preferred_username),
+    ...(telegramPhotoUrl(claims.picture)
+      ? { photo_url: telegramPhotoUrl(claims.picture) }
+      : {}),
   };
 }
 /** Key set from Telegram with a short in-memory cache per Worker instance. */

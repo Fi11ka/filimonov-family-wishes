@@ -11,6 +11,8 @@ export type User = {
   about?: string | null;
   /** Only in one's own profile. */
   gender?: Gender | null;
+  /** Version of the profile photo; null or absent when there is none. */
+  photo_at?: number | null;
   events?: EventSpec[];
 };
 /** Friends the owner invited to an event; seen by the owner and those guests. */

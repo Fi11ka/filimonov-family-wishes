@@ -30,7 +30,8 @@ import {
   stmt,
   type Env,
 } from "./core";
-import { Outbox } from "./notify";
+import { Outbox, telegramCall } from "./notify";
+import { firstPhoto, photoInput, telegramAvatar } from "./avatar";
 import {
   archiveGift,
   archiveReasons,
@@ -318,7 +319,7 @@ const NONCE_TTL = 600;
 async function profile(db: D1Database, id: string, self = false) {
   const p = await stmt(
     db,
-    "SELECT id,name,username,birthday,gender,event_title,event_date,allow_resharing,wishlist_updated_at,about FROM users WHERE id=?",
+    "SELECT id,name,username,birthday,gender,event_title,event_date,allow_resharing,wishlist_updated_at,about,CASE WHEN photo='' THEN NULL ELSE photo_at END AS photo_at FROM users WHERE id=?",
     id,
   ).first<{
     id: string;
@@ -331,6 +332,7 @@ async function profile(db: D1Database, id: string, self = false) {
     allow_resharing: number;
     wishlist_updated_at: number | null;
     about: string | null;
+    photo_at: number | null;
   }>();
   if (!p) return null;
   const { gender, event_title: _, event_date: __, ...rest } = p;
@@ -407,6 +409,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         ).first()),
     });
     await saveUser(db, identity);
+    out.jobs.push(firstPhoto(env, identity).catch(() => {}));
     return createSession(db, identity);
   }
   if (
@@ -416,7 +419,8 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         /^\/api\/guest-reservations\/[a-f0-9-]{36}(\/cancel)?$/.test(path)) ||
       (method === "GET" &&
         (path === "/api/guest" ||
-          /^\/api\/gifts\/[a-f0-9-]{36}\/photo$/.test(path)))
+          /^\/api\/gifts\/[a-f0-9-]{36}\/photo$/.test(path) ||
+          /^\/api\/users\/\d{1,20}\/photo$/.test(path)))
     )
   )
     fail(401, "AUTH_REQUIRED", "Откройте приложение через Telegram.");
@@ -426,7 +430,27 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     : `ip:${await hash(req.headers.get("cf-connecting-ip") || "local")}`;
   await rate(db, rateKey, user ? 240 : 120);
   // Session identities come from the users table; only signed Telegram data updates it.
-  if (user && !session) await saveUser(db, user);
+  if (user && !session) {
+    await saveUser(db, user);
+    // The Telegram photo is taken once, after the answer, so the app never waits for it.
+    out.jobs.push(firstPhoto(env, user).catch(() => {}));
+  }
+  // A profile photo is visible to whoever may see this person: friends, requests, events, list links.
+  const avatar = path.match(/^\/api\/users\/(\d{1,20})\/photo$/);
+  if (avatar && method === "GET") {
+    const id = avatar[1];
+    if (!(
+      user?.id === id ||
+      (user && (await friendship(db, user.id, id))) ||
+      (await canView(db, id, user, guest))
+    ))
+      missing();
+    const p = await stmt(db, "SELECT photo FROM users WHERE id=?", id).first<{
+      photo: string;
+    }>();
+    if (!p?.photo) missing();
+    return { photo: p.photo };
+  }
   if (path === "/api/guest" && method === "GET") {
     if (!guest || !/^[A-Za-z0-9_-]{43}$/.test(guest)) missing();
     const link = await stmt(
@@ -513,6 +537,45 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       web_session: !!session,
       notifications: await notifications(db, uid),
     };
+  if (path === "/api/me/photo" && method === "PUT") {
+    const photo = photoInput((await body(req)).photo);
+    await stmt(
+      db,
+      "UPDATE users SET photo=?,photo_at=?,photo_checked=1 WHERE id=?",
+      photo,
+      now(),
+      uid,
+    ).run();
+    return { user: await profile(db, uid, true) };
+  }
+  if (path === "/api/me/photo/telegram" && method === "GET") {
+    // Cheap check for the menu: does Telegram show this person's photo at all?
+    const r = await telegramCall(env, "getUserProfilePhotos", {
+      user_id: Number(uid),
+      limit: 1,
+    });
+    const count = (r.result as { total_count?: number } | undefined)
+      ?.total_count;
+    return { available: !!count || !!user.photo_url };
+  }
+  if (path === "/api/me/photo/telegram" && method === "POST") {
+    await rate(db, `tg-photo:${uid}`, 10);
+    const photo = await telegramAvatar(env, user);
+    if (!photo)
+      fail(
+        404,
+        "PHOTO_UNAVAILABLE",
+        "В Telegram фото скрыто настройками или не установлено.",
+      );
+    await stmt(
+      db,
+      "UPDATE users SET photo=?,photo_at=?,photo_checked=1 WHERE id=?",
+      photo,
+      now(),
+      uid,
+    ).run();
+    return { user: await profile(db, uid, true) };
+  }
   if (path === "/api/me" && method === "PATCH") {
     const b = await body(req);
     if (
@@ -606,7 +669,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     const rows = (
       await stmt(
         db,
-        `SELECT u.id,u.name,u.username,f.status,f.requested_by,
+        `SELECT u.id,u.name,u.username,f.status,f.requested_by,CASE WHEN u.photo='' THEN NULL ELSE u.photo_at END AS photo_at,
           (SELECT COUNT(*) FROM gifts g WHERE g.owner_id=u.id AND g.archived_at IS NULL) AS gift_count,
           EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscriber_id=?1 AND s.target_id=u.id) AS subscribed
         FROM friendships f JOIN users u ON u.id=CASE WHEN f.user_a=?1 THEN f.user_b ELSE f.user_a END
@@ -618,6 +681,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         username: string | null;
         status: string;
         requested_by: string;
+        photo_at: number | null;
         gift_count: number;
         subscribed: number;
       }>()
@@ -626,12 +690,14 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       id,
       name,
       username,
+      photo_at,
       gift_count,
       subscribed,
     }: (typeof rows)[number]) => ({
       id,
       name,
       username,
+      photo_at,
       gift_count,
       subscribed: !!subscribed,
     });

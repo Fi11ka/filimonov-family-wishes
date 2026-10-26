@@ -3013,3 +3013,99 @@ footer svg {
 .event-open-list {
   align-self: flex-start;
 }
+/* ---- Profile photo ---- */
+.avatar-photo {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+.avatar-editor {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.avatar-editor > .avatar.large {
+  margin-bottom: 0;
+}
+/* Small pencil in the corner; the invisible ::before makes a 44px target. */
+.avatar-pencil {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--purple);
+  color: white;
+  border: 2px solid #fff;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 2px 6px #6e4c8d33;
+}
+.avatar-pencil::before {
+  content: "";
+  position: absolute;
+  inset: -9px;
+}
+.avatar-pencil:hover:not(:disabled) {
+  background: var(--purple-dark);
+}
+.avatar-menu {
+  position: absolute;
+  /* Right under the 72px photo. */
+  top: 80px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 210px;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid #ebe5f2;
+  border-radius: 13px;
+  box-shadow: 0 12px 34px #61447e26;
+}
+.avatar-menu > button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #5b4279;
+  text-align: left;
+}
+.avatar-menu > button:hover:not(:disabled) {
+  background: #f5f0fb;
+}
+.avatar-menu > small {
+  font-size: 11px;
+  color: #a093af;
+  padding: 0 12px 4px;
+  line-height: 1.4;
+}
+.avatar-preview-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+.avatar-editor > .small-text {
+  margin: 0;
+}
+.avatar-editor > .error {
+  margin: 4px 0 0;
+}
+@media (max-width: 740px) {
+  .avatar-menu > button {
+    min-height: 48px;
+    font-size: 15px;
+  }
+}
