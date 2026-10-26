@@ -268,6 +268,7 @@ before(async () => {
   await migrate("migrations/0016_login_handoff.sql");
   await migrate("migrations/0017_welcome.sql");
   await migrate("migrations/0018_followers.sql");
+  await migrate("migrations/0019_open_profile_follows.sql");
   assert.equal(
     (
       await db
@@ -653,6 +654,30 @@ test("an open profile is seen by everyone and followed at once; opening approves
   assert.equal(
     (await call("/me", 7, "PATCH", { is_private: "yes" })).status,
     400,
+  );
+});
+test("a request left waiting when a profile became open counts as a follow", async () => {
+  for (const id of [9501, 9502, 9503]) await call("/me", id);
+  await call("/follows/9501", 9502, "POST");
+  await call("/follows/9501", 9503, "POST");
+  // Opened without the usual approval of waiting requests (an older version, a direct change).
+  await db.prepare("UPDATE users SET is_private=0 WHERE id='9501'").run();
+  const card = (await call("/profiles/9501", 9502)).body.card;
+  assert.equal(card.follow, "approved");
+  assert.equal(card.follower_count, 2);
+  // Pressing «Подписаться» again finishes it, and so does opening «Подписки».
+  assert.deepEqual((await call("/follows/9501", 9502, "POST")).body, {
+    follow: "approved",
+  });
+  const people = (await call("/people", 9503)).body;
+  assert.equal(people.outgoing.length, 0);
+  assert.deepEqual(
+    people.following.map((p: any) => p.id),
+    ["9501"],
+  );
+  assert.deepEqual(
+    (await call("/people", 9501)).body.followers.map((p: any) => p.id).sort(),
+    ["9502", "9503"],
   );
 });
 test("old «Поделиться» and friend invitation links only lead to the profile", async () => {

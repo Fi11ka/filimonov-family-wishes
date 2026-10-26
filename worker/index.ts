@@ -368,8 +368,8 @@ async function card(db: D1Database, id: string, viewer: string | null) {
     db,
     `SELECT u.id,u.name,u.username,u.is_private,CASE WHEN u.photo='' THEN NULL ELSE u.photo_at END AS photo_at,
       (SELECT COUNT(*) FROM gifts g WHERE g.owner_id=u.id AND g.archived_at IS NULL) AS gift_count,
-      (SELECT COUNT(*) FROM follows f WHERE f.target_id=u.id AND f.status='approved') AS follower_count,
-      (SELECT status FROM follows f WHERE f.follower_id=?2 AND f.target_id=u.id) AS follow,
+      (SELECT COUNT(*) FROM follows f WHERE f.target_id=u.id AND (f.status='approved' OR u.is_private=0)) AS follower_count,
+      (SELECT CASE WHEN u.is_private=0 THEN 'approved' ELSE f.status END FROM follows f WHERE f.follower_id=?2 AND f.target_id=u.id) AS follow,
       EXISTS(SELECT 1 FROM follows f WHERE f.follower_id=u.id AND f.target_id=?2 AND f.status='approved') AS follows_you,
       EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscriber_id=?2 AND s.target_id=u.id) AS subscribed
     FROM users u WHERE u.id=?1`,
@@ -852,6 +852,13 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   }
   // ---- Followers (docs/FOLLOWERS.md) ----
   if (path === "/api/people" && method === "GET") {
+    // An open profile has nothing to approve: a request to it is a follow.
+    await stmt(
+      db,
+      `UPDATE follows SET status='approved',approved_at=unixepoch() WHERE status='pending' AND (follower_id=?1 OR target_id=?1)
+      AND target_id IN (SELECT id FROM users WHERE is_private=0)`,
+      uid,
+    ).run();
     // Only the person sees their followers and whom they follow.
     const rows = (
       await stmt(
@@ -894,8 +901,10 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     const status = t.is_private ? "pending" : "approved";
     const created = await stmt(
       db,
+      // A request left from when the profile was closed becomes a follow too.
       `INSERT INTO follows(follower_id,target_id,status,approved_at) VALUES(?,?,?,?)
-      ON CONFLICT DO NOTHING RETURNING status`,
+      ON CONFLICT DO UPDATE SET status='approved',approved_at=excluded.approved_at
+      WHERE excluded.status='approved' AND follows.status='pending' RETURNING status`,
       uid,
       target,
       status,
