@@ -628,7 +628,8 @@ main {
   box-shadow: 0 10px 25px #6e4c8d0b;
 }
 .photo-wrap {
-  aspect-ratio: 1.42;
+  /* The same 4:3 as the photo frame in the wish form (CARD_RATIO). */
+  aspect-ratio: 4 / 3;
   position: relative;
   background: #f0edf2;
   overflow: hidden;
@@ -1253,9 +1254,6 @@ footer svg {
   .gift-grid {
     gap: 27px;
   }
-  .photo-wrap {
-    aspect-ratio: 1.4;
-  }
   .gift-card h3 {
     font-size: 15px;
   }
@@ -1477,9 +1475,6 @@ footer svg {
   }
   .gift-grid {
     gap: 13px;
-  }
-  .photo-wrap {
-    aspect-ratio: 1.12;
   }
   .card-content {
     padding: 14px 12px 8px;
@@ -2548,4 +2543,151 @@ footer svg {
 .chat-import textarea {
   width: 100%;
   resize: vertical;
+}
+/* ---- Photo frame in the wish form ---- */
+.photo-frame {
+  display: grid;
+  gap: 10px;
+}
+.photo-frame-canvas {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  display: block;
+  border-radius: 13px;
+  border: 1px solid #dacce8;
+  background: #faf7fd;
+  object-fit: cover;
+  touch-action: none;
+  cursor: grab;
+}
+.photo-frame-canvas:active {
+  cursor: grabbing;
+}
+.photo-frame-controls {
+  display: grid;
+  gap: 8px;
+}
+.photo-frame-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.photo-frame-row > span {
+  min-width: 62px;
+}
+.photo-frame-row input[type="range"] {
+  flex: 1;
+  min-width: 120px;
+  accent-color: var(--purple);
+}
+.swatches {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex: 1;
+}
+.swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid #d9d2e3;
+  padding: 0;
+  cursor: pointer;
+  position: relative;
+}
+.swatch.selected {
+  outline: 2px solid var(--purple);
+  outline-offset: 2px;
+}
+.swatch.custom {
+  background-image: conic-gradient(
+    #f87171,
+    #fbbf24,
+    #34d399,
+    #60a5fa,
+    #a78bfa,
+    #f87171
+  ) !important;
+}
+.swatch.custom input,
+.file-link input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.file-link {
+  position: relative;
+  cursor: pointer;
+}
+/* ---- Hearts (priority 1–5) ---- */
+.hearts {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  /* The main accent of the design, like buttons and links. */
+  color: var(--purple);
+}
+.hearts .heart:not(.filled) {
+  color: #dacce8;
+}
+.hearts.picker button {
+  background: none;
+  border: 0;
+  padding: 2px;
+  cursor: pointer;
+  color: inherit;
+  display: inline-flex;
+  border-radius: 6px;
+}
+.hearts.picker button:focus-visible {
+  outline: 2px solid var(--purple);
+}
+.field {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.priority .hearts {
+  gap: 1px;
+}
+/* ---- Wishlist description ---- */
+.wishlist-about {
+  margin-top: 8px;
+  max-width: 640px;
+  color: #6f6680;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-line;
+}
+.about-edit {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+.about-add {
+  margin-top: 8px;
+}
+.about-form {
+  margin-top: 10px;
+  max-width: 640px;
+  display: grid;
+  gap: 8px;
+}
+.about-form textarea {
+  width: 100%;
+  resize: vertical;
+}
+.about-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.about-actions .small-text {
+  margin-right: auto;
 }

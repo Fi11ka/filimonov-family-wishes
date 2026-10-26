@@ -164,7 +164,10 @@ export function giftInput(b: Record<string, unknown>) {
     fail(400, "VALIDATION", "Некорректная цена.");
   if (price !== null && max !== null && max < price)
     fail(400, "VALIDATION", "Цена «до» должна быть больше цены «от».");
-  if (![1, 2, 3].includes(Number(b.priority)) || typeof b.priority !== "number")
+  if (
+    ![1, 2, 3, 4, 5].includes(Number(b.priority)) ||
+    typeof b.priority !== "number"
+  )
     fail(400, "VALIDATION", "Выберите приоритет.");
   const photo = text(b.photo ?? "", 220000);
   if (
