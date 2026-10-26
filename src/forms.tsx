@@ -21,6 +21,7 @@ import {
   cropPhoto,
   demo,
   photoFromUrl,
+  profileLink,
   type ProductLookup,
   type ScreenshotLookup,
 } from "./api";
@@ -1056,6 +1057,10 @@ export function CopyValue({
     </>
   );
 }
+/**
+ * «Поделиться»: the profile link, which by itself opens only the card of a
+ * closed profile, and for one's own list the secret guest link without Telegram.
+ */
 export function Share({
   ownerId,
   own = true,
@@ -1063,27 +1068,37 @@ export function Share({
   ownerId?: string;
   own?: boolean;
 }) {
-  const endpoint = ownerId
-    ? `/api/lists/${ownerId}/share-links`
-    : "/api/guest-links";
+  const [profile, setProfile] = useState(
+    !own && ownerId ? profileLink(ownerId) : "",
+  );
   const [links, setLinks] = useState<
     { id: string; kind: string; web_url: string }[]
   >([]);
   const [error, setError] = useState("");
   const [legacy, setLegacy] = useState<{ id: string }[]>([]);
   useEffect(() => {
-    api(endpoint)
-      .then((d) => (d.links.length === 2 ? d : api(endpoint, "POST")))
+    if (!own) return;
+    api("/api/guest-links")
+      .then((d) => (d.links.length ? d : api("/api/guest-links", "POST")))
       .then((d) => {
+        setProfile(d.profile_url);
         setLinks(d.links);
         setLegacy(d.legacy_links || []);
       })
       .catch((e) => setError(e.message));
-  }, [endpoint]);
+  }, [own]);
   return (
     <div className="share-result">
-      <p>Ссылки действуют постоянно.</p>
       {error && <p role="alert">{error}</p>}
+      <section>
+        <h3>Ссылка на профиль</h3>
+        <p>
+          {own
+            ? "Отправьте её друзьям и родным. Если профиль закрытый, по ссылке видно только имя и фото, а вишлист — после того, как вы одобрите подписку."
+            : "По ссылке откроется профиль. Если он закрытый, вишлист увидят только одобренные подписчики."}
+        </p>
+        {profile && <CopyValue value={profile} />}
+      </section>
       {legacy.map((link) => (
         <div className="active-link" key={link.id}>
           <span>Ранее созданная ссылка без входа</span>
@@ -1105,39 +1120,27 @@ export function Share({
       ))}
       {links.map((link) => (
         <section key={link.id}>
-          <h3>
-            {link.kind === "telegram"
-              ? "С входом через Telegram"
-              : "Для близких без регистрации"}
-          </h3>
+          <h3>Для близких без Telegram</h3>
           <p>
-            {link.kind === "telegram"
-              ? own
-                ? "Друг откроет вишлист в Telegram и одним нажатием добавит вас в друзья. Это та же ссылка, что в «Добавить друга»."
-                : "Просмотр и бронирование после входа через Telegram."
-              : "Вход в Telegram не нужен. Для брони достаточно имени."}
+            Секретная ссылка: открывает вишлист без входа, для брони достаточно
+            имени. Давайте её только тем, кому доверяете.
           </p>
           <CopyValue
             value={link.web_url}
-            warning={
-              link.kind === "guest" && own
-                ? "По этой ссылке видны все подарки и брони. Не открывайте её сами, если хотите сохранить сюрприз."
-                : undefined
-            }
+            warning="По этой ссылке видны все подарки и брони. Не открывайте её сами, если хотите сохранить сюрприз."
           />
           <button
             className="text-link danger"
             onClick={async () => {
               if (
                 !window.confirm(
-                  "Отозвать ссылку? Люди со старой ссылкой потеряют доступ.",
+                  "Заменить ссылку? Люди со старой ссылкой потеряют доступ.",
                 )
               )
                 return;
               try {
                 await api(`/api/guest-links/${link.id}`, "DELETE");
-                setLinks(links.filter((l) => l.id !== link.id));
-                setLinks((await api(endpoint, "POST")).links);
+                setLinks((await api("/api/guest-links", "POST")).links);
               } catch (e) {
                 setError((e as Error).message);
               }
@@ -1357,7 +1360,8 @@ export function ReserveDialog({
               </div>
             ) : (
               <p className="small-text">
-                Пока некого позвать: добавьте друзей во вкладке «Друзья».
+                Пока некого позвать: позвать можно ваших подписчиков и тех, на
+                кого вы подписаны.
               </p>
             )}
             <button

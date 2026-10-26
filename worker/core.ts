@@ -19,23 +19,28 @@ export function stmt(db: D1Database, sql: string, ...args: unknown[]) {
 }
 export const ACTIVE_LIMIT = 100,
   ARCHIVE_LIMIT = 300;
-// Accepted friendship between ?1 and the gift owner column, in either order.
-export const FRIEND_OF = (owner: string) =>
-  `EXISTS(SELECT 1 FROM friendships f WHERE f.status='accepted' AND ((f.user_a=?1 AND f.user_b=${owner}) OR (f.user_b=?1 AND f.user_a=${owner})))`;
-// A share link that still opens the owner's list: not revoked, not expired, and made
-// by the owner or by a friend while the owner allows resharing.
+/** ?1 sees the list of `owner` (a column or placeholder): the profile is open or ?1 is an approved follower. */
+export const SEES = (owner: string) =>
+  `(EXISTS(SELECT 1 FROM users pv WHERE pv.id=${owner} AND pv.is_private=0) OR EXISTS(SELECT 1 FROM follows fl WHERE fl.follower_id=?1 AND fl.target_id=${owner} AND fl.status='approved'))`;
+/** ?1 and `other` are each other's people: an approved follow either way. They can invite each other. */
+export const CONNECTED = (other: string) =>
+  `EXISTS(SELECT 1 FROM follows fc WHERE fc.status='approved' AND ((fc.follower_id=?1 AND fc.target_id=${other}) OR (fc.follower_id=${other} AND fc.target_id=?1)))`;
+// A guest link that still opens the owner's list: not revoked, not expired, and the
+// owner's own (links made by viewers stopped working with followers).
 export const LINK_ACTIVE = (link: string, at: string) =>
-  `${link}.revoked_at IS NULL AND ${link}.expires_at>${at} AND (${link}.created_by=${link}.owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=${link}.owner_id AND share_owner.allow_resharing=1))`;
-/** Friendship rows store the pair ordered (user_a < user_b). */
-export const pair = (x: string, y: string) => (x < y ? [x, y] : [y, x]);
-export async function friendship(db: D1Database, x: string, y: string) {
-  const [a, b] = pair(x, y);
-  return stmt(
-    db,
-    "SELECT status,requested_by FROM friendships WHERE user_a=? AND user_b=?",
-    a,
-    b,
-  ).first<{ status: "pending" | "accepted"; requested_by: string }>();
+  `${link}.revoked_at IS NULL AND ${link}.expires_at>${at} AND ${link}.created_by=${link}.owner_id`;
+/** How `follower` follows `target`, if at all. */
+export async function follow(db: D1Database, follower: string, target: string) {
+  return (
+    (
+      await stmt(
+        db,
+        "SELECT status FROM follows WHERE follower_id=? AND target_id=?",
+        follower,
+        target,
+      ).first<{ status: "pending" | "approved" }>()
+    )?.status ?? null
+  );
 }
 /**
  * Finds or creates the account of a person signed in with Telegram (Mini App,

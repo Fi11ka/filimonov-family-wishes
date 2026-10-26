@@ -1,169 +1,29 @@
 import { validBirthday } from "../shared/birthday";
 import { isGender } from "../shared/events";
 import React, { useEffect, useState } from "react";
-import {
-  AtSign,
-  Check,
-  Link as LinkIcon,
-  UserPlus,
-  X,
-  Heart,
-  LogOut,
-} from "lucide-react";
+import { Check, X, LogOut, Share2 } from "lucide-react";
 import { api, demo, openBot, type Notifications } from "./api";
-import { CopyValue } from "./forms";
 import { AvatarEditor, Face } from "./avatar";
-import { type ToastTone, type User, handle, initials } from "./types";
-export function AddFriend({ onDone }: { onDone: (message: string) => void }) {
-  const [mode, setMode] = useState<"nick" | "link">("nick"),
-    [error, setError] = useState(""),
-    [busy, setBusy] = useState(false),
-    // The same Telegram link as in «Поделиться»: it opens the list and adds the friend.
-    [link, setLink] = useState(""),
-    [active, setActive] = useState<{ id: string; expires_at: number }[]>([]);
-  useEffect(() => {
-    if (mode !== "link" || demo) return;
-    api("/api/guest-links")
-      .then((d) => (d.links.length === 2 ? d : api("/api/guest-links", "POST")))
-      .then((d) =>
-        setLink(
-          d.links.find((l: { kind: string }) => l.kind === "telegram")
-            ?.web_url || "",
-        ),
-      )
-      .catch((e) => setError((e as Error).message));
-    // Invitations made before the shared link keep working until revoked.
-    api("/api/friend-invites")
-      .then((d) => setActive(d.invites))
-      .catch(() => undefined);
-  }, [mode]);
-  return (
-    <>
-      <div className="segmented">
-        <button
-          className={mode === "nick" ? "selected" : ""}
-          onClick={() => setMode("nick")}
-        >
-          <AtSign size={15} /> По нику
-        </button>
-        <button
-          className={mode === "link" ? "selected" : ""}
-          onClick={() => setMode("link")}
-        >
-          <LinkIcon size={15} /> По ссылке
-        </button>
-      </div>
-      {mode === "nick" ? (
-        <form
-          onSubmit={async (e) => {
-            e.preventDefault();
-            if (demo) {
-              setError("В демо заявки не отправляются.");
-              return;
-            }
-            setBusy(true);
-            setError("");
-            try {
-              const r = await api("/api/friends/requests", "POST", {
-                username: new FormData(e.currentTarget).get("username"),
-              });
-              onDone(
-                r.status === "accepted"
-                  ? "Вы теперь друзья!"
-                  : "Заявка отправлена. Друг увидит её в разделе «Друзья».",
-              );
-            } catch (err) {
-              setError((err as Error).message);
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          <p className="muted">
-            Друг должен сначала войти в приложение, затем принять вашу заявку.
-          </p>
-          <label>
-            Ник в Telegram
-            <input
-              name="username"
-              required
-              maxLength={33}
-              placeholder="@nickname"
-              autoCapitalize="none"
-            />
-          </label>
-          {error && (
-            <div className="error" role="alert">
-              {error}
-            </div>
-          )}
-          <button className="button primary full-width" disabled={busy}>
-            <UserPlus size={17} />
-            {busy ? "Отправляем…" : "Отправить заявку"}
-          </button>
-        </form>
-      ) : (
-        <div className="share-result">
-          <p className="muted">
-            Это та же ссылка, что в «Поделиться». Друг откроет ваш вишлист и
-            одним нажатием добавит вас в друзья.
-          </p>
-          {demo ? (
-            <p className="small-text">В демо ссылки не создаются.</p>
-          ) : (
-            link && <CopyValue value={link} />
-          )}
-          {error && (
-            <div className="error" role="alert">
-              {error}
-            </div>
-          )}
-          {active.map((l) => (
-            <div className="active-link" key={l.id}>
-              <span>
-                Старое приглашение, действует до{" "}
-                {new Date(l.expires_at * 1000).toLocaleDateString("ru-RU")}
-              </span>
-              <button
-                className="text-link danger"
-                disabled={busy}
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    await api(`/api/friend-invites/${l.id}`, "DELETE");
-                    setActive(active.filter((a) => a.id !== l.id));
-                  } catch (e) {
-                    setError((e as Error).message);
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              >
-                Отозвать
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </>
-  );
-}
+import { type ToastTone, type User, handle } from "./types";
+/** Requests to follow me (approve or decline) and my own requests still waiting. */
 export function Requests({
   incoming,
   outgoing,
   onChanged,
+  onOpen,
   notice,
 }: {
   incoming: User[];
   outgoing: User[];
   onChanged: () => void;
+  onOpen: (id: string) => void;
   notice: (m: string, tone?: ToastTone) => void;
 }) {
   const [busy, setBusy] = useState(false);
   if (!incoming.length && !outgoing.length) return null;
   async function act(path: string, method: string, message: string) {
     if (demo) {
-      notice("В демо заявки не меняются.", "info");
+      notice("В демо запросы не меняются.", "info");
       return;
     }
     setBusy(true);
@@ -181,32 +41,36 @@ export function Requests({
     <div className="requests">
       {incoming.map((u) => (
         <div className="request" key={u.id}>
-          <span className="avatar small">
+          <button
+            className="avatar small"
+            onClick={() => onOpen(u.id)}
+            aria-label={`Профиль ${u.name}`}
+          >
             <Face user={u} />
-          </span>
+          </button>
           <span>
             <strong>{u.name}</strong> {handle(u)}
-            <small>хочет добавить вас в друзья</small>
+            <small>хочет подписаться и видеть ваш вишлист</small>
           </span>
           <button
             className="button primary small-button"
             disabled={busy}
             onClick={() =>
               void act(
-                `/api/friends/${u.id}/accept`,
+                `/api/followers/${u.id}/approve`,
                 "POST",
-                "Вы теперь друзья!",
+                "Подписка одобрена",
               )
             }
           >
-            <Check size={15} /> Принять
+            <Check size={15} /> Одобрить
           </button>
           <button
             className="icon-button"
-            aria-label={`Отклонить заявку ${u.name}`}
+            aria-label={`Отклонить запрос ${u.name}`}
             disabled={busy}
             onClick={() =>
-              void act(`/api/friends/${u.id}`, "DELETE", "Заявка отклонена")
+              void act(`/api/followers/${u.id}`, "DELETE", "Запрос отклонён")
             }
           >
             <X size={16} />
@@ -215,91 +79,28 @@ export function Requests({
       ))}
       {outgoing.map((u) => (
         <div className="request outgoing" key={u.id}>
-          <span className="avatar small">
+          <button
+            className="avatar small"
+            onClick={() => onOpen(u.id)}
+            aria-label={`Профиль ${u.name}`}
+          >
             <Face user={u} />
-          </span>
+          </button>
           <span>
             <strong>{u.name}</strong> {handle(u)}
-            <small>ждём подтверждения</small>
+            <small>ждём одобрения</small>
           </span>
           <button
             className="text-link"
             disabled={busy}
             onClick={() =>
-              void act(`/api/friends/${u.id}`, "DELETE", "Заявка отменена")
+              void act(`/api/follows/${u.id}`, "DELETE", "Запрос отменён")
             }
           >
             Отменить
           </button>
         </div>
       ))}
-    </div>
-  );
-}
-export function AcceptInvite({
-  token,
-  onDone,
-}: {
-  token: string;
-  onDone: (message: string) => void;
-}) {
-  const [owner, setOwner] = useState<User | null>(null),
-    [already, setAlready] = useState(false),
-    [error, setError] = useState(""),
-    [busy, setBusy] = useState(false);
-  useEffect(() => {
-    void api("/api/friend-invites/preview", "POST", { token })
-      .then((r) => {
-        setOwner(r.owner);
-        setAlready(r.already_friends);
-      })
-      .catch((e) => setError((e as Error).message));
-  }, [token]);
-  if (error)
-    return (
-      <div className="error" role="alert">
-        {error}
-      </div>
-    );
-  if (!owner)
-    return (
-      <div className="loading" role="status">
-        <span />
-        Проверяем приглашение…
-      </div>
-    );
-  return (
-    <div className="share-result">
-      <span className="avatar large">
-        <Face user={owner} />
-      </span>
-      <h3>
-        {owner.name} {handle(owner)}
-      </h3>
-      <p>
-        {already
-          ? "Вы уже друзья — вишлисты друг друга доступны в разделе «Друзья»."
-          : "приглашает вас в друзья. Вы сможете видеть вишлисты друг друга."}
-      </p>
-      {!already && (
-        <button
-          className="button primary full-width"
-          disabled={busy}
-          onClick={async () => {
-            setBusy(true);
-            try {
-              await api("/api/friend-invites/accept", "POST", { token });
-              onDone(`Вы теперь друзья с ${owner.name.split(" ")[0]}!`);
-            } catch (e) {
-              setError((e as Error).message);
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          <Heart size={17} /> Добавить в друзья
-        </button>
-      )}
     </div>
   );
 }
@@ -390,25 +191,70 @@ export function birthdayError(day: string, month: string) {
     return "Укажите существующую дату рождения.";
   return "";
 }
+/** Open or closed profile: who sees the wishlist besides approved followers. */
+export function Privacy({
+  value,
+  onChange,
+}: {
+  value: boolean;
+  onChange: (isPrivate: boolean) => void;
+}) {
+  return (
+    <fieldset className="privacy">
+      <legend>Кто видит вишлист</legend>
+      <label className="setting-toggle">
+        <input
+          type="radio"
+          name="privacy"
+          checked={value}
+          onChange={() => onChange(true)}
+        />
+        <span>
+          <strong>Закрытый профиль</strong>
+          <small>
+            Только подписчики, которых вы одобрили. Остальные видят имя, фото и
+            кнопку «Запросить доступ».
+          </small>
+        </span>
+      </label>
+      <label className="setting-toggle">
+        <input
+          type="radio"
+          name="privacy"
+          checked={!value}
+          onChange={() => onChange(false)}
+        />
+        <span>
+          <strong>Открытый профиль</strong>
+          <small>
+            Все, у кого есть ссылка. Подписаться можно без одобрения.
+          </small>
+        </span>
+      </label>
+    </fieldset>
+  );
+}
 export function Profile({
   user,
-  friends,
+  followers,
+  following,
   webSession,
-  onAddFriend,
+  onShare,
   onLogout,
   onUpdated,
 }: {
   user: User | null;
-  friends: number;
+  followers: number;
+  following: number;
   webSession: boolean;
-  onAddFriend: () => void;
+  onShare: () => void;
   onLogout: (everywhere: boolean) => void;
   onUpdated: (user: User) => void;
 }) {
   const [month, setMonth] = useState(user?.birthday?.slice(0, 2) || "");
   const [day, setDay] = useState(user?.birthday?.slice(3) || "");
   const [gender, setGender] = useState<string>(user?.gender || "");
-  const [allow, setAllow] = useState(user?.allow_resharing !== 0);
+  const [isPrivate, setPrivate] = useState(user?.is_private !== false);
   const [notifications, setNotifications] = useState<Notifications | null>(
     null,
   );
@@ -435,10 +281,12 @@ export function Profile({
             <strong>@{user.username}</strong>
           </>
         ) : (
-          <>Нет ника Telegram. Чтобы добавить друга, отправьте приглашение.</>
+          <>Нет ника Telegram</>
         )}
       </p>
-      <p className="small-text">Друзей: {friends}</p>
+      <p className="small-text">
+        Подписчиков: {followers} · Подписок: {following}
+      </p>
       <form
         className="profile-settings"
         onChange={() => setSaved(false)}
@@ -456,15 +304,11 @@ export function Profile({
             const values = {
               birthday: day && month ? `${month}-${day}` : null,
               gender: isGender(gender) ? gender : null,
-              allow_resharing: allow,
+              is_private: isPrivate,
               ...(notifications ? { notify } : {}),
             };
             if (demo) {
-              onUpdated({
-                ...user!,
-                ...values,
-                allow_resharing: allow ? 1 : 0,
-              });
+              onUpdated({ ...user!, ...values });
             } else {
               const result = await api("/api/me", "PATCH", values);
               onUpdated(result.user);
@@ -486,17 +330,12 @@ export function Profile({
           setMonth={setMonth}
           setGender={setGender}
         />
-        <label className="setting-toggle">
-          <input
-            type="checkbox"
-            checked={allow}
-            onChange={(e) => setAllow(e.target.checked)}
-          />
-          Разрешить другим делиться моим вишлистом
-        </label>
-        <p className="small-text">
-          Отключает ссылки, созданные другими. Ваши ссылки остаются рабочими.
-        </p>
+        <Privacy value={isPrivate} onChange={setPrivate} />
+        {user?.is_private !== false && !isPrivate && (
+          <p className="small-text">
+            Ожидающие запросы будут одобрены автоматически.
+          </p>
+        )}
         {notifications && (
           <>
             <label className="setting-toggle">
@@ -508,8 +347,8 @@ export function Profile({
               Уведомления в Telegram
             </label>
             <p className="small-text">
-              Бот напишет о заявках в друзья, днях рождения друзей, новых
-              желаниях и мероприятиях друзей, на которых вы подписаны,
+              Бот напишет о запросах на подписку, а ещё о днях рождения, новых
+              желаниях и мероприятиях тех, у кого вы включили колокольчик, о
               приглашениях на мероприятия и скинуться, об удалённых подарках из
               ваших броней.
             </p>
@@ -537,8 +376,8 @@ export function Profile({
           {saving ? "Сохраняем…" : "Сохранить настройки"}
         </button>
       </form>
-      <button className="button primary full-width" onClick={onAddFriend}>
-        <UserPlus size={17} /> Добавить друга
+      <button className="button primary full-width" onClick={onShare}>
+        <Share2 size={17} /> Поделиться профилем
       </button>
       {webSession ? (
         <div className="profile-logout">

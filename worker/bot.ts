@@ -4,7 +4,7 @@
 import { MAX_HEARTS, legacyPriority } from "../shared/hearts";
 import { formatPrice, parsePriceText } from "../shared/price";
 import { isAccountId } from "../shared/account-id";
-import { giftInfo, now, pair, saveUser, stmt, type Env } from "./core";
+import { giftInfo, now, saveUser, stmt, type Env } from "./core";
 import {
   archiveGift,
   createGift,
@@ -737,22 +737,23 @@ async function onButton(chat: Chat, data: string) {
   }
   // ---- Answers to notifications ----
   if ((kind === "fa" || kind === "fd") && isAccountId(a)) {
-    const [x, y] = pair(uid, a);
+    // A request from `a` to follow this user.
     const r = await stmt(
       chat.db,
       kind === "fa"
-        ? "UPDATE friendships SET status='accepted',accepted_at=unixepoch() WHERE user_a=? AND user_b=? AND status='pending' AND requested_by=? RETURNING user_a"
-        : "DELETE FROM friendships WHERE user_a=? AND user_b=? AND status='pending' AND requested_by=? RETURNING user_a",
-      x,
-      y,
+        ? "UPDATE follows SET status='approved',approved_at=unixepoch() WHERE follower_id=? AND target_id=? AND status='pending' RETURNING follower_id"
+        : "DELETE FROM follows WHERE follower_id=? AND target_id=? AND status='pending' RETURNING follower_id",
       a,
+      uid,
     ).first();
-    if (!r) return chat.say("Заявка уже неактуальна.");
-    if (kind === "fd") return chat.say("Заявка отклонена.");
-    chat.out.friendAdded(chat.user, a);
-    return chat.say("✅ Теперь вы друзья.", [
-      [openButton(chat.env, "Открыть вишлист друга", `l_${a}`)],
-    ]);
+    if (!r) return chat.say("Запрос уже неактуален.");
+    if (kind === "fd") return chat.say("Запрос отклонён.");
+    chat.out.followApproved(chat.user, a);
+    // One-way: the follower sees this user's list; following back is a separate step.
+    return chat.say(
+      "✅ Подписка одобрена: теперь этот человек видит ваш вишлист.",
+      [[openButton(chat.env, "Открыть профиль", `l_${a}`)]],
+    );
   }
   if ((kind === "gj" || kind === "gd") && /^[a-f0-9-]{36}$/.test(a)) {
     const r = await stmt(

@@ -1,5 +1,6 @@
-export { BOT } from "./telegram-links";
+export { BOT, profileLink } from "./telegram-links";
 import { closesAfterSwitch, telegramAppLink } from "./telegram-links";
+import { isAccountId } from "../shared/account-id";
 export const telegram = (
   window as unknown as {
     Telegram?: {
@@ -37,10 +38,19 @@ const start =
   new URLSearchParams(telegram?.initData || "").get("start_param") ||
   new URLSearchParams(location.search).get("tgWebAppStartParam") ||
   "";
+/** The owner's secret guest link: booking by name without an account. */
 export const guestToken =
   new URLSearchParams(location.hash.slice(1)).get("guest") ||
-  (start.startsWith("g_") || start.startsWith("s_") ? start.slice(2) : "");
-export const authShare = start.startsWith("s_");
+  (start.startsWith("g_") ? start.slice(2) : "");
+/** A profile to open: t.me/…?startapp=p_<id> or the website's ?p=<id>. */
+export const profileTarget =
+  [
+    start.startsWith("p_") ? start.slice(2) : "",
+    new URLSearchParams(location.search).get("p") || "",
+  ].find((id) => isAccountId(id)) || "";
+/** Old «Поделиться» (s_) and friend invitation (f_) links: the server names whose profile they lead to. */
+export const legacyLink =
+  start.startsWith("s_") || start.startsWith("f_") ? start.slice(2) : "";
 /** Screen to open from a bot button: ?open=l_<user id> (a friend's list) or ?open=b («Мои брони»). */
 export const openTarget =
   new URLSearchParams(location.search).get("open") || "";
@@ -72,8 +82,6 @@ export const handoffCode = (() => {
   );
   return /^[A-Za-z0-9_-]{43}$/.test(code) ? code : "";
 })();
-/** Friend invitation opened from t.me/…?startapp=f_<token> */
-export const friendInvite = start.startsWith("f_") ? start.slice(2) : "";
 export const demo = new URLSearchParams(location.search).get("demo") === "1";
 // Website sign-in: session token from POST /api/auth/telegram-login. The Mini App
 // never uses it; there Telegram's signed initData identifies the user.
@@ -204,7 +212,9 @@ export async function apiBlob(path: string, data: unknown, timeout = 30000) {
   return (await request(path, "POST", data, timeout)).blob();
 }
 export const telegramLink = () =>
-  telegramAppLink(guestToken, friendInvite, authShare);
+  telegramAppLink(
+    guestToken ? `g_${guestToken}` : profileTarget ? `p_${profileTarget}` : "",
+  );
 export { compressPhoto, compressScreenshot, cropPhoto } from "./photo";
 import { compressPhoto } from "./photo";
 /** Downloads a picture through the API (shops forbid direct cross-site reads) and compresses it. */

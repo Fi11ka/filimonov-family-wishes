@@ -120,14 +120,13 @@ export class Outbox {
     }
   }
   // ---- Events ----
-  /** Subscribers who are still friends of the owner, minus people excluded. */
-  private async subscribers(ownerId: string, exclude: string[] = []) {
+  /** People with the bell on who still see the owner's list, minus people excluded. */
+  async subscribers(ownerId: string, exclude: string[] = []) {
     const rows = (
       await stmt(
         this.db,
-        `SELECT s.subscriber_id AS id FROM subscriptions s JOIN friendships f
-        ON f.status='accepted' AND ((f.user_a=s.subscriber_id AND f.user_b=?1) OR (f.user_b=s.subscriber_id AND f.user_a=?1))
-        WHERE s.target_id=?1`,
+        `SELECT s.subscriber_id AS id FROM subscriptions s JOIN users t ON t.id=s.target_id
+        WHERE s.target_id=?1 AND (t.is_private=0 OR EXISTS(SELECT 1 FROM follows fl WHERE fl.follower_id=s.subscriber_id AND fl.target_id=?1 AND fl.status='approved'))`,
         ownerId,
       ).all<{ id: string }>()
     ).results;
@@ -210,24 +209,30 @@ export class Outbox {
       `${who(owner)} отменил(а) праздник «${esc(event.title)}» (${eventDay(event.date)}). Приглашение больше не действует.`,
     );
   }
-  friendRequest(from: Named, to: string) {
+  followRequest(from: Named, to: string) {
     this.send(
       [to],
-      `👋 ${who(from)} хочет добавить вас в друзья. Друзья видят вишлисты друг друга.`,
+      `👋 ${who(from)} хочет подписаться на вас и видеть ваш вишлист.`,
       [
         [
-          { text: "✅ Принять", callback_data: `fa:${from.id}` },
+          { text: "✅ Одобрить", callback_data: `fa:${from.id}` },
           { text: "Отклонить", callback_data: `fd:${from.id}` },
         ],
       ],
     );
   }
-  friendAdded(by: Named, to: string) {
+  /** `by` approved the request of `to`, or `to` followed an open profile of `by`. */
+  followApproved(by: Named, to: string) {
     this.send(
       [to],
-      `🤝 ${who(by)} теперь у вас в друзьях. Можно смотреть вишлисты друг друга.`,
-      [[openButton(this.env, "Открыть вишлист друга", `l_${by.id}`)]],
+      `🤝 ${who(by)} одобряет вашу подписку. Теперь вам виден вишлист.`,
+      [[openButton(this.env, "Открыть вишлист", `l_${by.id}`)]],
     );
+  }
+  newFollower(from: Named, to: string) {
+    this.send([to], `👋 ${who(from)} подписывается на вас.`, [
+      [openButton(this.env, "Открыть профиль", `l_${from.id}`)],
+    ]);
   }
   groupInvite(organizer: Named, owner: Named, gift: GiftLike, ids: string[]) {
     this.send(
