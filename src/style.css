@@ -3307,3 +3307,61 @@ button.event-chip:hover {
     display: none;
   }
 }
+/* First visit: what the app can do, on the sign-in screen and in the welcome dialog. */
+.welcome-features {
+  display: grid;
+  gap: 10px;
+  width: min(100%, 420px);
+  margin: 4px 0;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+.welcome-features li {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+.welcome-features svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--purple);
+}
+.welcome-features strong {
+  color: var(--text);
+}
+.welcome-dialog .welcome-features {
+  width: 100%;
+  margin: 12px 0 4px;
+}
+.welcome-dialog > h3 {
+  margin-top: 16px;
+}
+.welcome-dialog > .text-link {
+  display: block;
+  margin: 10px auto 0;
+}
+/* Guest view: an invitation to start one's own list. */
+.guest-promo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin: -8px 0 20px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+.guest-promo p {
+  flex: 1 1 240px;
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-2);
+}
+.add-shared-friend {
+  margin-bottom: 16px;
+}

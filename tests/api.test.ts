@@ -253,6 +253,7 @@ before(async () => {
   await migrate("migrations/0014_profile_photo.sql");
   await migrate("migrations/0015_identities.sql");
   await migrate("migrations/0016_login_handoff.sql");
+  await migrate("migrations/0017_welcome.sql");
   assert.equal(
     (
       await db
@@ -668,6 +669,25 @@ test("the owner's «Поделиться» link for Telegram also adds a friend;
     404,
   );
   assert.equal((await call("/lists/9101", 9103)).status, 404);
+});
+test("the first-visit welcome shows once, until it is saved or skipped", async () => {
+  assert.equal((await call("/me", 9201)).body.welcome, true);
+  assert.equal(
+    (await call("/me", 9201, "PATCH", { welcomed: false })).status,
+    400,
+  );
+  const saved = await call("/me", 9201, "PATCH", {
+    birthday: "03-14",
+    gender: "female",
+    welcomed: true,
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.user.birthday, "03-14");
+  assert.equal((await call("/me", 9201)).body.welcome, false);
+  // Skipping without data also counts.
+  await call("/me", 9202);
+  assert.equal((await call("/me", 9202, "PATCH", { welcomed: true })).status, 200);
+  assert.equal((await call("/me", 9202)).body.welcome, false);
 });
 test("removed friend loses list access and can cancel their own reservation", async () => {
   const g = await gift();
