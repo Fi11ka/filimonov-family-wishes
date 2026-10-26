@@ -1,6 +1,6 @@
 import { daysLeft, eventDay, upcomingEvents } from "../shared/events";
 import { formatPrice, sharePrice } from "../shared/price";
-import { EventPage, WishlistEvents } from "./events";
+import { EventPage, EventsList, WishlistEvents } from "./events";
 import { ArchiveWish, ReserveDialog } from "./forms";
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -9,6 +9,8 @@ import {
   Heart,
   Users,
   Bookmark,
+  CalendarDays,
+  ArrowLeft,
   Plus,
   ArrowUpRight,
   Link as LinkIcon,
@@ -75,7 +77,7 @@ import {
   money,
 } from "./types";
 import "./style.css";
-type Tab = "mine" | "friends" | "bookings" | "archive" | "event";
+type Tab = "mine" | "friends" | "bookings" | "events" | "archive" | "event";
 type ModalKind =
   "gift" | "share" | "add-friend" | "profile" | "import" | "invite";
 interface Confirmation {
@@ -123,9 +125,11 @@ function App() {
     owner: string;
     key: string;
     date: string;
+    /** Where «Назад» returns to. */
+    from: Tab;
   } | null>(null);
   function openEvent(owner: string, key: string, date: string) {
-    setEventRef({ owner, key, date });
+    setEventRef({ owner, key, date, from: tab });
     setTab("event");
     setError("");
     setMenu(false);
@@ -538,12 +542,13 @@ function App() {
               ["mine", Heart, "Мой вишлист"],
               ["friends", Users, "Друзья"],
               ["bookings", Bookmark, "Мои брони"],
+              ["events", CalendarDays, "Мероприятия"],
               ["archive", Archive, "Архив"],
             ] as const
           ).map(([key, I, label]) => (
             <button
               key={key}
-              className={`nav-item ${tab === key ? "active" : ""}`}
+              className={`nav-item ${tab === key || (key === "events" && tab === "event") ? "active" : ""}`}
               onClick={() => void navigate(key)}
               disabled={!!guestToken && key !== "friends" && !user}
             >
@@ -671,15 +676,17 @@ function App() {
                   <h1>
                     {tab === "event"
                       ? "Мероприятие"
-                      : tab === "bookings"
-                        ? "Мои брони"
-                        : tab === "archive"
-                          ? "Архив"
-                          : tab === "friends" && !guestToken && !viewingFriend
-                            ? "Друзья"
-                            : own
-                              ? "Мой вишлист"
-                              : `Вишлист: ${owner?.name || ownerFirst}`}
+                      : tab === "events"
+                        ? "Мероприятия"
+                        : tab === "bookings"
+                          ? "Мои брони"
+                          : tab === "archive"
+                            ? "Архив"
+                            : tab === "friends" && !guestToken && !viewingFriend
+                              ? "Друзья"
+                              : own
+                                ? "Мой вишлист"
+                                : `Вишлист: ${owner?.name || ownerFirst}`}
                   </h1>
                   {owner &&
                     showList &&
@@ -710,7 +717,11 @@ function App() {
                           friends={friends}
                           notice={notice}
                           onProfile={() => setModal("profile")}
-                          onOpen={(e) => openEvent(owner.id, e.key, e.date)}
+                          onOpen={
+                            user && (!guestToken || authShare)
+                              ? (e) => openEvent(owner.id, e.key, e.date)
+                              : undefined
+                          }
                           onChanged={async () => {
                             if (own && user) {
                               setUser({
@@ -778,7 +789,15 @@ function App() {
                   </button>
                 </div>
               )}
-              {!error && tab === "friends" && !guestToken && (
+              {viewingFriend && !guestToken && (
+                <button
+                  className="text-link back-to-friends"
+                  onClick={() => void navigate("friends")}
+                >
+                  <ArrowLeft size={15} /> Все друзья
+                </button>
+              )}
+              {!error && tab === "friends" && !guestToken && !viewingFriend && (
                 <section className="family-section">
                   <div className="section-heading">
                     <span className="muted">
@@ -1124,8 +1143,20 @@ function App() {
                   friends={friends}
                   today={today}
                   notice={notice}
-                  onBack={() => void openList(eventRef.owner)}
+                  onBack={() =>
+                    void (eventRef.from === "events" ||
+                    eventRef.from === "bookings"
+                      ? navigate(eventRef.from)
+                      : openList(eventRef.owner))
+                  }
                   onOpenList={(id) => void openList(id)}
+                />
+              )}
+              {tab === "events" && user && (
+                <EventsList
+                  me={user.id}
+                  today={today}
+                  onOpen={(owner, key, date) => openEvent(owner, key, date)}
                 />
               )}
               {tab === "bookings" &&
@@ -1153,7 +1184,13 @@ function App() {
                               {b.archived ? " · в архиве" : ""}
                             </p>
                             <BookingPrice booking={b} />
-                            <NearestEvent booking={b} today={today} />
+                            <NearestEvent
+                              booking={b}
+                              today={today}
+                              onOpen={(key, date) =>
+                                openEvent(b.owner_id, key, date)
+                              }
+                            />
                             <p className="small-text">
                               {b.role === "invited"
                                 ? `${b.organizer_name || "Друг"} предлагает скинуться на этот подарок`
@@ -1677,16 +1714,38 @@ function BookingPrice({ booking: b }: { booking: Booking }) {
     </p>
   );
 }
-/** By when to buy: the nearest event of the wishlist owner. */
-function NearestEvent({ booking, today }: { booking: Booking; today: Date }) {
-  const next = upcomingEvents(booking.owner_events || [], today)[0];
+/**
+ * By when to buy: the party of the wishlist owner the user is invited to, or
+ * else the owner's nearest event. Opens the event page.
+ */
+function NearestEvent({
+  booking,
+  today,
+  onOpen,
+}: {
+  booking: Booking;
+  today: Date;
+  onOpen: (key: string, date: string) => void;
+}) {
+  const events = upcomingEvents(booking.owner_events || [], today);
+  const next =
+    events.find((e) =>
+      booking.my_events?.some((m) => m.key === e.key && m.date === e.date),
+    ) || events[0];
   if (!next || booking.archived) return null;
+  const nearest = next === events[0];
   return (
-    <p className="small-text booking-event">
-      Успеть к {eventDay(next.date)} ({next.title}) —{" "}
-      {next.days
-        ? `до ближайшего мероприятия ${daysLeft(next.days)}`
-        : "мероприятие уже сегодня"}
-    </p>
+    <button
+      className="text-link booking-event"
+      onClick={() => onOpen(next.key, next.date)}
+    >
+      <CalendarDays size={14} />
+      <span>
+        Успеть к {eventDay(next.date)} ({next.title}) —{" "}
+        {next.days
+          ? `до ${nearest ? "ближайшего " : ""}мероприятия ${daysLeft(next.days)}`
+          : "мероприятие уже сегодня"}
+      </span>
+    </button>
   );
 }

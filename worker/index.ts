@@ -41,7 +41,13 @@ import {
 } from "./gifts";
 import { botRoute, cleanupBotStates } from "./bot";
 import { birthdayReminders } from "./birthdays";
-import { PARTY_PEER, bookerNames, eventRoute, invitations } from "./events";
+import {
+  PARTY_PEER,
+  bookerNames,
+  eventRoute,
+  invitations,
+  myParties,
+} from "./events";
 import { eventSpecs, isGender } from "../shared/events";
 export type { Env } from "./core";
 interface Gift {
@@ -1111,10 +1117,17 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
           }>()
         ).results
       : [];
+    // Parties of these owners the user is invited to: the booking links there.
+    const mine = await myParties(db, uid);
     return {
       reservations: rows.map(
         ({ visible, birthday, gender, event_title, event_date, ...r }) => ({
           ...r,
+          my_events: visible
+            ? mine
+                .filter((e) => e.owner_id === r.owner_id)
+                .map(({ key, date }) => ({ key, date }))
+            : [],
           // When to buy by: the owner's events, while their list is visible.
           owner_events: visible
             ? eventSpecs({
@@ -1243,6 +1256,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     method,
     () => body(req),
     (key, max) => rate(db, key, max),
+    (owner) => canView(db, owner, user, guest),
   );
   if (events) return events;
   // ---- Fetching from other sites (user-initiated, authenticated, rate-limited) ----

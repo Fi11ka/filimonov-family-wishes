@@ -2113,8 +2113,15 @@ test("event page: owner edits guests and the description, cancels the party, the
     ["842", "844"],
   );
   assert.equal(page.body.is_owner, false);
-  // Not invited (any more): no page.
-  assert.equal((await call(`/events/841/birthday/${date}`, 843)).status, 404);
+  // Not invited (any more): the page shows the event only — no guests, no text.
+  const outside = await call(`/events/841/birthday/${date}`, 843);
+  assert.equal(outside.status, 200);
+  assert.equal(outside.body.invited, false);
+  assert.deepEqual(outside.body.guests, []);
+  assert.equal(outside.body.description, "");
+  // Someone who cannot see the wishlist gets nothing.
+  await call("/me", 849);
+  assert.equal((await call(`/events/841/birthday/${date}`, 849)).status, 404);
   // «Передумал справлять»: guests are told, the event and its text remain.
   const cancelled = await call("/events/cancel", 841, "POST", {
     key: "birthday",
@@ -2125,7 +2132,10 @@ test("event page: owner edits guests and the description, cancels the party, the
     (await messages(842, 2))[1].text,
     /отменил\(а\) праздник «День рождения»/,
   );
-  assert.equal((await call(`/events/841/birthday/${date}`, 842)).status, 404);
+  assert.equal(
+    (await call(`/events/841/birthday/${date}`, 842)).body.invited,
+    false,
+  );
   const after = await call(`/events/841/birthday/${date}`, 841);
   assert.deepEqual(after.body.guests, []);
   assert.equal(after.body.description, "Кафе «Ромашка», 19:00");
@@ -2137,7 +2147,10 @@ test("event page: owner edits guests and the description, cancels the party, the
   // A moved birthday drops that party; saving the same one keeps it.
   await party({ friends: ["842"] });
   await call("/me", 841, "PATCH", { birthday: isoIn(9).slice(5) });
-  assert.equal((await call(`/events/841/birthday/${date}`, 842)).status, 200);
+  assert.equal(
+    (await call(`/events/841/birthday/${date}`, 842)).body.invited,
+    true,
+  );
   await call("/me", 841, "PATCH", { birthday: isoIn(10).slice(5) });
   assert.equal((await call(`/events/841/birthday/${date}`, 842)).status, 404);
 });
@@ -2191,4 +2204,62 @@ test("«праздник для всех» opens guests' lists to each other eve
     (await call(`/gifts/${other}/reservation`, 853, "DELETE")).status,
     200,
   );
+});
+
+test("people who are not friends are invited by username and see the event, the list and their bookings' event", async () => {
+  await call("/me", 861);
+  await call("/me", 862);
+  await call("/me", 863);
+  await call("/events/custom", 861, "PUT", {
+    title: "Свадьба",
+    date: isoIn(15),
+  });
+  const g = await gift(861, { title: "Сервиз" });
+  const party = (v: object) =>
+    call("/events/party", 861, "PUT", {
+      key: "custom",
+      date: isoIn(15),
+      ...v,
+    });
+  // A user ID of a stranger is ignored; an unknown username is an error.
+  await party({ friends: ["863"] });
+  assert.equal((await call("/lists/861", 863)).status, 404);
+  const unknown = await party({ usernames: ["@nobody_here_42"] });
+  assert.equal(unknown.status, 404);
+  assert.match(unknown.body.error.message, /@nobody_here_42/);
+  assert.equal((await party({ usernames: ["not a nick"] })).status, 400);
+  // By username: invited, told by the bot, the list opens.
+  const ok = await party({ usernames: ["@User_862"] });
+  assert.equal(ok.status, 200, ok.raw);
+  assert.deepEqual(
+    ok.body.invitations[0].guests.map((x: any) => x.id),
+    ["862"],
+  );
+  assert.match(
+    (await messages(862))[0].reply_markup.inline_keyboard[0][0].web_app.url,
+    /open=e_861_custom_/,
+  );
+  assert.equal((await call("/lists/861", 862)).status, 200);
+  assert.equal(
+    (await call(`/gifts/${g}/reservation`, 862, "POST")).status,
+    200,
+  );
+  // Saving the list again with the guest's ID keeps them (no friendship needed).
+  await party({ friends: ["862"], mode: "hero" });
+  assert.equal(
+    (await call("/events", 861)).body.mine.find(
+      (e: any) => e.event.key === "custom",
+    ).guests,
+    1,
+  );
+  // «Мероприятия» of the guest and the link from «Мои брони».
+  const events = (await call("/events", 862)).body;
+  assert.equal(events.invited.length, 1);
+  assert.equal(events.invited[0].owner.id, "861");
+  assert.equal(events.invited[0].event.title, "Свадьба");
+  const booking = (await call("/reservations", 862)).body.reservations[0];
+  assert.deepEqual(booking.my_events, [{ key: "custom", date: isoIn(15) }]);
+  // Removed from the party: the list closes again.
+  await party({ friends: [] });
+  assert.equal((await call("/lists/861", 862)).status, 404);
 });

@@ -2929,3 +2929,87 @@ footer svg {
   align-items: center;
   gap: 12px 18px;
 }
+.back-to-friends {
+  align-self: flex-start;
+  margin-bottom: 8px;
+}
+.booking-event {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+  text-align: left;
+  font-size: 13px;
+}
+.invite-nick {
+  display: flex;
+  gap: 8px;
+}
+.invite-nick input {
+  flex: 1;
+  min-width: 0;
+}
+.invite-nicks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.invite-nicks li {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px 2px 10px;
+  border-radius: 999px;
+  background: #f1ecf8;
+  font-size: 13px;
+}
+.share-result .invite-nicks {
+  flex-direction: row;
+  align-items: flex-start;
+}
+.share-result .invite-nicks li {
+  flex-direction: row;
+  width: auto;
+}
+.share-result .invite-nicks .icon-button {
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+}
+.events-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 640px;
+}
+.event-people li:has(.event-row) {
+  padding: 0;
+}
+.event-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 0;
+  background: none;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.event-row > span:nth-child(2) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.event-icon.small {
+  font-size: 24px;
+}
+.event-open-list {
+  align-self: flex-start;
+}

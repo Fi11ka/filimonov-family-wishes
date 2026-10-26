@@ -5,10 +5,11 @@ import {
   eventSpecs,
   daysUntil,
   isUpcoming,
+  upcomingEvents,
   validEventDate,
   type EventSpec,
 } from "../shared/events";
-import { fail, text, type Identity } from "./security";
+import { fail, text, usernameOf, type Identity } from "./security";
 import { FRIEND_OF, now, stmt } from "./core";
 import type { Outbox } from "./notify";
 export const GUEST_LIMIT = 50;
@@ -46,12 +47,13 @@ type PartyRow = {
 const member = (u: string) =>
   `(p.owner_id=${u} OR EXISTS(SELECT 1 FROM event_guests x WHERE x.owner_id=p.owner_id AND x.event_key=p.event_key AND x.event_on=p.event_on AND x.user_id=${u}))`;
 /**
- * SQL condition: `viewer` and `owner` meet at an upcoming «праздник для всех»,
- * which opens their wishlists to each other even if they are not friends.
+ * SQL condition: `viewer` is a guest of `owner`'s upcoming party, or both take
+ * part in a «праздник для всех». It opens the list even without friendship
+ * (people can be invited by their Telegram username).
  * Stale rows (a changed birthday or gender) are removed when the profile changes.
  */
 export const PARTY_PEER = (viewer: string, owner: string) =>
-  `EXISTS(SELECT 1 FROM event_parties p WHERE p.mode='everyone' AND p.event_on>=date('now','-1 day') AND ${member(viewer)} AND ${member(owner)})`;
+  `EXISTS(SELECT 1 FROM event_parties p WHERE p.event_on>=date('now','-1 day') AND ${member(viewer)} AND (p.owner_id=${owner} OR (p.mode='everyone' AND ${member(owner)})))`;
 /** Groups guest rows into parties that are still ahead (a changed birthday leaves old rows behind). */
 async function parties(db: D1Database, rows: PartyRow[]) {
   const specs = new Map<string, EventSpec[]>();
@@ -158,6 +160,24 @@ export async function bookerNames(
   }
   return names;
 }
+/** Upcoming parties the user is a guest of, nearest first. */
+export async function myParties(db: D1Database, uid: string) {
+  const rows = (
+    await stmt(
+      db,
+      "SELECT owner_id,event_key AS key,event_on AS date FROM event_guests WHERE user_id=? AND event_on>=date('now','-2 days') ORDER BY event_on",
+      uid,
+    ).all<{ owner_id: string; key: string; date: string }>()
+  ).results;
+  const specs = new Map<string, EventSpec[]>();
+  const found = [];
+  for (const r of rows) {
+    if (!specs.has(r.owner_id))
+      specs.set(r.owner_id, await ownerSpecs(db, r.owner_id));
+    if (isUpcoming(specs.get(r.owner_id)!, r.key, r.date)) found.push(r);
+  }
+  return found;
+}
 /** Owner's event routes; null when the path is not one of them. */
 export async function eventRoute(
   db: D1Database,
@@ -167,8 +187,51 @@ export async function eventRoute(
   method: string,
   body: () => Promise<Record<string, unknown>>,
   rate: (key: string, max: number) => Promise<void>,
+  canView: (owner: string) => Promise<boolean>,
 ) {
   const uid = user.id;
+  if (path === "/api/events" && method === "GET") {
+    // «Мероприятия»: one's own upcoming events and the parties one is invited to.
+    const specs = await ownerSpecs(db, uid);
+    const mine = await invitations(db, uid, uid);
+    const rows = (
+      await stmt(
+        db,
+        `SELECT p.owner_id,p.event_key,p.event_on,p.mode,u.name,u.username FROM event_parties p
+        JOIN event_guests e ON e.owner_id=p.owner_id AND e.event_key=p.event_key AND e.event_on=p.event_on AND e.user_id=?
+        JOIN users u ON u.id=p.owner_id WHERE p.event_on>=date('now','-2 days') ORDER BY p.event_on`,
+        uid,
+      ).all<{
+        owner_id: string;
+        event_key: string;
+        event_on: string;
+        mode: Mode;
+        name: string;
+        username: string | null;
+      }>()
+    ).results;
+    const invited = [];
+    for (const r of rows) {
+      const own = await ownerSpecs(db, r.owner_id);
+      if (!isUpcoming(own, r.event_key, r.event_on)) continue;
+      invited.push({
+        owner: { id: r.owner_id, name: r.name, username: r.username },
+        event: eventOf(own, r.event_key, r.event_on),
+        mode: r.mode,
+      });
+    }
+    return {
+      mine: upcomingEvents(specs, new Date(now() * 1000)).map((e) => {
+        const party = mine.find((p) => p.key === e.key && p.date === e.date);
+        return {
+          event: e,
+          mode: party?.mode || null,
+          guests: party?.guests.length || 0,
+        };
+      }),
+      invited,
+    };
+  }
   if (path === "/api/events/custom" && method === "PUT") {
     const b = await body();
     await rate(`event:${uid}`, 10);
@@ -265,10 +328,62 @@ export async function eventRoute(
         !value.every((v) => typeof v === "string" && /^\d+$/.test(v)))
     )
       fail(400, "VALIDATION", `Выберите до ${GUEST_LIMIT} друзей.`);
-    const wanted =
+    // People who are not friends are added by their Telegram username.
+    const names = b.usernames ?? [];
+    if (!Array.isArray(names) || names.length > GUEST_LIMIT)
+      fail(400, "VALIDATION", `Можно пригласить до ${GUEST_LIMIT} человек.`);
+    const wantedNames = names.map((n) => {
+      const u = usernameOf(n);
+      if (!u)
+        fail(
+          400,
+          "VALIDATION",
+          "Введите ник Telegram, например @anna_filimonova.",
+        );
+      return u;
+    });
+    const byName = wantedNames.length
+      ? (
+          await stmt(
+            db,
+            `SELECT id,username FROM users WHERE username IN (${wantedNames.map(() => "?").join(",")})`,
+            ...wantedNames,
+          ).all<{ id: string; username: string }>()
+        ).results
+      : [];
+    const unknown = wantedNames.filter(
+      (n) => !byName.some((u) => u.username === n),
+    );
+    if (unknown.length)
+      fail(
+        404,
+        "USER_NOT_FOUND",
+        `Не нашли ${unknown.map((n) => `@${n}`).join(", ")}. Человек должен хотя бы раз открыть приложение в Telegram.`,
+      );
+    const named = byName.map((u) => u.id);
+    const current =
       value === undefined
+        ? []
+        : (
+            await stmt(
+              db,
+              `SELECT user_id FROM event_guests WHERE ${WHERE}`,
+              uid,
+              key,
+              date,
+            ).all<{ user_id: string }>()
+          ).results.map((r) => r.user_id);
+    const wanted =
+      value === undefined && !named.length
         ? null
-        : [...new Set(value as string[])].filter((id) => id !== uid);
+        : [
+            ...new Set([
+              ...((value as string[] | undefined) ?? current),
+              ...named,
+            ]),
+          ].filter((id) => id !== uid);
+    if (wanted && wanted.length > GUEST_LIMIT)
+      fail(400, "VALIDATION", `Можно пригласить до ${GUEST_LIMIT} человек.`);
     const results = await db.batch([
       stmt(
         db,
@@ -290,16 +405,17 @@ export async function eventRoute(
               date,
               ...wanted,
             ),
-            // Only accepted friends of the owner can be invited.
+            // Friends by ID; anyone else only by the username typed now.
             ...wanted.map((id) =>
               stmt(
                 db,
                 `INSERT INTO event_guests(owner_id,event_key,event_on,user_id)
-                SELECT ?1,?2,?3,?4 WHERE ${FRIEND_OF("?4")} ON CONFLICT DO NOTHING RETURNING user_id`,
+                SELECT ?1,?2,?3,?4 WHERE ?5=1 OR ${FRIEND_OF("?4")} ON CONFLICT DO NOTHING RETURNING user_id`,
                 uid,
                 key,
                 date,
                 id,
+                named.includes(id) ? 1 : 0,
               ),
             ),
           ]
@@ -334,7 +450,8 @@ export async function eventRoute(
     /^\/api\/events\/(\d+)\/([a-z0-9_]+)\/(\d{4}-\d{2}-\d{2})$/,
   );
   if (page && method === "GET") {
-    // The event page: for the owner and the guests only.
+    // The event page: anyone who sees the wishlist; the guests and the
+    // description only for the owner and the guests.
     const [, ownerId, key, date] = page;
     const specs = await ownerSpecs(db, ownerId);
     if (!isUpcoming(specs, key, date))
@@ -342,8 +459,7 @@ export async function eventRoute(
     const party = (await invitations(db, ownerId, uid)).find(
       (p) => p.key === key && p.date === date,
     );
-    if (!party && ownerId !== uid)
-      fail(404, "NOT_FOUND", "Вы не приглашены на это мероприятие.");
+    if (!party && ownerId !== uid && !(await canView(ownerId))) missing();
     const owner = await stmt(
       db,
       "SELECT id,name,username FROM users WHERE id=?",
@@ -356,11 +472,13 @@ export async function eventRoute(
       description: party?.description || "",
       guests: party?.guests || [],
       is_owner: ownerId === uid,
+      invited: !!party && ownerId !== uid,
     };
   }
   return null;
 }
 const WHERE = "owner_id=? AND event_key=? AND event_on=?";
+const missing = (): never => fail(404, "NOT_FOUND", "Мероприятие недоступно.");
 /** The owner's upcoming event named in a request body. */
 async function ownEvent(
   db: D1Database,

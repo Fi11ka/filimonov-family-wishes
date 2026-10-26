@@ -7,7 +7,9 @@ import {
   Pencil,
   PartyPopper,
   Trash2,
+  UserPlus,
   Users,
+  X,
 } from "lucide-react";
 import {
   eventDay,
@@ -52,7 +54,7 @@ export function WishlistEvents({
   onChanged: () => Promise<void>;
   onProfile: () => void;
   /** Opens the event page (owner: any event; guests: the ones they are invited to). */
-  onOpen: (e: UpcomingEvent) => void;
+  onOpen?: (e: UpcomingEvent) => void;
   notice: (message: string) => void;
 }) {
   const [dialog, setDialog] = useState<"event" | "invite" | null>(null);
@@ -79,7 +81,7 @@ export function WishlistEvents({
                     <Pencil size={13} />
                   </button>
                 )}
-                {(own || party) && (
+                {onOpen && (
                   <button
                     className="text-link event-more"
                     onClick={() => onOpen(e)}
@@ -267,8 +269,31 @@ export function InviteDialog({
   const [picked, setPicked] = useState<string[]>(
     partyOf(event)?.guests.map((g) => g.id) || [],
   );
+  // People who are not friends are added by their Telegram username.
+  const [usernames, setUsernames] = useState<string[]>([]),
+    [nick, setNick] = useState("");
   const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  // Friends plus guests invited earlier by username.
+  const people = [
+    ...friends,
+    ...(partyOf(event)?.guests || []).filter(
+      (g) => !friends.some((f) => f.id === g.id),
+    ),
+  ];
+  function addNick() {
+    const v = nick.trim().replace(/^@/, "").toLowerCase();
+    if (!/^[a-z][a-z0-9_]{3,31}$/.test(v)) {
+      setError("Введите ник Telegram, например @anna_filimonova.");
+      return;
+    }
+    setError("");
+    const friend = people.find((p) => p.username?.toLowerCase() === v);
+    if (friend) {
+      if (!picked.includes(friend.id)) setPicked([...picked, friend.id]);
+    } else if (!usernames.includes(v)) setUsernames([...usernames, v]);
+    setNick("");
+  }
   function choose(next: string) {
     setKey(next);
     const party = partyOf(events.find((e) => e.key === next));
@@ -293,10 +318,11 @@ export function InviteDialog({
             date: event.date,
             mode,
             friends: picked,
+            usernames,
           })
             .then(() =>
               onSaved(
-                picked.length
+                picked.length || usernames.length
                   ? "Список гостей сохранён, новым гостям ушли приглашения"
                   : "Список гостей пуст",
               ),
@@ -340,9 +366,9 @@ export function InviteDialog({
           Гости увидят, кто ещё приглашён. Кто и что забронировал в своём
           вишлисте, не видит никто — и вы тоже.
         </p>
-        {friends.length ? (
+        {people.length ? (
           <div className="friend-picker">
-            {friends.map((f) => (
+            {people.map((f) => (
               <label key={f.id} className="setting-toggle">
                 <input
                   type="checkbox"
@@ -363,10 +389,53 @@ export function InviteDialog({
           </div>
         ) : (
           <p className="small-text">
-            <Users size={14} /> Пока некого позвать: добавьте друзей во вкладке
-            «Друзья».
+            <Users size={14} /> Друзей пока нет — пригласите по нику Telegram.
           </p>
         )}
+        <div className="invite-nick">
+          <input
+            aria-label="Ник Telegram"
+            placeholder="@ник в Telegram"
+            value={nick}
+            disabled={busy}
+            onChange={(e) => setNick(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addNick();
+              }
+            }}
+          />
+          <button
+            type="button"
+            className="button secondary"
+            disabled={busy || !nick.trim()}
+            onClick={addNick}
+          >
+            <UserPlus size={15} /> Добавить
+          </button>
+        </div>
+        {usernames.length > 0 && (
+          <ul className="invite-nicks">
+            {usernames.map((u) => (
+              <li key={u}>
+                @{u}
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label={`Убрать @${u}`}
+                  onClick={() => setUsernames(usernames.filter((x) => x !== u))}
+                >
+                  <X size={13} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="small-text">
+          По нику можно позвать и тех, кто не в друзьях: человек должен хотя бы
+          раз открыть приложение. Гости видят вишлист виновника торжества.
+        </p>
         {error && (
           <p className="error" role="alert">
             {error}
@@ -386,6 +455,8 @@ type EventPageData = {
   description: string;
   guests: { id: string; name: string; username: string | null }[];
   is_owner: boolean;
+  /** Guests and the description are shown only to the owner and the guests. */
+  invited?: boolean;
 };
 /** Who is invited and what the party is about; the owner edits it here. */
 export function EventPage({
@@ -435,6 +506,7 @@ export function EventPage({
           username: username ?? null,
         })),
         is_owner: owner === me,
+        invited: owner !== me,
       });
       return;
     }
@@ -572,10 +644,22 @@ export function EventPage({
           <Pencil size={14} /> Добавить описание: место, время, дресс-код
         </button>
       ) : null}
-      <h3 className="event-subtitle">
+      <h3 className="event-subtitle" hidden={!own && !data.invited}>
         Участники{data.guests.length ? ` · ${data.guests.length + 1}` : ""}
       </h3>
-      {data.guests.length ? (
+      {!own && !data.invited ? (
+        <>
+          <p className="muted">
+            Описание и список гостей видят только приглашённые.
+          </p>
+          <button
+            className="button secondary event-open-list"
+            onClick={() => onOpenList(data.owner.id)}
+          >
+            Вишлист: {data.owner.name} <ArrowUpRight size={14} />
+          </button>
+        </>
+      ) : data.guests.length ? (
         <ul className="event-people">
           {people.map((p) => (
             <li key={p.id}>
@@ -671,6 +755,125 @@ export function EventPage({
           }}
         />
       )}
+    </section>
+  );
+}
+type EventsData = {
+  mine: {
+    event: UpcomingEvent;
+    mode: "hero" | "everyone" | null;
+    guests: number;
+  }[];
+  invited: {
+    owner: { id: string; name: string; username: string | null };
+    event: UpcomingEvent;
+    mode: "hero" | "everyone";
+  }[];
+};
+const guestWord = (n: number) =>
+  n % 10 === 1 && n % 100 !== 11
+    ? "гость"
+    : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14)
+      ? "гостя"
+      : "гостей";
+/** «Мероприятия»: parties one is invited to and one's own upcoming events. */
+export function EventsList({
+  me,
+  today,
+  onOpen,
+}: {
+  me: string;
+  today: Date;
+  onOpen: (owner: string, key: string, date: string) => void;
+}) {
+  const [data, setData] = useState<EventsData | null>(null),
+    [error, setError] = useState("");
+  useEffect(() => {
+    if (demo) {
+      setData({
+        mine: upcomingEvents(eventSpecs({}), today).map((event) => ({
+          event,
+          mode: null,
+          guests: 0,
+        })),
+        invited: [],
+      });
+      return;
+    }
+    api<EventsData>("/api/events")
+      .then(setData)
+      .catch((e) => setError((e as Error).message));
+  }, []);
+  if (error)
+    return (
+      <div className="error" role="alert">
+        {error}
+      </div>
+    );
+  if (!data)
+    return (
+      <div className="loading" role="status">
+        <span />
+        Загрузка…
+      </div>
+    );
+  const left = (e: UpcomingEvent) => {
+    const d = Math.max(0, daysUntil(e.date, today));
+    return d ? daysLeft(d) : "сегодня";
+  };
+  return (
+    <section className="events-list">
+      <h3 className="event-subtitle">Меня пригласили</h3>
+      {data.invited.length ? (
+        <ul className="event-people">
+          {data.invited.map((p) => (
+            <li key={`${p.owner.id}:${p.event.key}:${p.event.date}`}>
+              <button
+                className="event-row"
+                onClick={() => onOpen(p.owner.id, p.event.key, p.event.date)}
+              >
+                <span className="event-icon small">{icons[p.event.key]}</span>
+                <span>
+                  <strong>{p.event.title}</strong> · {p.owner.name}
+                  <small>
+                    {eventDay(p.event.date)} · {left(p.event)} ·{" "}
+                    {modeText[p.mode]}
+                  </small>
+                </span>
+                <ChevronRight size={16} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">Пока никто не пригласил.</p>
+      )}
+      <h3 className="event-subtitle">Мои мероприятия</h3>
+      <ul className="event-people">
+        {data.mine.map((m) => (
+          <li key={m.event.key}>
+            <button
+              className="event-row"
+              onClick={() => onOpen(me, m.event.key, m.event.date)}
+            >
+              <span className="event-icon small">{icons[m.event.key]}</span>
+              <span>
+                <strong>{m.event.title}</strong>
+                <small>
+                  {eventDay(m.event.date)} · {left(m.event)} ·{" "}
+                  {m.guests
+                    ? `${m.guests} ${guestWord(m.guests)} · ${modeText[m.mode || "hero"]}`
+                    : "гостей нет"}
+                </small>
+              </span>
+              <ChevronRight size={16} />
+            </button>
+          </li>
+        ))}
+      </ul>
+      <p className="small-text">
+        Своё мероприятие и день рождения добавляются в шапке «Моего вишлиста».
+      </p>
     </section>
   );
 }
