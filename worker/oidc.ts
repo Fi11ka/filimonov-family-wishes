@@ -1,3 +1,4 @@
+import { isToken } from "../shared/token";
 import { fail, telegramPhotoUrl, usernameOf, type Identity } from "./security";
 // Telegram Login (OpenID Connect). The official telegram-login.js popup returns
 // a signed id_token; it is verified here with Telegram's published keys.
@@ -123,11 +124,7 @@ export async function verifyIdToken(
   )
     fail(401, "AUTH_EXPIRED", "Время входа истекло. Войдите ещё раз.");
   // Replay protection: the nonce we issued must be present and unused.
-  if (
-    typeof claims.nonce !== "string" ||
-    !/^[A-Za-z0-9_-]{43}$/.test(claims.nonce) ||
-    !(await opts.nonce(claims.nonce))
-  )
+  if (!isToken(claims.nonce) || !(await opts.nonce(claims.nonce)))
     fail(401, "AUTH_EXPIRED", "Время входа истекло. Войдите ещё раз.");
   // "id" (the Telegram user ID used by the Mini App) arrives with the profile scope;
   // "sub" is a different identifier and cannot be matched to existing accounts.
