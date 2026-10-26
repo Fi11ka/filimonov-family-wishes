@@ -17,6 +17,8 @@ import {
   Link as LinkIcon,
   X,
   Check,
+  CircleAlert,
+  Info,
   Sparkles,
   Search,
   ChevronDown,
@@ -92,6 +94,7 @@ import {
 import {
   type Booking,
   type Invitation,
+  type ToastTone,
   type User,
   type Friend,
   type Wish,
@@ -122,7 +125,9 @@ function App() {
   const [tab, setTab] = useState<Tab>(guestToken ? "friends" : "mine"),
     [loading, setLoading] = useState(!demo),
     [error, setError] = useState(""),
-    [toast, setToast] = useState("");
+    [toast, setToast] = useState<{ text: string; tone: ToastTone } | null>(
+      null,
+    );
   const [modal, setModal] = useState<ModalKind | null>(
       friendInvite && !demo ? "invite" : null,
     ),
@@ -216,11 +221,11 @@ function App() {
    * Signed in, the link just opens the list and the rest of the app works as usual. */
   const guestView = () => !!guestToken && !authShare && !signedIn();
   const own = !!user && owner?.id === user.id;
-  const notice = (message: string) => {
-    setToast(message);
-    setTimeout(() => setToast(""), 4500);
+  const notice = (message: string, tone: ToastTone = "ok") => {
+    setToast({ text: message, tone });
+    setTimeout(() => setToast(null), 4500);
   };
-  const fullscreen = useFullscreen(notice);
+  const fullscreen = useFullscreen((message) => notice(message, "error"));
   async function loadList(id: string) {
     setLoading(true);
     setError("");
@@ -279,7 +284,7 @@ function App() {
           // First open of a shared link: show that list like a friend's one.
           sharedOpened.current = true;
           const shared = await api("/api/guest").catch(() => null);
-          if (!shared) notice("Ссылка не найдена или отозвана");
+          if (!shared) notice("Ссылка не найдена или отозвана", "error");
           else if (shared.owner.id !== me.user.id) {
             id = shared.owner.id;
             setSharedOwner(id);
@@ -332,7 +337,9 @@ function App() {
       telegram.setBackgroundColor("#f8f6fc");
     }
     // «В браузере» from the Mini App: sign in with its one-time code first.
-    const handoff = redeemHandoff().catch((e) => notice((e as Error).message));
+    const handoff = redeemHandoff().catch((e) =>
+      notice((e as Error).message, "error"),
+    );
     void handoff.then(refresh).then(async () => {
       // Buttons in bot messages open a friend's list or «Мои брони».
       if (demo || !signedIn() || guestToken) return;
@@ -412,14 +419,14 @@ function App() {
   }
   async function guarded(action: () => Promise<void>, demoMessage: string) {
     if (demo) {
-      notice(demoMessage);
+      notice(demoMessage, "info");
       return;
     }
     setBusy(true);
     try {
       await action();
     } catch (e) {
-      notice((e as Error).message);
+      notice((e as Error).message, "error");
     } finally {
       setBusy(false);
     }
@@ -537,7 +544,10 @@ function App() {
         notice("Уведомления включены. Откройте бота и нажмите «Запустить»");
         openBot(r.notifications.bot_url);
       } else if (r.subscribed && !r.notifications.enabled)
-        notice("Уведомления включены, но в профиле выключены сообщения бота");
+        notice(
+          "Уведомления включены, но в профиле выключены сообщения бота",
+          "info",
+        );
       else
         notice(
           r.subscribed
@@ -692,7 +702,7 @@ function App() {
                     onClick={() => {
                       setOpening(true);
                       void openInBrowser()
-                        .catch((e) => notice((e as Error).message))
+                        .catch((e) => notice((e as Error).message, "error"))
                         .finally(() => setOpening(false));
                     }}
                     aria-label="Открыть в браузере"
@@ -863,7 +873,7 @@ function App() {
                       className="share-button"
                       onClick={() => {
                         if (demo) {
-                          notice("В демо ссылки не создаются.");
+                          notice("В демо ссылки не создаются.", "info");
                           return;
                         }
                         setModal("share");
@@ -1037,7 +1047,7 @@ function App() {
                             className="button secondary"
                             onClick={() => {
                               if (demo) {
-                                notice("В демо ссылки не создаются.");
+                                notice("В демо ссылки не создаются.", "info");
                                 return;
                               }
                               setModal("share");
@@ -1153,7 +1163,7 @@ function App() {
                         className="icon-button"
                         aria-label="Обновить список"
                         onClick={() => {
-                          if (demo) notice("Демонстрационные данные");
+                          if (demo) notice("Демонстрационные данные", "info");
                           else if (tab === "archive") void loadArchive();
                           else if (guestView()) void refresh();
                           else if (owner) void loadList(owner.id);
@@ -1414,13 +1424,22 @@ function App() {
           )}
         </main>
       </div>
-      {toast && (
-        <div className="toast" role="status">
-          <Check size={17} />
-          {toast}
+      {toast?.text && (
+        <div
+          className={`toast ${toast.tone}`}
+          role={toast.tone === "error" ? "alert" : "status"}
+        >
+          {toast.tone === "error" ? (
+            <CircleAlert size={17} />
+          ) : toast.tone === "info" ? (
+            <Info size={17} />
+          ) : (
+            <Check size={17} />
+          )}
+          {toast.text}
           <button
             className="icon-button"
-            onClick={() => setToast("")}
+            onClick={() => setToast(null)}
             aria-label="Закрыть уведомление"
           >
             <X size={16} />

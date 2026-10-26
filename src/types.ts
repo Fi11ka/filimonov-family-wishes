@@ -80,3 +80,5 @@ export type Booking = {
     status: "invited" | "joined";
   }[];
 };
+/** How a toast reads: done, a hint that nothing changed, or a failure. */
+export type ToastTone = "ok" | "info" | "error";
