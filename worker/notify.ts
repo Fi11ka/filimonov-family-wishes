@@ -46,6 +46,19 @@ export const openButton = (env: Env, text: string, open?: string): Button => ({
   text,
   web_app: { url: appUrl(env, open) },
 });
+/** The app screen a message leads to: its Mini App button, or where its answer buttons live. */
+function screenOf(keyboard?: Keyboard) {
+  for (const b of keyboard?.flat() || []) {
+    if ("web_app" in b)
+      return new URL(b.web_app.url).searchParams.get("open") || null;
+    if ("callback_data" in b) {
+      const kind = b.callback_data.split(":")[0];
+      if (kind === "fa" || kind === "fd") return "f";
+      if (kind === "gj" || kind === "gd") return "b";
+    }
+  }
+  return null;
+}
 type Named = { id: string; name: string; username?: string | null };
 const who = (u: Named) =>
   `<b>${esc(u.name)}</b>${u.username ? ` (@${esc(u.username)})` : ""}`;
@@ -76,9 +89,26 @@ export class Outbox {
    */
   send(ids: string[], text: string, keyboard?: Keyboard) {
     const unique = [...new Set(ids)];
-    if (!unique.length || !this.env.BOT_TOKEN) return;
+    if (!unique.length) return;
     this.jobs.push(
       (async () => {
+        // Everyone gets it in the app's «Уведомления», with or without the bot.
+        const saved = new Map<string, number>();
+        const open = screenOf(keyboard);
+        for (const r of await this.db.batch(
+          unique.map((id) =>
+            stmt(
+              this.db,
+              "INSERT INTO notifications(user_id,text,open) SELECT id,?,? FROM users WHERE id=? RETURNING id,user_id",
+              text,
+              open,
+              id,
+            ),
+          ),
+        ))
+          for (const n of r.results as { id: number; user_id: string }[])
+            saved.set(n.user_id, n.id);
+        if (!this.env.BOT_TOKEN) return;
         const rows = (
           await stmt(
             this.db,
@@ -98,6 +128,15 @@ export class Outbox {
                 ? { reply_markup: { inline_keyboard: keyboard } }
                 : {}),
             });
+            const message = (r.result as { message_id?: number } | undefined)
+              ?.message_id;
+            if (r.ok && message && saved.has(id))
+              await stmt(
+                this.db,
+                "UPDATE notifications SET tg_message_id=? WHERE id=?",
+                message,
+                saved.get(id),
+              ).run();
             // 403: the user never pressed Start or blocked the bot. Stop trying until they write.
             if (r.status === 403)
               await stmt(

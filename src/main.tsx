@@ -79,8 +79,9 @@ import {
   demoUser,
 } from "./demo";
 import { GiftForm, Share, Modal, Confirm } from "./forms";
-import { Profile, Requests } from "./friends";
+import { Profile } from "./friends";
 import { Features, Welcome } from "./welcome";
+import { Notifications as NotesList } from "./notifications";
 import { telegramAppLink } from "./telegram-links";
 import { Face } from "./avatar";
 import { ImportDialog } from "./import/ImportDialog";
@@ -107,7 +108,14 @@ import {
   money,
 } from "./types";
 import "./style.css";
-type Tab = "mine" | "friends" | "bookings" | "events" | "archive" | "event";
+type Tab =
+  | "mine"
+  | "friends"
+  | "bookings"
+  | "events"
+  | "archive"
+  | "event"
+  | "notifications";
 type ModalKind = "gift" | "share" | "profile" | "import";
 /** «Подписки»: whom I follow, my followers, requests to follow me. */
 type People = {
@@ -132,7 +140,9 @@ function App() {
       requests: demo ? demoIncoming.map((p) => ({ ...p, gift_count: 0 })) : [],
       outgoing: [],
     }),
-    [peopleTab, setPeopleTab] = useState<keyof People>("following"),
+    [peopleTab, setPeopleTab] = useState<"following" | "followers">(
+      "following",
+    ),
     [viewed, setViewed] = useState<Viewed | null>(null);
   // My people, whom I can invite to an event or a shared gift.
   const friends: Friend[] = [
@@ -165,6 +175,8 @@ function App() {
     [menu, setMenu] = useState(false),
     [opening, setOpening] = useState(false),
     [webSession, setWebSession] = useState(false);
+  /** Unread «Уведомления»: the badge on the bell in the header. */
+  const [unread, setUnread] = useState(0);
   const [today, setToday] = useState(() => new Date());
   useEffect(() => {
     const timer = setInterval(() => setToday(new Date()), 60000);
@@ -245,6 +257,39 @@ function App() {
     setTimeout(() => setToast(null), 4500);
   };
   const fullscreen = useFullscreen((message) => notice(message, "error"));
+  async function countUnread() {
+    if (demo || !signedIn()) return;
+    const r = await api("/api/notifications?count=1").catch(() => null);
+    if (r) setUnread(r.unread);
+  }
+  useEffect(() => {
+    if (!user) return;
+    void countUnread();
+    // The bot may write any time; check now and then and when the app comes back.
+    const timer = setInterval(() => void countUnread(), 60000);
+    const back = () => {
+      if (document.visibilityState === "visible") void countUnread();
+    };
+    document.addEventListener("visibilitychange", back);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", back);
+    };
+  }, [user?.id]);
+  /** Where a notification leads: a profile, «Мои брони», an event, or the followers. */
+  async function openNote(target: string) {
+    const e = target.match(
+      new RegExp(`^e_(${ACCOUNT_ID_PART})_([a-z0-9_]+)_(\\d{4}-\\d{2}-\\d{2})$`),
+    );
+    if (new RegExp(`^l_(${ACCOUNT_ID_PART})$`).test(target)) {
+      if (target.slice(2) === user?.id) await navigate("mine");
+      else await openPerson(target.slice(2));
+    } else if (target === "b") await navigate("bookings");
+    else if (target === "f") {
+      setPeopleTab("followers");
+      await navigate("friends");
+    } else if (e) openEvent(e[1], e[2], e[3]);
+  }
   async function loadList(id: string) {
     setLoading(true);
     setError("");
@@ -410,6 +455,11 @@ function App() {
       // Buttons in bot messages open a profile or «Мои брони».
       if (demo || !signedIn() || guestToken || profileTarget || legacyLink)
         return;
+      // Opened from a bot button: that message has been seen.
+      if (openTarget)
+        void api("/api/notifications/read", "POST", { open: openTarget })
+          .then(countUnread)
+          .catch(() => undefined);
       if (new RegExp(`^l_(${ACCOUNT_ID_PART})$`).test(openTarget))
         await openPerson(openTarget.slice(2));
       else if (openTarget === "b") await navigate("bookings");
@@ -680,6 +730,20 @@ function App() {
         }, "В демо подписки не меняются."),
     });
   }
+  async function approveFollower(p: Person) {
+    await guarded(async () => {
+      await api(`/api/followers/${p.id}/approve`, "POST");
+      notice("Подписка одобрена");
+      await loadFriends();
+    }, "В демо подписки не меняются.");
+  }
+  async function declineFollower(p: Person) {
+    await guarded(async () => {
+      await api(`/api/followers/${p.id}`, "DELETE");
+      notice("Запрос отклонён");
+      await loadFriends();
+    }, "В демо подписки не меняются.");
+  }
   /** Take my list away from a follower; they are not told. */
   function removeFollower(p: Person) {
     setConfirmation({
@@ -833,6 +897,19 @@ function App() {
                     <span>В Telegram</span>
                   </a>
                 )}
+            {user && !demo && (
+              <button
+                className={`icon-button notes-button ${tab === "notifications" ? "active" : ""}`}
+                onClick={() => void navigate("notifications")}
+                aria-label={unread ? `Уведомления: ${unread} новых` : "Уведомления"}
+                title="Уведомления"
+              >
+                <Bell size={18} />
+                {unread > 0 && (
+                  <span className="nav-count">{unread > 99 ? "99+" : unread}</span>
+                )}
+              </button>
+            )}
             {/* The bot chat: notifications, reminders and answers to requests. */}
             <button
               className="switch-app"
@@ -950,7 +1027,9 @@ function App() {
                 <div className="title-main">
                   <div className="title-line">
                   <h1>
-                    {tab === "event"
+                    {tab === "notifications"
+                      ? "Уведомления"
+                      : tab === "event"
                       ? "Мероприятие"
                       : tab === "events"
                         ? "Мероприятия"
@@ -1073,7 +1152,6 @@ function App() {
                         [
                           ["following", "Подписки"],
                           ["followers", "Подписчики"],
-                          ["requests", "Запросы"],
                         ] as const
                       ).map(([key, label]) => (
                         <button
@@ -1083,14 +1161,16 @@ function App() {
                           className={peopleTab === key ? "selected" : ""}
                           onClick={() => setPeopleTab(key)}
                         >
-                          {label}
-                          {key === "requests"
-                            ? people.requests.length > 0 && (
-                                <span className="nav-count">
-                                  {people.requests.length}
-                                </span>
-                              )
-                            : ` ${people[key].length}`}
+                          {/* Waiting requests are not counted until approved. */}
+                          {label} {people[key].length}
+                          {key === "followers" && people.requests.length > 0 && (
+                            <span
+                              className="nav-count"
+                              aria-label={`Запросов: ${people.requests.length}`}
+                            >
+                              +{people.requests.length}
+                            </span>
+                          )}
                         </button>
                       ))}
                     </div>
@@ -1108,57 +1188,74 @@ function App() {
                       Поделиться профилем
                     </button>
                   </div>
-                  {peopleTab === "requests" ? (
-                    people.requests.length || people.outgoing.length ? (
-                      <Requests
-                        incoming={people.requests}
-                        outgoing={people.outgoing}
-                        notice={notice}
-                        onOpen={(id) => void openPerson(id)}
-                        onChanged={() => void loadFriends()}
-                      />
+                  {(() => {
+                    // Requests sit with the people they concern: mine to follow
+                    // others in «Подписки», others' to follow me in «Подписчики».
+                    const waiting =
+                      peopleTab === "following" ? people.outgoing : people.requests;
+                    const shown = [...waiting, ...people[peopleTab]];
+                    return shown.length ? (
+                      <div className="members">
+                        {shown.map((m, i) => {
+                          const pending = i < waiting.length;
+                          return (
+                            <div className="member-tile" key={m.id}>
+                              <button
+                                className={`member ${pending ? "pending" : ""}`}
+                                onClick={() => openFriend(m)}
+                              >
+                                <span className={`avatar tone-${i % 4}`}>
+                                  <Face user={m} />
+                                </span>
+                                <strong>{m.name.split(" ")[0]}</strong>
+                                {m.username && <small>@{m.username}</small>}
+                                {pending && peopleTab === "following" ? (
+                                  <em className="pending-badge">ждёт одобрения</em>
+                                ) : pending ? (
+                                  <em className="pending-badge">просит доступ</em>
+                                ) : (
+                                  <span>{wishCount(m.gift_count)}</span>
+                                )}
+                              </button>
+                              {pending && peopleTab === "followers" && (
+                                <div className="member-actions">
+                                  <button
+                                    className="button primary"
+                                    disabled={busy}
+                                    onClick={() => void approveFollower(m)}
+                                  >
+                                    <Check size={14} /> Одобрить
+                                  </button>
+                                  <button
+                                    className="icon-button"
+                                    aria-label={`Отклонить запрос: ${m.name}`}
+                                    disabled={busy}
+                                    onClick={() => void declineFollower(m)}
+                                  >
+                                    <X size={16} />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     ) : (
                       <div className="empty compact">
                         <Users />
-                        <h3>Запросов нет</h3>
+                        <h3>
+                          {peopleTab === "following"
+                            ? "Вы пока ни на кого не подписаны"
+                            : "Подписчиков пока нет"}
+                        </h3>
                         <p>
-                          Здесь появятся те, кто хочет подписаться на ваш
-                          закрытый профиль.
+                          {peopleTab === "following"
+                            ? "Попросите близких прислать ссылку на их профиль."
+                            : "Отправьте близким ссылку на свой профиль."}
                         </p>
                       </div>
-                    )
-                  ) : people[peopleTab].length ? (
-                    <div className="members">
-                      {people[peopleTab].map((m, i) => (
-                        <button
-                          className="member"
-                          key={m.id}
-                          onClick={() => openFriend(m)}
-                        >
-                          <span className={`avatar tone-${i % 4}`}>
-                            <Face user={m} />
-                          </span>
-                          <strong>{m.name.split(" ")[0]}</strong>
-                          {m.username && <small>@{m.username}</small>}
-                          <span>{wishCount(m.gift_count)}</span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="empty compact">
-                      <Users />
-                      <h3>
-                        {peopleTab === "following"
-                          ? "Вы пока ни на кого не подписаны"
-                          : "Подписчиков пока нет"}
-                      </h3>
-                      <p>
-                        {peopleTab === "following"
-                          ? "Попросите близких прислать ссылку на их профиль."
-                          : "Отправьте близким ссылку на свой профиль."}
-                      </p>
-                    </div>
-                  )}
+                    );
+                  })()}
                 </section>
               )}
               {!error && closedCard && viewed && (
@@ -1423,6 +1520,12 @@ function App() {
                       : openList(eventRef.owner))
                   }
                   onOpenList={(id, named) => void openList(id, named)}
+                />
+              )}
+              {tab === "notifications" && user && (
+                <NotesList
+                  onOpen={(target) => void openNote(target)}
+                  onRead={() => setUnread(0)}
                 />
               )}
               {tab === "events" && user && (
