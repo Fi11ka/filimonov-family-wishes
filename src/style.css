@@ -2811,3 +2811,55 @@ footer svg {
   line-height: 1.4;
   color: #9a83ad;
 }
+.wishlist-events ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.wishlist-events li {
+  display: flex;
+  flex-direction: column;
+}
+.wishlist-events li strong {
+  color: #342e42;
+  font-weight: 600;
+}
+.wishlist-events li small {
+  padding-left: 22px;
+}
+.wishlist-events .event-edit {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  vertical-align: middle;
+}
+.event-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 6px;
+}
+.event-mode {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+}
+.event-mode legend {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.event-mode small {
+  display: block;
+  color: var(--muted);
+}
+.booking-price {
+  margin: 2px 0;
+}
+.booking-event {
+  color: var(--purple-dark);
+}

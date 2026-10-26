@@ -1,4 +1,6 @@
-import { nextBirthday } from "../shared/birthday";
+import { daysLeft, eventDay, upcomingEvents } from "../shared/events";
+import { formatPrice, sharePrice } from "../shared/price";
+import { WishlistEvents } from "./events";
 import { ArchiveWish, ReserveDialog } from "./forms";
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -63,13 +65,14 @@ import { ImportDialog } from "./import/ImportDialog";
 import { comparePrice, priceInRubMinor } from "../shared/wish-price";
 import {
   type Booking,
+  type Invitation,
   type User,
   type Friend,
   type Wish,
   initials,
   handle,
-  money,
   wishCount,
+  money,
 } from "./types";
 import "./style.css";
 type Tab = "mine" | "friends" | "bookings" | "archive";
@@ -88,6 +91,7 @@ function App() {
     [outgoing, setOutgoing] = useState<User[]>([]);
   const [owner, setOwner] = useState<User | null>(demo ? demoUser : null),
     [gifts, setGifts] = useState<Wish[]>(demo ? demoGifts : []),
+    [invitations, setInvitations] = useState<Invitation[]>([]),
     [archive, setArchive] = useState<Wish[]>(demo ? demoArchive : []);
   const [tab, setTab] = useState<Tab>(guestToken ? "friends" : "mine"),
     [loading, setLoading] = useState(!demo),
@@ -164,6 +168,7 @@ function App() {
       const d = await api(`/api/lists/${id}`);
       setGifts(d.gifts);
       setOwner(d.owner);
+      setInvitations(d.invitations || []);
     } catch (e) {
       setError((e as Error).message);
       setGifts([]);
@@ -200,6 +205,7 @@ function App() {
         const d = await api("/api/guest");
         setOwner(d.owner);
         setGifts(d.gifts);
+        setInvitations(d.invitations || []);
         if (signedIn()) {
           const me = await api("/api/me");
           setUser(me.user);
@@ -213,6 +219,7 @@ function App() {
           const d = await api(`/api/lists/${me.user.id}`);
           setOwner(d.owner);
           setGifts(d.gifts);
+          setInvitations(d.invitations || []);
         } else if (owner) await loadList(owner.id);
         await loadFriends();
       }
@@ -667,26 +674,26 @@ function App() {
                     )}
                   {owner && showList && tab !== "bookings" && (
                     <div className="wishlist-meta">
-                      {owner.birthday ? (
-                        <span>
-                          День рождения:{" "}
-                          {new Intl.DateTimeFormat("ru-RU", {
-                            day: "numeric",
-                            month: "long",
-                            timeZone: "UTC",
-                          }).format(
-                            new Date(`2000-${owner.birthday}T00:00:00Z`),
-                          )}{" "}
-                          · {birthdayCountdown(owner.birthday, today)}
-                        </span>
-                      ) : own ? (
-                        <button
-                          className="text-link"
-                          onClick={() => setModal("profile")}
-                        >
-                          Указать дату рождения
-                        </button>
-                      ) : null}
+                      {tab !== "archive" && (
+                        <WishlistEvents
+                          owner={owner}
+                          own={own}
+                          today={today}
+                          invitations={invitations}
+                          friends={friends}
+                          notice={notice}
+                          onProfile={() => setModal("profile")}
+                          onChanged={async () => {
+                            if (own && user) {
+                              setUser({
+                                ...user,
+                                ...(await api("/api/me")).user,
+                              });
+                            }
+                            await loadList(owner.id);
+                          }}
+                        />
+                      )}
                       {owner.wishlist_updated_at ? (
                         <time
                           dateTime={new Date(
@@ -1101,12 +1108,10 @@ function App() {
                             <h3>{b.title}</h3>
                             <p>
                               {`Для ${b.owner_name}`}
-                              {b.price_minor !== null ||
-                              (b.price_max_minor ?? null) !== null
-                                ? ` · ${money(b as unknown as Wish)}`
-                                : ""}
                               {b.archived ? " · в архиве" : ""}
                             </p>
+                            <BookingPrice booking={b} />
+                            <NearestEvent booking={b} today={today} />
                             <p className="small-text">
                               {b.role === "invited"
                                 ? `${b.organizer_name || "Друг"} предлагает скинуться на этот подарок`
@@ -1455,6 +1460,11 @@ function GiftCard({
         <div className="gift-price">{money(g)}</div>
         <h3>{g.title}</h3>
         {g.description && <p>{g.description}</p>}
+        {g.reservation === "reserved" && !!g.booked_by?.length && (
+          <p className="small-text booked-by">
+            Забронировал(а): {g.booked_by.join(", ")}
+          </p>
+        )}
         {g.reservation === "mine" && !!g.group_joined && (
           <p className="small-text">
             Совместный подарок · участников: {g.group_joined + 1}
@@ -1604,16 +1614,37 @@ function Photo({ wish }: { wish: Wish }) {
 }
 createRoot(document.getElementById("root")!).render(<App />);
 
-function birthdayCountdown(birthday: string, today: Date) {
-  const info = nextBirthday(birthday, today);
-  if (!info) return "";
-  const n = info.days;
-  if (n === 0) return "сегодня";
-  const word =
-    n % 10 === 1 && n % 100 !== 11
-      ? "день"
-      : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14)
-        ? "дня"
-        : "дней";
-  return `через ${n} ${word}`;
+/** Full price and, for a shared gift, each participant's part. */
+function BookingPrice({ booking: b }: { booking: Booking }) {
+  const priced = b.price_minor !== null || (b.price_max_minor ?? null) !== null;
+  // Invitees do not see the other members; the organizer and members do.
+  const people =
+    b.role === "invited"
+      ? 0
+      : 1 + b.members.filter((m) => m.status === "joined").length;
+  return (
+    <p className="booking-price">
+      <strong>{priced ? formatPrice(b) : "Цена не указана"}</strong>
+      {priced && people > 1 && (
+        <>
+          {" "}
+          · с каждого {sharePrice(b, people)}{" "}
+          <span className="muted">(участников: {people})</span>
+        </>
+      )}
+    </p>
+  );
+}
+/** By when to buy: the nearest event of the wishlist owner. */
+function NearestEvent({ booking, today }: { booking: Booking; today: Date }) {
+  const next = upcomingEvents(booking.owner_events || [], today)[0];
+  if (!next || booking.archived) return null;
+  return (
+    <p className="small-text booking-event">
+      Успеть к {eventDay(next.date)} ({next.title}) —{" "}
+      {next.days
+        ? `до ближайшего мероприятия ${daysLeft(next.days)}`
+        : "мероприятие уже сегодня"}
+    </p>
+  );
 }
