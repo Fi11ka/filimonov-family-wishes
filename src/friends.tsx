@@ -13,7 +13,7 @@ import {
 import { api, demo, openBot, type Notifications } from "./api";
 import { CopyValue } from "./forms";
 import { AvatarEditor, Face } from "./avatar";
-import { type User, handle, initials } from "./types";
+import { type ToastTone, type User, handle, initials } from "./types";
 export function AddFriend({ onDone }: { onDone: (message: string) => void }) {
   const [mode, setMode] = useState<"nick" | "link">("nick"),
     [error, setError] = useState(""),
@@ -157,13 +157,13 @@ export function Requests({
   incoming: User[];
   outgoing: User[];
   onChanged: () => void;
-  notice: (m: string) => void;
+  notice: (m: string, tone?: ToastTone) => void;
 }) {
   const [busy, setBusy] = useState(false);
   if (!incoming.length && !outgoing.length) return null;
   async function act(path: string, method: string, message: string) {
     if (demo) {
-      notice("В демо заявки не меняются.");
+      notice("В демо заявки не меняются.", "info");
       return;
     }
     setBusy(true);
@@ -172,7 +172,7 @@ export function Requests({
       notice(message);
       onChanged();
     } catch (e) {
-      notice((e as Error).message);
+      notice((e as Error).message, "error");
     } finally {
       setBusy(false);
     }
