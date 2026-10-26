@@ -1,6 +1,7 @@
 import { ACCOUNT_ID_PART, isAccountId } from "../shared/account-id";
 import { validBirthday } from "../shared/birthday";
 import { legacyPriority } from "../shared/hearts";
+import { isId, isToken } from "../shared/token";
 import {
   ApiError,
   fail,
@@ -152,7 +153,7 @@ async function canView(
     ).first())
   )
     return true;
-  if (guest && /^[A-Za-z0-9_-]{43}$/.test(guest))
+  if (isToken(guest))
     return !!(await stmt(
       db,
       // Only the guest link: the Telegram «Поделиться» links now lead to the profile.
@@ -279,7 +280,7 @@ const PROFILE_PATH = new RegExp(`^/api/profiles/(${ACCOUNT_ID_PART})$`);
 const SESSION_DAYS = 30,
   SESSION_LIMIT = 10;
 async function sessionUser(db: D1Database, raw: string): Promise<Identity> {
-  const u = /^[A-Za-z0-9_-]{43}$/.test(raw)
+  const u = isToken(raw)
     ? await stmt(
         db,
         "SELECT u.id,u.name,u.username FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?",
@@ -474,15 +475,14 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     // The website exchanges a one-time code made in the Mini App for a session.
     await rate(db, `handoff:${await ipKey()}`, 10);
     const code = (await body(req)).code;
-    const row =
-      typeof code === "string" && /^[A-Za-z0-9_-]{43}$/.test(code)
-        ? await stmt(
-            db,
-            "DELETE FROM login_handoffs WHERE code_hash=? AND expires_at>? RETURNING user_id",
-            await hash(code),
-            now(),
-          ).first<{ user_id: string }>()
-        : null;
+    const row = isToken(code)
+      ? await stmt(
+          db,
+          "DELETE FROM login_handoffs WHERE code_hash=? AND expires_at>? RETURNING user_id",
+          await hash(code),
+          now(),
+        ).first<{ user_id: string }>()
+      : null;
     const account = row
       ? await stmt(
           db,
@@ -538,7 +538,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     return { photo: p.photo };
   }
   if (path === "/api/guest" && method === "GET") {
-    if (!guest || !/^[A-Za-z0-9_-]{43}$/.test(guest)) missing();
+    if (!isToken(guest)) missing();
     const link = await stmt(
       db,
       `SELECT owner_id FROM guest_links WHERE token_hash=? AND ${LINK_ACTIVE("guest_links", "?")} AND kind='guest'`,
@@ -558,7 +558,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     // Old «Поделиться» (s_) and friend invitation (f_) links lead to the owner's profile only.
     await rate(db, `resolve:${user?.id || (await ipKey())}`, 20);
     const raw = (await body(req)).token;
-    const valid = typeof raw === "string" && /^[A-Za-z0-9_-]{43}$/.test(raw);
+    const valid = isToken(raw);
     const owner = valid
       ? await stmt(
           db,
@@ -602,7 +602,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     // Guests cancel with the code their browser got when booking; the owner never manages guest bookings.
     const b = await body(req);
     const code = typeof b.code === "string" ? b.code : "";
-    if (!/^[A-Za-z0-9_-]{43}$/.test(code)) missing();
+    if (!isToken(code)) missing();
     const r = await stmt(
       db,
       "DELETE FROM reservations WHERE gift_id=? AND user_id IS NULL AND guest_code_hash=? RETURNING gift_id",
@@ -617,7 +617,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     const name = text(b.name, 80);
     if (!name)
       fail(400, "VALIDATION", "Введите имя того, кто покупает подарок.");
-    if (!guest || !/^[A-Za-z0-9_-]{43}$/.test(guest)) missing();
+    if (!isToken(guest)) missing();
     const code = token();
     const result = await stmt(
       db,
@@ -1011,14 +1011,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   if (path === "/api/gifts/announce" && method === "POST") {
     // After an import: one message to subscribers about all wishes added quietly.
     const b = await body(req);
-    const ids = Array.isArray(b.ids)
-      ? b.ids
-          .filter(
-            (v): v is string =>
-              typeof v === "string" && /^[a-f0-9-]{36}$/.test(v),
-          )
-          .slice(0, 100)
-      : [];
+    const ids = Array.isArray(b.ids) ? b.ids.filter(isId).slice(0, 100) : [];
     if (!ids.length) return { ok: true };
     await rate(db, `announce:${uid}`, 5);
     const rows = (
@@ -1254,8 +1247,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         ? await body(req)
         : {};
       // Access is rechecked INSIDE the atomic write; revocation/unfollowing cannot race this insert.
-      const guestHash =
-        guest && /^[A-Za-z0-9_-]{43}$/.test(guest) ? await hash(guest) : "";
+      const guestHash = isToken(guest) ? await hash(guest) : "";
       const r = await stmt(
         db,
         `INSERT INTO reservations(gift_id,user_id)

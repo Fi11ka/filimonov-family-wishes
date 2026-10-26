@@ -4,6 +4,7 @@
 import { MAX_HEARTS, legacyPriority } from "../shared/hearts";
 import { formatPrice, parsePriceText } from "../shared/price";
 import { isAccountId } from "../shared/account-id";
+import { isId } from "../shared/token";
 import { giftInfo, now, saveUser, stmt, type Env } from "./core";
 import {
   archiveGift,
@@ -755,7 +756,7 @@ async function onButton(chat: Chat, data: string) {
       [[openButton(chat.env, "Открыть профиль", `l_${a}`)]],
     );
   }
-  if ((kind === "gj" || kind === "gd") && /^[a-f0-9-]{36}$/.test(a)) {
+  if ((kind === "gj" || kind === "gd") && isId(a)) {
     const r = await stmt(
       chat.db,
       kind === "gj"

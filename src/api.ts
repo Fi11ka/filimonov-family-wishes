@@ -1,6 +1,7 @@
 export { BOT, profileLink } from "./telegram-links";
 import { closesAfterSwitch, telegramAppLink } from "./telegram-links";
 import { isAccountId } from "../shared/account-id";
+import { isToken } from "../shared/token";
 export const telegram = (
   window as unknown as {
     Telegram?: {
@@ -80,7 +81,7 @@ export const handoffCode = (() => {
     "",
     location.pathname + location.search + (rest ? `#${rest}` : ""),
   );
-  return /^[A-Za-z0-9_-]{43}$/.test(code) ? code : "";
+  return isToken(code) ? code : "";
 })();
 export const demo = new URLSearchParams(location.search).get("demo") === "1";
 // Website sign-in: session token from POST /api/auth/telegram-login. The Mini App
