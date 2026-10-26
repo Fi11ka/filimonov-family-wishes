@@ -1,3 +1,4 @@
+import { MAX_MINOR, isCurrency } from "../shared/price";
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -167,15 +168,10 @@ export function giftInput(b: Record<string, unknown>) {
   const title = text(b.title, 120, true),
     description = text(b.description ?? "", 2000);
   const currency = text(b.currency, 3);
-  if (
-    !["EUR", "USD", "RUB", "GBP", "GEL", "TRY", "KZT", "UAH", "BYN"].includes(
-      currency,
-    )
-  )
-    fail(400, "VALIDATION", "Выберите валюту.");
+  if (!isCurrency(currency)) fail(400, "VALIDATION", "Выберите валюту.");
   const amount = (v: unknown) => {
     if (v === null || v === undefined) return null;
-    if (!Number.isSafeInteger(v) || Number(v) < 0 || Number(v) > 100000000000)
+    if (!Number.isSafeInteger(v) || Number(v) < 0 || Number(v) > MAX_MINOR)
       fail(400, "VALIDATION", "Некорректная цена.");
     return v as number;
   };

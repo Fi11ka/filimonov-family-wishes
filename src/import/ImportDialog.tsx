@@ -21,7 +21,7 @@ import {
   RequestError,
   type ProductLookup,
 } from "../api";
-import { currencies, type Currency } from "../../shared/price";
+import { currencies, isCurrency, type Currency } from "../../shared/price";
 import { Hearts } from "../hearts";
 import { readCsv } from "./csv";
 import { parseChatList } from "../../shared/chat-list";
@@ -199,10 +199,8 @@ export function ImportDialog({
               priceMin: amountText(min),
               priceMax: amountText(max),
               currency:
-                !ownPrice &&
-                r?.price &&
-                (currencies as readonly string[]).includes(r.price.currency)
-                  ? (r.price.currency as Currency)
+                !ownPrice && r?.price && isCurrency(r.price.currency)
+                  ? r.price.currency
                   : "RUB",
               shopUrl: r?.url || item.url,
               description:
@@ -309,8 +307,8 @@ export function ImportDialog({
         patch.priceMode = result.price.max_minor !== null ? "range" : "exact";
         patch.priceMin = amountText(result.price.min_minor);
         patch.priceMax = amountText(result.price.max_minor);
-        if ((currencies as readonly string[]).includes(result.price.currency))
-          patch.currency = result.price.currency as Currency;
+        if (isCurrency(result.price.currency))
+          patch.currency = result.price.currency;
       }
       if (!r.image && result.image_url)
         patch.image = { kind: "url", url: result.image_url };

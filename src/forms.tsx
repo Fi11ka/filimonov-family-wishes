@@ -27,7 +27,7 @@ import {
 } from "./api";
 import { type Friend, type Wish } from "./types";
 import { Hearts } from "./hearts";
-import { currencies } from "../shared/price";
+import { currencies, isCurrency } from "../shared/price";
 import { LookupState } from "./lookup-state";
 import {
   DEFAULT_FRAMING,
@@ -362,8 +362,7 @@ export function GiftForm({
         setPriceMode(range ? "range" : "exact");
         setPriceMin(fromMinor(r.price.min_minor));
         setPriceMax(range ? fromMinor(r.price.max_minor) : "");
-        if ((currencies as readonly string[]).includes(r.price.currency))
-          setCurrency(r.price.currency);
+        if (isCurrency(r.price.currency)) setCurrency(r.price.currency);
         setPriceTouched(false);
       } else if (!r.price)
         notes.push(
@@ -447,8 +446,7 @@ export function GiftForm({
         setPriceMode(range ? "range" : "exact");
         setPriceMin(fromMinor(r.price.min_minor));
         setPriceMax(range ? fromMinor(r.price.max_minor) : "");
-        if ((currencies as readonly string[]).includes(r.price.currency))
-          setCurrency(r.price.currency);
+        if (isCurrency(r.price.currency)) setCurrency(r.price.currency);
         setPriceTouched(false);
       } else if (!r.price)
         notes.push("Цену на скриншоте не нашли — введите её вручную.");
