@@ -179,7 +179,7 @@ export class Outbox {
   }
   eventInvite(
     owner: Named,
-    event: EventLike,
+    event: EventLike & { key: string },
     mode: "hero" | "everyone",
     ids: string[],
   ) {
@@ -189,7 +189,21 @@ export class Outbox {
         (mode === "everyone"
           ? "Это праздник для всех: участники видят, кто из них что забронировал в вишлистах друг друга. В своём вишлисте никто этого не видит."
           : `В вишлисте ${esc(owner.name)} вы увидите, кто из приглашённых что забронировал. ${esc(owner.name)} этого не видит.`),
-      [[openButton(this.env, "Открыть вишлист", `l_${owner.id}`)]],
+      [
+        [
+          openButton(
+            this.env,
+            "Открыть мероприятие",
+            `e_${owner.id}_${event.key}_${event.date}`,
+          ),
+        ],
+      ],
+    );
+  }
+  eventCancelled(owner: Named, event: EventLike, ids: string[]) {
+    this.send(
+      ids,
+      `${who(owner)} отменил(а) праздник «${esc(event.title)}» (${eventDay(event.date)}). Приглашение больше не действует.`,
     );
   }
   friendRequest(from: Named, to: string) {

@@ -206,6 +206,7 @@ before(async () => {
   await migrate("migrations/0010_birthday_reminders.sql");
   await migrate("migrations/0011_hearts_and_about.sql");
   await migrate("migrations/0012_events.sql");
+  await migrate("migrations/0013_event_page.sql");
   assert.equal(
     (
       await db
@@ -2079,4 +2080,115 @@ test("«Мои брони» carry the owner's events and prices for sharing", as
   );
   assert.equal(r.gender, undefined);
   assert.equal(r.birthday, undefined);
+});
+
+test("event page: owner edits guests and the description, cancels the party, the event stays", async () => {
+  for (const id of [842, 843, 844]) await befriend(841, id);
+  await call("/me", 841, "PATCH", { birthday: isoIn(9).slice(5) });
+  const date = isoIn(9);
+  // The owner opens the page before inviting anyone.
+  const empty = await call(`/events/841/birthday/${date}`, 841);
+  assert.equal(empty.status, 200, empty.raw);
+  assert.equal(empty.body.event.title, "День рождения");
+  assert.deepEqual(empty.body.guests, []);
+  assert.equal(empty.body.is_owner, true);
+  const party = (v: object) =>
+    call("/events/party", 841, "PUT", { key: "birthday", date, ...v });
+  assert.equal(
+    (await party({ description: "Кафе «Ромашка», 19:00" })).status,
+    200,
+  );
+  await party({ friends: ["842", "843"] });
+  assert.equal((await messages(842)).length, 1);
+  // Edit: add 844, drop 843. Only 844 gets a message; the description stays.
+  await party({ friends: ["842", "844"] });
+  assert.equal((await messages(844)).length, 1);
+  await settle();
+  assert.equal((await messages(842, 0)).length, 1);
+  const page = await call(`/events/841/birthday/${date}`, 842);
+  assert.equal(page.status, 200);
+  assert.equal(page.body.description, "Кафе «Ромашка», 19:00");
+  assert.deepEqual(
+    page.body.guests.map((g: any) => g.id),
+    ["842", "844"],
+  );
+  assert.equal(page.body.is_owner, false);
+  // Not invited (any more): no page.
+  assert.equal((await call(`/events/841/birthday/${date}`, 843)).status, 404);
+  // «Передумал справлять»: guests are told, the event and its text remain.
+  const cancelled = await call("/events/cancel", 841, "POST", {
+    key: "birthday",
+    date,
+  });
+  assert.equal(cancelled.status, 200);
+  assert.match(
+    (await messages(842, 2))[1].text,
+    /отменил\(а\) праздник «День рождения»/,
+  );
+  assert.equal((await call(`/events/841/birthday/${date}`, 842)).status, 404);
+  const after = await call(`/events/841/birthday/${date}`, 841);
+  assert.deepEqual(after.body.guests, []);
+  assert.equal(after.body.description, "Кафе «Ромашка», 19:00");
+  assert.ok(
+    (await call("/lists/841", 842)).body.owner.events.some(
+      (e: any) => e.key === "birthday",
+    ),
+  );
+  // A moved birthday drops that party; saving the same one keeps it.
+  await party({ friends: ["842"] });
+  await call("/me", 841, "PATCH", { birthday: isoIn(9).slice(5) });
+  assert.equal((await call(`/events/841/birthday/${date}`, 842)).status, 200);
+  await call("/me", 841, "PATCH", { birthday: isoIn(10).slice(5) });
+  assert.equal((await call(`/events/841/birthday/${date}`, 842)).status, 404);
+});
+test("«праздник для всех» opens guests' lists to each other even without friendship", async () => {
+  // 851 hosts; 852 and 853 are friends of 851 but not of each other.
+  await befriend(851, 852);
+  await befriend(851, 853);
+  await call("/me", 854);
+  await call("/events/custom", 851, "PUT", { title: "Пикник", date: isoIn(6) });
+  const g = await gift(852, { title: "Термос" });
+  // 854 (a guest from a link of 852) and 851 (the host) book; 853 cannot see yet.
+  assert.equal((await call("/lists/852", 853)).status, 404);
+  const set = (mode: string, friends = ["852", "853"]) =>
+    call("/events/party", 851, "PUT", {
+      key: "custom",
+      date: isoIn(6),
+      mode,
+      friends,
+    });
+  await set("hero");
+  assert.equal((await call("/lists/852", 853)).status, 404);
+  await set("everyone");
+  const seen = await call("/lists/852", 853);
+  assert.equal(seen.status, 200, seen.raw);
+  assert.equal(
+    (await call(`/gifts/${g}/reservation`, 851, "POST")).status,
+    200,
+  );
+  assert.deepEqual(
+    (await call("/lists/852", 853)).body.gifts.find((x: any) => x.id === g)
+      .booked_by,
+    ["User 851"],
+  );
+  // 853 can book in 852's list too and sees it in «Мои брони».
+  const other = await gift(852, { title: "Плед" });
+  assert.equal(
+    (await call(`/gifts/${other}/reservation`, 853, "POST")).status,
+    200,
+  );
+  const mine = (await call("/reservations", 853)).body.reservations.find(
+    (r: any) => r.gift_id === other,
+  );
+  assert.equal(mine.title, "Плед");
+  // The list owner still sees no names; strangers outside the party see nothing.
+  assert.ok(!(await call("/lists/852", 852)).raw.includes("User 851"));
+  assert.equal((await call("/lists/852", 854)).status, 404);
+  // Cancelling the party closes the lists again; the booking can still be cancelled.
+  await call("/events/cancel", 851, "POST", { key: "custom", date: isoIn(6) });
+  assert.equal((await call("/lists/852", 853)).status, 404);
+  assert.equal(
+    (await call(`/gifts/${other}/reservation`, 853, "DELETE")).status,
+    200,
+  );
 });

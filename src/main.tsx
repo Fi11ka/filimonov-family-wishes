@@ -1,6 +1,6 @@
 import { daysLeft, eventDay, upcomingEvents } from "../shared/events";
 import { formatPrice, sharePrice } from "../shared/price";
-import { WishlistEvents } from "./events";
+import { EventPage, WishlistEvents } from "./events";
 import { ArchiveWish, ReserveDialog } from "./forms";
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -75,7 +75,7 @@ import {
   money,
 } from "./types";
 import "./style.css";
-type Tab = "mine" | "friends" | "bookings" | "archive";
+type Tab = "mine" | "friends" | "bookings" | "archive" | "event";
 type ModalKind =
   "gift" | "share" | "add-friend" | "profile" | "import" | "invite";
 interface Confirmation {
@@ -119,6 +119,25 @@ function App() {
     return () => clearInterval(timer);
   }, []);
   const [archiveGift, setArchiveGift] = useState<Wish | null>(null);
+  const [eventRef, setEventRef] = useState<{
+    owner: string;
+    key: string;
+    date: string;
+  } | null>(null);
+  function openEvent(owner: string, key: string, date: string) {
+    setEventRef({ owner, key, date });
+    setTab("event");
+    setError("");
+    setMenu(false);
+  }
+  /** A participant's wishlist from the event page. */
+  async function openList(id: string) {
+    if (user && id === user.id) await navigate("mine");
+    else {
+      setTab("friends");
+      await loadList(id);
+    }
+  }
   const [giftDirty, setGiftDirty] = useState(false);
   const [giftSaving, setGiftSaving] = useState(false);
   function closeEditor() {
@@ -269,6 +288,12 @@ function App() {
         setTab("friends");
         await loadList(openTarget.slice(2));
       } else if (openTarget === "b") await navigate("bookings");
+      else {
+        const e = openTarget.match(
+          /^e_(\d+)_([a-z0-9_]+)_(\d{4}-\d{2}-\d{2})$/,
+        );
+        if (e) openEvent(e[1], e[2], e[3]);
+      }
     });
   }, []);
   async function navigate(next: Tab) {
@@ -644,15 +669,17 @@ function App() {
               <div className="page-title">
                 <div>
                   <h1>
-                    {tab === "bookings"
-                      ? "Мои брони"
-                      : tab === "archive"
-                        ? "Архив"
-                        : tab === "friends" && !guestToken && !viewingFriend
-                          ? "Друзья"
-                          : own
-                            ? "Мой вишлист"
-                            : `Вишлист: ${owner?.name || ownerFirst}`}
+                    {tab === "event"
+                      ? "Мероприятие"
+                      : tab === "bookings"
+                        ? "Мои брони"
+                        : tab === "archive"
+                          ? "Архив"
+                          : tab === "friends" && !guestToken && !viewingFriend
+                            ? "Друзья"
+                            : own
+                              ? "Мой вишлист"
+                              : `Вишлист: ${owner?.name || ownerFirst}`}
                   </h1>
                   {owner &&
                     showList &&
@@ -683,6 +710,7 @@ function App() {
                           friends={friends}
                           notice={notice}
                           onProfile={() => setModal("profile")}
+                          onOpen={(e) => openEvent(owner.id, e.key, e.date)}
                           onChanged={async () => {
                             if (own && user) {
                               setUser({
@@ -1085,6 +1113,20 @@ function App() {
                     </div>
                   )}
                 </>
+              )}
+              {tab === "event" && eventRef && user && (
+                <EventPage
+                  key={`${eventRef.owner}:${eventRef.key}:${eventRef.date}`}
+                  owner={eventRef.owner}
+                  eventKey={eventRef.key}
+                  date={eventRef.date}
+                  me={user.id}
+                  friends={friends}
+                  today={today}
+                  notice={notice}
+                  onBack={() => void openList(eventRef.owner)}
+                  onOpenList={(id) => void openList(id)}
+                />
               )}
               {tab === "bookings" &&
                 (loading ? (

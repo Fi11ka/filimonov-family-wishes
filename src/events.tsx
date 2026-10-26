@@ -1,14 +1,25 @@
-import React, { useState } from "react";
-import { CalendarPlus, Pencil, PartyPopper, Trash2, Users } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  CalendarPlus,
+  ChevronRight,
+  Pencil,
+  PartyPopper,
+  Trash2,
+  Users,
+} from "lucide-react";
 import {
   eventDay,
   eventSpecs,
+  daysLeft,
+  daysUntil,
   untilText,
   upcomingEvents,
   type UpcomingEvent,
 } from "../shared/events";
 import { api, demo } from "./api";
-import { Modal } from "./forms";
+import { Confirm, Modal } from "./forms";
 import type { Friend, Invitation, User } from "./types";
 const icons: Record<string, string> = {
   birthday: "🎂",
@@ -30,6 +41,7 @@ export function WishlistEvents({
   friends,
   onChanged,
   onProfile,
+  onOpen,
   notice,
 }: {
   owner: User;
@@ -39,6 +51,8 @@ export function WishlistEvents({
   friends: Friend[];
   onChanged: () => Promise<void>;
   onProfile: () => void;
+  /** Opens the event page (owner: any event; guests: the ones they are invited to). */
+  onOpen: (e: UpcomingEvent) => void;
   notice: (message: string) => void;
 }) {
   const [dialog, setDialog] = useState<"event" | "invite" | null>(null);
@@ -65,8 +79,16 @@ export function WishlistEvents({
                     <Pencil size={13} />
                   </button>
                 )}
+                {(own || party) && (
+                  <button
+                    className="text-link event-more"
+                    onClick={() => onOpen(e)}
+                  >
+                    Подробнее <ChevronRight size={13} />
+                  </button>
+                )}
               </span>
-              {party && (
+              {!!party?.guests.length && (
                 <small>
                   {modeText[party.mode]} · приглашены:{" "}
                   {party.guests.map((g) => g.name).join(", ")}
@@ -222,14 +244,16 @@ function EventDialog({
     </Modal>
   );
 }
-function InviteDialog({
+export function InviteDialog({
   events,
+  initialKey,
   invitations,
   friends,
   onClose,
   onSaved,
 }: {
   events: UpcomingEvent[];
+  initialKey?: string;
   invitations: Invitation[];
   friends: Friend[];
   onClose: () => void;
@@ -237,7 +261,7 @@ function InviteDialog({
 }) {
   const partyOf = (e?: UpcomingEvent) =>
     invitations.find((i) => i.key === e?.key && i.date === e?.date);
-  const [key, setKey] = useState<string>(events[0]?.key || "");
+  const [key, setKey] = useState<string>(initialKey || events[0]?.key || "");
   const event = events.find((e) => e.key === key);
   const [mode, setMode] = useState(partyOf(event)?.mode || "hero");
   const [picked, setPicked] = useState<string[]>(
@@ -264,7 +288,7 @@ function InviteDialog({
           }
           setBusy(true);
           setError("");
-          void api("/api/events/guests", "PUT", {
+          void api("/api/events/party", "PUT", {
             key: event.key,
             date: event.date,
             mode,
@@ -274,14 +298,14 @@ function InviteDialog({
               onSaved(
                 picked.length
                   ? "Список гостей сохранён, новым гостям ушли приглашения"
-                  : "Приглашения отменены",
+                  : "Список гостей пуст",
               ),
             )
             .catch((err) => setError((err as Error).message))
             .finally(() => setBusy(false));
         }}
       >
-        <label>
+        <label hidden={!!initialKey}>
           Мероприятие
           <select value={key} onChange={(e) => choose(e.target.value)}>
             {events.map((e) => (
@@ -353,5 +377,300 @@ function InviteDialog({
         </button>
       </form>
     </Modal>
+  );
+}
+type EventPageData = {
+  owner: { id: string; name: string; username: string | null };
+  event: UpcomingEvent;
+  mode: "hero" | "everyone";
+  description: string;
+  guests: { id: string; name: string; username: string | null }[];
+  is_owner: boolean;
+};
+/** Who is invited and what the party is about; the owner edits it here. */
+export function EventPage({
+  owner,
+  eventKey,
+  date,
+  me,
+  friends,
+  today,
+  onBack,
+  onOpenList,
+  notice,
+}: {
+  owner: string;
+  eventKey: string;
+  date: string;
+  me: string;
+  friends: Friend[];
+  today: Date;
+  onBack: () => void;
+  onOpenList: (id: string) => void;
+  notice: (message: string) => void;
+}) {
+  const [data, setData] = useState<EventPageData | null>(null),
+    [error, setError] = useState(""),
+    [dialog, setDialog] = useState<"guests" | "cancel" | null>(null),
+    [editing, setEditing] = useState(false),
+    [text, setText] = useState(""),
+    [busy, setBusy] = useState(false);
+  async function load() {
+    if (demo) {
+      // The demo shows a party for everyone with two of the demo friends.
+      setData({
+        owner: { id: me, name: "Анастасия Филимонова", username: "nastya_f" },
+        event: {
+          key: eventKey as UpcomingEvent["key"],
+          title: eventKey === "new_year" ? "Новый год" : "Праздник",
+          date,
+          days: daysUntil(date, today),
+        },
+        mode: "everyone",
+        description:
+          "Встречаемся у нас дома в 19:00. Дресс-код — что-нибудь блестящее ✨",
+        guests: friends.slice(0, 2).map(({ id, name, username }) => ({
+          id,
+          name,
+          username: username ?? null,
+        })),
+        is_owner: owner === me,
+      });
+      return;
+    }
+    try {
+      setData(await api(`/api/events/${owner}/${eventKey}/${date}`));
+      setError("");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  useEffect(() => {
+    void load();
+  }, [owner, eventKey, date]);
+  if (error)
+    return (
+      <section className="event-page">
+        <button className="text-link" onClick={onBack}>
+          <ArrowLeft size={15} /> Назад
+        </button>
+        <div className="error" role="alert">
+          {error}
+        </div>
+      </section>
+    );
+  if (!data)
+    return (
+      <div className="loading" role="status">
+        <span />
+        Загрузка…
+      </div>
+    );
+  const { event, is_owner: own } = data;
+  const days = Math.max(0, daysUntil(event.date, today));
+  const people = [
+    { ...data.owner, host: true },
+    ...data.guests.map((g) => ({ ...g, host: false })),
+  ];
+  // In «праздник для всех» every list shows who of the party booked; in the
+  // hero's case only the hero's list does. Nobody sees it in their own list.
+  const named = (id: string) =>
+    id !== me && (data.mode === "everyone" || id === data.owner.id);
+  async function saveText() {
+    setBusy(true);
+    try {
+      await api("/api/events/party", "PUT", {
+        key: event.key,
+        date: event.date,
+        description: text,
+      });
+      setEditing(false);
+      await load();
+    } catch (e) {
+      notice((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section className="event-page">
+      <button className="text-link" onClick={onBack}>
+        <ArrowLeft size={15} /> Назад
+      </button>
+      <div className="event-head">
+        <span className="event-icon">{icons[event.key]}</span>
+        <div>
+          <h2>{event.title}</h2>
+          <p className="muted">
+            {own ? "Ваш праздник" : `Праздник: ${data.owner.name}`} ·{" "}
+            {eventDay(event.date)} · {days ? daysLeft(days) : "сегодня"}
+          </p>
+          {data.guests.length > 0 && (
+            <p className="small-text">
+              {modeText[data.mode]}:{" "}
+              {data.mode === "everyone"
+                ? "участники видят, кто из них что забронировал, в вишлистах друг друга"
+                : `гости видят, кто из них что забронировал, в вишлисте ${own ? "виновника" : data.owner.name}`}
+              . В своём вишлисте этого не видит никто.
+            </p>
+          )}
+        </div>
+      </div>
+      {editing ? (
+        <div className="about-form">
+          <textarea
+            autoFocus
+            rows={4}
+            maxLength={1000}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            aria-label="Описание мероприятия"
+            placeholder="Где и когда собираемся, дресс-код, что взять с собой"
+          />
+          <div className="about-actions">
+            <span className="small-text">{text.length}/1000</span>
+            <button
+              className="button secondary"
+              disabled={busy}
+              onClick={() => setEditing(false)}
+            >
+              Отмена
+            </button>
+            <button
+              className="button primary"
+              disabled={busy}
+              onClick={() => void saveText()}
+            >
+              {busy ? "Сохраняем…" : "Сохранить"}
+            </button>
+          </div>
+        </div>
+      ) : data.description ? (
+        <p className="event-description">
+          {data.description}
+          {own && (
+            <button
+              className="icon-button about-edit"
+              aria-label="Изменить описание"
+              onClick={() => {
+                setText(data.description);
+                setEditing(true);
+              }}
+            >
+              <Pencil size={14} />
+            </button>
+          )}
+        </p>
+      ) : own ? (
+        <button
+          className="text-link"
+          onClick={() => {
+            setText("");
+            setEditing(true);
+          }}
+        >
+          <Pencil size={14} /> Добавить описание: место, время, дресс-код
+        </button>
+      ) : null}
+      <h3 className="event-subtitle">
+        Участники{data.guests.length ? ` · ${data.guests.length + 1}` : ""}
+      </h3>
+      {data.guests.length ? (
+        <ul className="event-people">
+          {people.map((p) => (
+            <li key={p.id}>
+              <span>
+                <strong>{p.id === me ? "Вы" : p.name}</strong>
+                {p.username && p.id !== me && <small> @{p.username}</small>}
+                {p.host && <small> · виновник торжества</small>}
+              </span>
+              {(p.id === me || data.mode === "everyone" || p.host) && (
+                <button
+                  className="button secondary"
+                  onClick={() => onOpenList(p.id)}
+                >
+                  {p.id === me ? "Мой вишлист" : "Вишлист"}
+                  {named(p.id) && " · с именами"}
+                  <ArrowUpRight size={14} />
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">
+          {own ? "Пока никто не приглашён." : "Список гостей пуст."}
+        </p>
+      )}
+      {own && (
+        <div className="event-owner-actions">
+          <button
+            className="button primary"
+            onClick={() => setDialog("guests")}
+          >
+            <Users size={16} />
+            {data.guests.length
+              ? "Изменить список гостей"
+              : "Пригласить друзей"}
+          </button>
+          {data.guests.length > 0 && (
+            <button
+              className="text-link danger"
+              onClick={() => setDialog("cancel")}
+            >
+              Отменить праздник
+            </button>
+          )}
+        </div>
+      )}
+      {dialog === "guests" && (
+        <InviteDialog
+          events={[event]}
+          initialKey={event.key}
+          invitations={
+            data.guests.length || data.description
+              ? [
+                  {
+                    key: event.key,
+                    date: event.date,
+                    title: event.title,
+                    mode: data.mode,
+                    guests: data.guests,
+                  },
+                ]
+              : []
+          }
+          friends={friends}
+          onClose={() => setDialog(null)}
+          onSaved={async (message) => {
+            setDialog(null);
+            notice(message);
+            await load();
+          }}
+        />
+      )}
+      {dialog === "cancel" && (
+        <Confirm
+          title="Отменить праздник?"
+          text="Приглашения отменятся, гостям придёт сообщение в Telegram. Само мероприятие и описание останутся — пригласить можно будет снова."
+          action="Отменить праздник"
+          danger
+          onCancel={() => setDialog(null)}
+          onConfirm={() => {
+            setDialog(null);
+            if (demo) return;
+            void api("/api/events/cancel", "POST", {
+              key: event.key,
+              date: event.date,
+            })
+              .then(async () => {
+                notice("Праздник отменён, гостям ушло сообщение");
+                await load();
+              })
+              .catch((e) => notice((e as Error).message));
+          }}
+        />
+      )}
+    </section>
   );
 }

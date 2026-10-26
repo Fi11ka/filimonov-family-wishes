@@ -41,7 +41,7 @@ import {
 } from "./gifts";
 import { botRoute, cleanupBotStates } from "./bot";
 import { birthdayReminders } from "./birthdays";
-import { bookerNames, eventRoute, invitations } from "./events";
+import { PARTY_PEER, bookerNames, eventRoute, invitations } from "./events";
 import { eventSpecs, isGender } from "../shared/events";
 export type { Env } from "./core";
 interface Gift {
@@ -127,6 +127,16 @@ async function canView(
 ) {
   if (user?.id === owner) return true;
   if (user && (await friendship(db, user.id, owner))?.status === "accepted")
+    return true;
+  if (
+    user &&
+    (await stmt(
+      db,
+      `SELECT 1 AS ok WHERE ${PARTY_PEER("?1", "?2")}`,
+      user.id,
+      owner,
+    ).first())
+  )
     return true;
   if (guest && /^[A-Za-z0-9_-]{43}$/.test(guest))
     return !!(await stmt(
@@ -527,10 +537,24 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       );
     if (b.gender !== undefined)
       updates.push(
+        // 8 March or 23 February that is no longer this person's event loses its guests.
+        stmt(
+          db,
+          "DELETE FROM event_parties WHERE owner_id=? AND event_key IN ('march8','feb23') AND event_key<>?",
+          uid,
+          b.gender === "female" ? "march8" : b.gender === "male" ? "feb23" : "",
+        ),
         stmt(db, "UPDATE users SET gender=? WHERE id=?", b.gender, uid),
       );
     if (b.birthday !== undefined)
       updates.push(
+        // A changed birthday is another date: the old party's guests go.
+        stmt(
+          db,
+          "DELETE FROM event_parties WHERE owner_id=?1 AND event_key='birthday' AND (SELECT birthday FROM users WHERE id=?1) IS NOT ?2",
+          uid,
+          b.birthday,
+        ),
         stmt(db, "UPDATE users SET birthday=? WHERE id=?", b.birthday, uid),
       );
     if (b.allow_resharing !== undefined) {
@@ -1030,6 +1054,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         `INSERT INTO reservations(gift_id,user_id)
         SELECT id,?1 FROM gifts WHERE id=?2 AND owner_id<>?1 AND archived_at IS NULL AND (
           ${FRIEND_OF("gifts.owner_id")}
+          OR ${PARTY_PEER("?1", "gifts.owner_id")}
           OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=gifts.owner_id AND l.token_hash=?3 AND l.revoked_at IS NULL AND (l.created_by=l.owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=l.owner_id AND share_owner.allow_resharing=1)) AND l.expires_at>?4)
         ) ON CONFLICT(gift_id) DO NOTHING RETURNING gift_id`,
         uid,
@@ -1057,7 +1082,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         db,
         `SELECT r.gift_id,
         CASE WHEN r.user_id=?1 THEN 'organizer' ELSE m.status END AS role,
-        CASE WHEN m.user_id IS NOT NULL OR ${FRIEND_OF("g.owner_id")} OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=g.owner_id AND l.revoked_at IS NULL AND (l.created_by=l.owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=l.owner_id AND share_owner.allow_resharing=1)) AND l.expires_at>?2) THEN 1 ELSE 0 END AS visible,
+        CASE WHEN m.user_id IS NOT NULL OR ${FRIEND_OF("g.owner_id")} OR ${PARTY_PEER("?1", "g.owner_id")} OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=g.owner_id AND l.revoked_at IS NULL AND (l.created_by=l.owner_id OR EXISTS(SELECT 1 FROM users share_owner WHERE share_owner.id=l.owner_id AND share_owner.allow_resharing=1)) AND l.expires_at>?2) THEN 1 ELSE 0 END AS visible,
         g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.owner_id,ou.name AS owner_name,org.name AS organizer_name,
         ou.birthday,ou.gender,ou.event_title,ou.event_date,
         CASE WHEN g.archived_at IS NULL THEN 0 ELSE 1 END AS archived
