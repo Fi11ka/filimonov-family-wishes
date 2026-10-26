@@ -42,6 +42,8 @@ export interface Identity {
   name: string;
   /** Telegram @username, lowercase, from the signed payload only. */
   username: string | null;
+  /** Profile photo link from the same signed payload; used only to fetch the photo once. */
+  photo_url?: string;
 }
 export async function validateInitData(
   raw: string,
@@ -87,6 +89,7 @@ export async function validateInitData(
     first_name?: string;
     last_name?: string;
     username?: string;
+    photo_url?: string;
     is_bot?: boolean;
   };
   try {
@@ -113,7 +116,28 @@ export async function validateInitData(
         .join(" ")
         .slice(0, 160) || "Участник",
     username: usernameOf(user.username),
+    ...(telegramPhotoUrl(user.photo_url)
+      ? { photo_url: telegramPhotoUrl(user.photo_url) }
+      : {}),
   };
+}
+/** Profile photo links Telegram signs into initData (photo_url) and the OIDC token (picture). */
+export function telegramPhotoUrl(value: unknown) {
+  if (typeof value !== "string" || value.length > 512) return undefined;
+  try {
+    const u = new URL(value);
+    return u.protocol === "https:" && isTelegramPhotoHost(u.hostname)
+      ? u.href
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+export function isTelegramPhotoHost(host: string) {
+  host = host.toLowerCase();
+  return ["t.me", "telesco.pe", "telegram.org"].some(
+    (h) => host === h || host.endsWith(`.${h}`),
+  );
 }
 /** Telegram usernames: 4–32 latin letters, digits and underscores. */
 export function usernameOf(value: unknown) {

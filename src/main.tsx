@@ -63,6 +63,7 @@ import {
 } from "./demo";
 import { GiftForm, Share, Modal, Confirm } from "./forms";
 import { AcceptInvite, AddFriend, Profile, Requests } from "./friends";
+import { Face } from "./avatar";
 import { ImportDialog } from "./import/ImportDialog";
 import { comparePrice, priceInRubMinor } from "../shared/wish-price";
 import {
@@ -606,7 +607,7 @@ function App() {
               aria-label="Мой профиль"
               title="Мой профиль"
             >
-              {initials(user?.name || "Гость")}
+              <Face user={user} />
             </button>
           </div>
         </header>
@@ -826,7 +827,7 @@ function App() {
                           onClick={() => openFriend(m)}
                         >
                           <span className={`avatar tone-${i % 4}`}>
-                            {initials(m.name)}
+                            <Face user={m} />
                             {m.id === owner?.id && (
                               <span className="avatar-check">
                                 <Check size={10} />
