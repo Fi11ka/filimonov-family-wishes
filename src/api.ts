@@ -1,5 +1,5 @@
 export { BOT } from "./telegram-links";
-import { telegramAppLink } from "./telegram-links";
+import { closesAfterSwitch, telegramAppLink } from "./telegram-links";
 export const telegram = (
   window as unknown as {
     Telegram?: {
@@ -12,6 +12,8 @@ export const telegram = (
         openTelegramLink: (u: string) => void;
         /** Opens a link outside Telegram, in the system browser. */
         openLink?: (u: string) => void;
+        /** Closes the Mini App. */
+        close?: () => void;
         HapticFeedback?: { notificationOccurred: (type: string) => void };
         platform?: string;
         isVersionAtLeast?: (version: string) => boolean;
@@ -121,12 +123,18 @@ export async function redeemHandoff() {
   setSessionToken(r.token);
   return true;
 }
-/** Mini App: opens this site in the system browser, already signed in. */
+/** Mini App: opens this site in the system browser, already signed in, then closes itself. */
 export async function openInBrowser() {
   const { code } = await api<{ code: string }>("/api/auth/handoff", "POST");
   const url = `${location.origin}${location.pathname}#login=${code}`;
-  if (telegram?.openLink) telegram.openLink(url);
-  else window.open(url, "_blank", "noopener");
+  if (!telegram?.openLink) {
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+  telegram.openLink(url);
+  if (telegram.close && closesAfterSwitch(telegram.platform))
+    // A short pause lets Telegram hand the link to the browser first.
+    setTimeout(() => telegram?.close?.(), 400);
 }
 export const apiConfigured = !!import.meta.env.VITE_API_URL;
 export class RequestError extends Error {
