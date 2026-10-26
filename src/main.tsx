@@ -22,7 +22,6 @@ import {
   Pencil,
   Trash2,
   RefreshCw,
-  Menu,
   Archive,
   ArchiveRestore,
   FileSpreadsheet,
@@ -539,13 +538,13 @@ function App() {
         <nav aria-label="Основная навигация">
           {(
             [
-              ["mine", Heart, "Мой вишлист"],
-              ["friends", Users, "Друзья"],
-              ["bookings", Bookmark, "Мои брони"],
-              ["events", CalendarDays, "Мероприятия"],
-              ["archive", Archive, "Архив"],
+              ["mine", Heart, "Мой вишлист", "Вишлист"],
+              ["friends", Users, "Друзья", "Друзья"],
+              ["bookings", Bookmark, "Мои брони", "Брони"],
+              ["events", CalendarDays, "Мероприятия", "Мероприятия"],
+              ["archive", Archive, "Архив", "Архив"],
             ] as const
-          ).map(([key, I, label]) => (
+          ).map(([key, I, label, short]) => (
             <button
               key={key}
               className={`nav-item ${tab === key || (key === "events" && tab === "event") ? "active" : ""}`}
@@ -553,7 +552,9 @@ function App() {
               disabled={!!guestToken && key !== "friends" && !user}
             >
               <I size={20} />
-              {label}
+              <span className="nav-label">{label}</span>
+              {/* The phone tab bar has no room for the long names. */}
+              <span className="nav-label-short">{short}</span>
               {key === "friends" && incoming.length > 0 && (
                 <span
                   className="nav-count"
@@ -569,13 +570,13 @@ function App() {
       </aside>
       <div className="workspace">
         <header className="topbar">
-          <button
-            className="mobile-menu icon-button"
-            onClick={() => setMenu(!menu)}
-            aria-label="Открыть меню"
-          >
-            <Menu />
-          </button>
+          {/* On phones the sidebar turns into the bottom tab bar, so the brand moves up here. */}
+          <a className="mobile-brand" href="./">
+            <span className="brand-icon">
+              <Gift size={18} />
+            </span>
+            Filimonov
+          </a>
           <div className="topbar-right">
             {demo && <span className="demo-badge">Демо · без сохранения</span>}
             {fullscreen.supported && (
@@ -671,6 +672,14 @@ function App() {
                   Добавить в друзья · {owner.name}
                 </button>
               )}
+              {viewingFriend && !guestToken && (
+                <button
+                  className="text-link back-to-friends"
+                  onClick={() => void navigate("friends")}
+                >
+                  <ArrowLeft size={15} /> Все друзья
+                </button>
+              )}
               <div className="page-title">
                 <div>
                   <h1>
@@ -757,13 +766,6 @@ function App() {
                 {tab === "mine" && user && (
                   <div className="title-actions">
                     <button
-                      className="button secondary"
-                      onClick={() => setModal("import")}
-                    >
-                      <FileSpreadsheet size={18} />
-                      Добавить много
-                    </button>
-                    <button
                       className="button primary"
                       onClick={() => {
                         setEditing(null);
@@ -773,6 +775,26 @@ function App() {
                     >
                       <Plus size={18} />
                       Добавить желание
+                    </button>
+                    <button
+                      className="button secondary"
+                      onClick={() => setModal("import")}
+                    >
+                      <FileSpreadsheet size={18} />
+                      Добавить много
+                    </button>
+                    <button
+                      className="button secondary"
+                      onClick={() => {
+                        if (demo) {
+                          notice("В демо ссылки не создаются.");
+                          return;
+                        }
+                        setModal("share");
+                      }}
+                    >
+                      <LinkIcon size={16} />
+                      Поделиться
                     </button>
                   </div>
                 )}
@@ -788,14 +810,6 @@ function App() {
                     <RefreshCw size={18} />
                   </button>
                 </div>
-              )}
-              {viewingFriend && !guestToken && (
-                <button
-                  className="text-link back-to-friends"
-                  onClick={() => void navigate("friends")}
-                >
-                  <ArrowLeft size={15} /> Все друзья
-                </button>
               )}
               {!error && tab === "friends" && !guestToken && !viewingFriend && (
                 <section className="family-section">
@@ -858,23 +872,6 @@ function App() {
               )}
               {!error && showList && (
                 <>
-                  {own && tab === "mine" && (
-                    <div className="wishlist-actions">
-                      <button
-                        className="button secondary"
-                        onClick={() => {
-                          if (demo) {
-                            notice("В демо ссылки не создаются.");
-                            return;
-                          }
-                          setModal("share");
-                        }}
-                      >
-                        <LinkIcon size={16} />
-                        Поделиться
-                      </button>
-                    </div>
-                  )}
                   {user &&
                     !own &&
                     owner &&
