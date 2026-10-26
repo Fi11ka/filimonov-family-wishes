@@ -54,8 +54,8 @@ export const BOT_DESCRIPTION =
   "Нажмите «Запустить», чтобы начать.";
 export const BOT_SHORT_DESCRIPTION =
   "Вишлист от задротов Насти, Дарины и Димы: желания, тайные брони, совместные подарки, дни рождения.";
-/** "❤️❤️❤️🤍🤍" for 3 of 5 hearts. */
-const hearts = (n: number) => "❤️".repeat(n) + "🤍".repeat(MAX_HEARTS - n);
+/** "💜💜💜🤍🤍" for 3 of 5 hearts. */
+const hearts = (n: number) => "💜".repeat(n) + "🤍".repeat(MAX_HEARTS - n);
 export async function botRoute(
   req: Request,
   env: Env,
@@ -266,7 +266,7 @@ class Chat {
       ],
       [
         { text: "📷 Фото", callback_data: `e:photo:${g.id}` },
-        { text: "❤️ Важность", callback_data: `r:${g.id}` },
+        { text: "💜 Важность", callback_data: `r:${g.id}` },
       ],
       [
         { text: "🗄 В архив", callback_data: `a:${g.id}` },
@@ -530,7 +530,7 @@ async function onButton(chat: Chat, data: string) {
       `Насколько хочется «${esc(g.title)}»? Чем больше сердечек, тем сильнее.`,
       [
         [1, 2, 3, 4, 5].map((p) => ({
-          text: `${p === g.priority ? "✓" : ""}${p} ❤️`,
+          text: `${p === g.priority ? "✓" : ""}${p} 💜`,
           callback_data: `p:${p}:${g.id}`,
         })),
         [{ text: "← Назад", callback_data: `g:${g.id}` }],
