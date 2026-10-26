@@ -39,6 +39,7 @@ import {
   BellRing,
   Globe,
   Send,
+  Bot,
   SlidersHorizontal,
 } from "lucide-react";
 import { useFullscreen } from "./fullscreen";
@@ -46,6 +47,7 @@ import { Hearts } from "./hearts";
 import {
   api,
   apiConfigured,
+  BOT,
   demo,
   friendInvite,
   guestCodes,
@@ -676,6 +678,16 @@ function App() {
                     <span>В Telegram</span>
                   </a>
                 )}
+            {/* The bot chat: notifications, reminders and answers to requests. */}
+            <button
+              className="switch-app"
+              onClick={() => openBot(`https://t.me/${BOT}`)}
+              aria-label="Открыть бота"
+              title="Открыть чат с ботом в Telegram"
+            >
+              <Bot size={16} />
+              <span>Открыть бота</span>
+            </button>
             <span className="profile-name">
               {user ? handle(user) || user.name.split(" ")[0] : "Гость"}
             </span>
