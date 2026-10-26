@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Minus, Plus, RotateCcw } from "lucide-react";
+import { Check, Crop, Minus, Plus, RotateCcw } from "lucide-react";
 import { encodePhoto } from "./photo";
 // The photo editor in the wish form. The frame has the proportions of the photo
 // on a gift card, so what is in the frame is exactly what the card will show.
@@ -101,6 +101,11 @@ export function PhotoFrame({
   latest.current = framing;
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const pinch = useRef<{ distance: number; zoom: number } | null>(null);
+  // Locked until «Настроить кадр»: scrolling the form over the photo must not
+  // move or zoom it by accident.
+  const [editing, setEditing] = useState(false);
+  const editingRef = useRef(editing);
+  editingRef.current = editing;
   useEffect(() => {
     let alive = true;
     setImage(null);
@@ -137,6 +142,7 @@ export function PhotoFrame({
     const c = canvas.current;
     if (!c) return;
     const wheel = (e: WheelEvent) => {
+      if (!editingRef.current) return;
       e.preventDefault();
       onChange({
         ...latest.current,
@@ -155,13 +161,19 @@ export function PhotoFrame({
   const zoomBy = (factor: number) =>
     update({ zoom: clamp(latest.current.zoom * factor, MIN_ZOOM, MAX_ZOOM) });
   return (
-    <div className="photo-frame">
+    <div className={`photo-frame ${editing ? "editing" : ""}`}>
+      <div className="photo-frame-stage">
       <canvas
         ref={canvas}
         className="photo-frame-canvas"
         role="img"
-        aria-label="Фото в рамке карточки. Перетащите, чтобы сдвинуть; колесо или два пальца — приблизить."
+        aria-label={
+          editing
+            ? "Фото в рамке карточки. Перетащите, чтобы сдвинуть; колесо или два пальца — приблизить."
+            : "Фото в рамке карточки"
+        }
         onPointerDown={(e) => {
+          if (!editing) return;
           e.currentTarget.setPointerCapture(e.pointerId);
           pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
           if (pointers.current.size === 2) {
@@ -204,12 +216,33 @@ export function PhotoFrame({
           pinch.current = null;
         }}
       />
+      <button
+        type="button"
+        className={`photo-frame-toggle ${editing ? "done" : ""}`}
+        onClick={() => setEditing(!editing)}
+      >
+        {editing ? (
+          <>
+            <Check size={15} /> Готово
+          </>
+        ) : (
+          <>
+            <Crop size={15} /> Настроить кадр
+          </>
+        )}
+      </button>
+      </div>
       {error && (
         <p className="photo-note" role="alert">
           {error}
         </p>
       )}
+      {editing && (
       <div className="photo-frame-controls">
+        <p className="small-text">
+          Перетащите фото, чтобы сдвинуть; колесо мыши или два пальца —
+          приблизить.
+        </p>
         <div className="photo-frame-row">
           <span>Масштаб</span>
           <button
@@ -287,6 +320,7 @@ export function PhotoFrame({
           </button>
         </div>
       </div>
+      )}
     </div>
   );
 }

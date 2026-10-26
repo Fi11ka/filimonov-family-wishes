@@ -102,6 +102,7 @@ export const demoArchive = [
     description: "Подарили на Новый год — спасибо!",
     price_minor: 5900,
     archived_at: 1735689600,
+    archive_reason: "gifted" as const,
     photo:
       "https://images.unsplash.com/photo-1580301762395-21ce84d00bc6?w=700&auto=format&fit=crop&q=85",
   },

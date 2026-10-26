@@ -76,6 +76,9 @@ export function passes(g: Wish, f: Filters, rate: number, foreign: boolean) {
   }
   return true;
 }
+const blurOnEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  if (e.key === "Enter") e.currentTarget.blur();
+};
 const money = (n: number, symbol: string) =>
   `${n.toLocaleString("ru-RU")} ${symbol}`;
 /** Filters apply as you move them: there is nothing to submit. */
@@ -101,21 +104,53 @@ export function WishFilters({
         to: hi >= scale.max ? null : hi,
       },
     });
-  const pct = (n: number) => `${(n / scale.max) * 100}%`;
+  const pct = (n: number) => Math.min(n, scale.max) / scale.max;
+  const typed = (edge: "from" | "to", text: string) => {
+    const n = text.trim() === "" ? null : Math.max(0, Math.round(Number(text)));
+    onChange({
+      ...value,
+      price: { ...value.price, [edge]: n === null || isNaN(n) ? null : n },
+    });
+  };
   return (
     <section className="wish-filters" aria-label="Фильтры желаний">
       <div className="filter-group price-filter">
         <div className="filter-label">
-          <span>Цена</span>
-          <output>
-            {from <= 0 && to >= scale.max
-              ? "Любая"
-              : from <= 0
-                ? `до ${money(to, scale.symbol)}`
-                : to >= scale.max
-                  ? `от ${money(from, scale.symbol)}`
-                  : `${money(from, scale.symbol)} – ${money(to, scale.symbol)}`}
-          </output>
+          <span>Цена, {scale.symbol}</span>
+        </div>
+        {/* Typed and dragged values are the same state: either moves the other. */}
+        <div className="price-inputs">
+          <label>
+            <span>от</span>
+            <input
+              type="number"
+              inputMode="numeric"
+              enterKeyHint="done"
+              min={0}
+              placeholder="0"
+              value={value.price.from ?? ""}
+              onChange={(e) => typed("from", e.target.value)}
+              onKeyDown={blurOnEnter}
+              aria-label="Цена от"
+            />
+          </label>
+          <span className="price-dash" aria-hidden="true">
+            –
+          </span>
+          <label>
+            <span>до</span>
+            <input
+              type="number"
+              inputMode="numeric"
+              enterKeyHint="done"
+              min={0}
+              placeholder={money(scale.max, "").trim()}
+              value={value.price.to ?? ""}
+              onChange={(e) => typed("to", e.target.value)}
+              onKeyDown={blurOnEnter}
+              aria-label="Цена до"
+            />
+          </label>
         </div>
         <div
           className="range"
@@ -131,8 +166,8 @@ export function WishFilters({
             min={0}
             max={scale.max}
             step={scale.step}
-            value={from}
-            aria-label="Цена от"
+            value={Math.min(from, scale.max)}
+            aria-label="Ползунок: цена от"
             onChange={(e) =>
               setPrice(Math.min(Number(e.target.value), to), to)
             }
@@ -142,8 +177,8 @@ export function WishFilters({
             min={0}
             max={scale.max}
             step={scale.step}
-            value={to}
-            aria-label="Цена до"
+            value={Math.min(to, scale.max)}
+            aria-label="Ползунок: цена до"
             onChange={(e) =>
               setPrice(from, Math.max(Number(e.target.value), from))
             }

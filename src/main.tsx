@@ -23,6 +23,8 @@ import {
   Trash2,
   RefreshCw,
   Eye,
+  ShoppingBag,
+  Undo2,
   Clock,
   ChevronRight,
   Archive,
@@ -688,8 +690,11 @@ function App() {
                   <ArrowLeft size={15} /> Все друзья
                 </button>
               )}
-              <div className="page-title">
-                <div>
+              <div
+                className={`page-title ${owner && showList && tab !== "bookings" ? "page-head" : ""}`}
+              >
+                <div className="title-main">
+                  <div className="title-line">
                   <h1>
                     {tab === "event"
                       ? "Мероприятие"
@@ -705,6 +710,22 @@ function App() {
                                 ? "Мой вишлист"
                                 : `Вишлист: ${owner?.name || ownerFirst}`}
                   </h1>
+                  {tab === "mine" && user && (
+                    <button
+                      className="share-button"
+                      onClick={() => {
+                        if (demo) {
+                          notice("В демо ссылки не создаются.");
+                          return;
+                        }
+                        setModal("share");
+                      }}
+                    >
+                      <LinkIcon size={15} />
+                      Поделиться
+                    </button>
+                  )}
+                  </div>
                   {owner && showList && tab !== "bookings" && (
                     <div className="wishlist-meta">
                       {tab !== "archive" && (
@@ -767,24 +788,11 @@ function App() {
                       Добавить желание
                     </button>
                     <button
-                      className="button secondary"
+                      className="button tinted"
                       onClick={() => setModal("import")}
                     >
                       <FileSpreadsheet size={18} />
                       Добавить много
-                    </button>
-                    <button
-                      className="button secondary"
-                      onClick={() => {
-                        if (demo) {
-                          notice("В демо ссылки не создаются.");
-                          return;
-                        }
-                        setModal("share");
-                      }}
-                    >
-                      <LinkIcon size={16} />
-                      Поделиться
                     </button>
                   </div>
                 )}
@@ -1469,21 +1477,36 @@ function GiftCard({
             <Pencil size={15} />
           </button>
         )}
-        {mode === "archive" && (
-          <span className="archived-badge">
-            <Check size={12} />{" "}
-            {g.archive_reason === "changed_mind"
-              ? "Передумал"
-              : g.archive_reason === "gifted"
-                ? "Подарили"
-                : "Купил сам"}
-            {g.archived_at
-              ? ` · ${new Date(g.archived_at * 1000).toLocaleDateString("ru-RU")}`
-              : ""}
-          </span>
-        )}
       </div>
       <div className="card-content">
+        {mode === "archive" && (
+          // Why the wish left the list: the reason picked when archiving.
+          <p className={`archive-reason ${g.archive_reason || "unknown"}`}>
+            {g.archive_reason === "gifted" ? (
+              <Gift size={14} />
+            ) : g.archive_reason === "bought_self" ? (
+              <ShoppingBag size={14} />
+            ) : g.archive_reason === "changed_mind" ? (
+              <Undo2 size={14} />
+            ) : (
+              <Archive size={14} />
+            )}
+            <span>
+              {g.archive_reason === "changed_mind"
+                ? "Передумал"
+                : g.archive_reason === "gifted"
+                  ? "Подарили"
+                  : g.archive_reason === "bought_self"
+                    ? "Купил сам"
+                    : "В архиве"}
+            </span>
+            {g.archived_at ? (
+              <time>
+                {new Date(g.archived_at * 1000).toLocaleDateString("ru-RU")}
+              </time>
+            ) : null}
+          </p>
+        )}
         <div className="gift-price">{money(g)}</div>
         <h3>{g.title}</h3>
         {g.description && <p>{g.description}</p>}
