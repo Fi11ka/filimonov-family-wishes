@@ -28,6 +28,7 @@ import {
   Minimize2,
   Bell,
   BellOff,
+  SlidersHorizontal,
 } from "lucide-react";
 import { useFullscreen } from "./fullscreen";
 import { Hearts } from "./hearts";
@@ -59,6 +60,7 @@ import {
 import { GiftForm, Share, Modal, Confirm } from "./forms";
 import { AcceptInvite, AddFriend, Profile, Requests } from "./friends";
 import { ImportDialog } from "./import/ImportDialog";
+import { comparePrice, priceInRubMinor } from "../shared/wish-price";
 import {
   type Booking,
   type User,
@@ -97,7 +99,12 @@ function App() {
     [confirmation, setConfirmation] = useState<Confirmation | null>(null),
     [editing, setEditing] = useState<Wish | null>(null),
     [search, setSearch] = useState(""),
-    [sort, setSort] = useState("priority");
+    [sort, setSort] = useState("priority"),
+    [filtersOpen, setFiltersOpen] = useState(false),
+    [priceFrom, setPriceFrom] = useState(""),
+    [priceTo, setPriceTo] = useState(""),
+    [minPriority, setMinPriority] = useState("0"),
+    [availability, setAvailability] = useState("all");
   const [bookings, setBookings] = useState<Booking[]>([]),
     [busy, setBusy] = useState(false),
     [menu, setMenu] = useState(false),
@@ -445,13 +452,34 @@ function App() {
     });
   }
   const list = tab === "archive" ? archive : gifts;
+  const foreignList = !own && tab !== "archive";
+  const fromMinor = filterRubles(priceFrom),
+    toMinor = filterRubles(priceTo);
+  const activeFilters =
+    fromMinor !== null ||
+    toMinor !== null ||
+    minPriority !== "0" ||
+    (foreignList && availability !== "all");
   const shown = list
-    .filter((g) => g.title.toLowerCase().includes(search.toLowerCase()))
+    .filter((g) => {
+      if (!g.title.toLowerCase().includes(search.toLowerCase())) return false;
+      const price = priceInRubMinor(g);
+      if (fromMinor !== null && (price === null || price < fromMinor))
+        return false;
+      if (toMinor !== null && (price === null || price > toMinor)) return false;
+      if (g.priority < Number(minPriority)) return false;
+      if (foreignList && availability !== "all") {
+        const available = g.reservation === "available";
+        if (availability === "available" && !available) return false;
+        if (availability === "reserved" && available) return false;
+      }
+      return true;
+    })
     .sort((a, b) =>
       sort === "price"
-        ? byPrice(a, b, 1)
+        ? comparePrice(a, b, 1)
         : sort === "price-desc"
-          ? byPrice(a, b, -1)
+          ? comparePrice(a, b, -1)
           : sort === "priority-asc"
             ? a.priority - b.priority
             : b.priority - a.priority,
@@ -856,7 +884,11 @@ function App() {
                     </p>
                   )}
                   <div className="list-toolbar">
-                    <span className="list-count">{wishCount(list.length)}</span>
+                    <span className="list-count">
+                      {search || activeFilters
+                        ? `${shown.length} из ${list.length}`
+                        : wishCount(list.length)}
+                    </span>
                     <div className="list-controls">
                       <label className="search">
                         <Search size={16} />
@@ -885,6 +917,16 @@ function App() {
                         <ChevronDown size={14} />
                       </label>
                       <button
+                        className={`icon-button filter-toggle ${activeFilters ? "active" : ""}`}
+                        aria-label="Фильтры"
+                        aria-expanded={filtersOpen}
+                        title="Фильтры"
+                        onClick={() => setFiltersOpen(!filtersOpen)}
+                      >
+                        <SlidersHorizontal size={17} />
+                        {activeFilters && <span className="filter-dot" />}
+                      </button>
+                      <button
                         className="icon-button"
                         aria-label="Обновить список"
                         onClick={() => {
@@ -898,6 +940,82 @@ function App() {
                       </button>
                     </div>
                   </div>
+                  {filtersOpen && (
+                    <section
+                      className="wish-filters"
+                      aria-label="Фильтры желаний"
+                    >
+                      <div className="price-filter">
+                        <span>Цена, примерно ₽</span>
+                        <label>
+                          <span>от</span>
+                          <input
+                            type="number"
+                            min="0"
+                            inputMode="numeric"
+                            value={priceFrom}
+                            onChange={(e) => setPriceFrom(e.target.value)}
+                            placeholder="0"
+                            aria-label="Минимальная цена в рублях"
+                          />
+                        </label>
+                        <label>
+                          <span>до</span>
+                          <input
+                            type="number"
+                            min="0"
+                            inputMode="numeric"
+                            value={priceTo}
+                            onChange={(e) => setPriceTo(e.target.value)}
+                            placeholder="любая"
+                            aria-label="Максимальная цена в рублях"
+                          />
+                        </label>
+                      </div>
+                      <label className="filter-field">
+                        <span>Приоритет</span>
+                        <select
+                          value={minPriority}
+                          onChange={(e) => setMinPriority(e.target.value)}
+                        >
+                          <option value="0">Любой</option>
+                          <option value="1">От 1 сердца</option>
+                          <option value="2">От 2 сердец</option>
+                          <option value="3">От 3 сердец</option>
+                          <option value="4">От 4 сердец</option>
+                          <option value="5">Только 5 сердец</option>
+                        </select>
+                      </label>
+                      {foreignList && (
+                        <label className="filter-field">
+                          <span>Доступность</span>
+                          <select
+                            value={availability}
+                            onChange={(e) => setAvailability(e.target.value)}
+                          >
+                            <option value="all">Все</option>
+                            <option value="available">
+                              Можно забронировать
+                            </option>
+                            <option value="reserved">Уже забронированы</option>
+                          </select>
+                        </label>
+                      )}
+                      {activeFilters && (
+                        <button
+                          className="text-link filter-reset"
+                          onClick={() => {
+                            setPriceFrom("");
+                            setPriceTo("");
+                            setMinPriority("0");
+                            setAvailability("all");
+                          }}
+                        >
+                          Сбросить фильтры
+                        </button>
+                      )}
+                    </section>
+                  )}
                   {loading ? (
                     <div className="loading" role="status">
                       <span />
@@ -940,8 +1058,8 @@ function App() {
                         <Gift size={34} />
                       )}
                       <h3>
-                        {search
-                          ? "Ничего не нашлось"
+                        {search || activeFilters
+                          ? "Ничего не подошло"
                           : tab === "archive"
                             ? "Архив пока пуст"
                             : own
@@ -949,8 +1067,8 @@ function App() {
                               : "Желаний пока нет"}
                       </h3>
                       <p>
-                        {search
-                          ? "Попробуйте другое название."
+                        {search || activeFilters
+                          ? "Измените поиск или сбросьте фильтры."
                           : tab === "archive"
                             ? "Здесь появятся желания, которые вы перенесёте в архив."
                             : own
@@ -1274,20 +1392,12 @@ function App() {
     </div>
   );
 }
-/**
- * Prices in different currencies cannot be compared, so wishes are grouped by
- * currency; wishes without a price always go last. A range counts by its lower
- * bound when sorting cheap first and by its upper bound when sorting expensive first.
- */
-function byPrice(a: Wish, b: Wish, dir: 1 | -1) {
-  const key = (g: Wish) =>
-    dir === 1
-      ? (g.price_minor ?? g.price_max_minor ?? null)
-      : (g.price_max_minor ?? g.price_minor ?? null);
-  const ka = key(a),
-    kb = key(b);
-  if (ka === null || kb === null) return ka === kb ? 0 : ka === null ? 1 : -1;
-  return a.currency.localeCompare(b.currency) || dir * (ka - kb);
+function filterRubles(value: string) {
+  if (!value.trim()) return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount >= 0
+    ? Math.round(amount * 100)
+    : null;
 }
 function GiftCard({
   wish: g,
