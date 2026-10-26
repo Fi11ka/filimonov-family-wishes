@@ -36,14 +36,8 @@ export async function birthdayReminders(
       next.days,
     ).first();
     if (!fresh) continue;
-    const friends = (
-      await stmt(
-        db,
-        `SELECT CASE WHEN user_a=?1 THEN user_b ELSE user_a END AS id FROM friendships
-        WHERE status='accepted' AND (user_a=?1 OR user_b=?1)`,
-        p.id,
-      ).all<{ id: string }>()
-    ).results.map((r) => r.id);
+    // Only people with the bell on about this person who still see the list.
+    const friends = await out.subscribers(p.id);
     const date = new Intl.DateTimeFormat("ru-RU", {
       day: "numeric",
       month: "long",

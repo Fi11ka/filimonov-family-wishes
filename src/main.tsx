@@ -40,6 +40,7 @@ import {
   Globe,
   Send,
   Bot,
+  Lock,
   SlidersHorizontal,
 } from "lucide-react";
 import { useFullscreen } from "./fullscreen";
@@ -49,16 +50,16 @@ import {
   apiConfigured,
   BOT,
   demo,
-  friendInvite,
   guestCodes,
   guestToken,
+  legacyLink,
   openBot,
   openInBrowser,
   openTarget,
+  profileLink,
+  profileTarget,
   redeemHandoff,
-  RequestError,
   setGuestCode,
-  authShare,
   setSessionToken,
   signedIn,
   telegram,
@@ -75,7 +76,7 @@ import {
   demoUser,
 } from "./demo";
 import { GiftForm, Share, Modal, Confirm } from "./forms";
-import { AcceptInvite, AddFriend, Profile, Requests } from "./friends";
+import { Profile, Requests } from "./friends";
 import { Features, Welcome } from "./welcome";
 import { telegramAppLink } from "./telegram-links";
 import { Face } from "./avatar";
@@ -94,6 +95,7 @@ import {
   type Invitation,
   type User,
   type Friend,
+  type Person,
   type Wish,
   initials,
   handle,
@@ -102,8 +104,16 @@ import {
 } from "./types";
 import "./style.css";
 type Tab = "mine" | "friends" | "bookings" | "events" | "archive" | "event";
-type ModalKind =
-  "gift" | "share" | "add-friend" | "profile" | "import" | "invite";
+type ModalKind = "gift" | "share" | "profile" | "import";
+/** «Подписки»: whom I follow, my followers, requests to follow me. */
+type People = {
+  following: Person[];
+  followers: Person[];
+  requests: Person[];
+  outgoing: Person[];
+};
+/** A profile opened in «Подписки»: its card, and whether its list is open to me. */
+type Viewed = { card: Person & { is_private?: boolean }; can_view: boolean };
 interface Confirmation {
   text: string;
   action: string;
@@ -112,20 +122,32 @@ interface Confirmation {
 }
 function App() {
   const [user, setUser] = useState<User | null>(demo ? demoUser : null),
-    [friends, setFriends] = useState<Friend[]>(demo ? demoFriends : []),
-    [incoming, setIncoming] = useState<User[]>(demo ? demoIncoming : []),
-    [outgoing, setOutgoing] = useState<User[]>([]);
+    [people, setPeople] = useState<People>({
+      following: demo ? demoFriends : [],
+      followers: demo ? demoFriends : [],
+      requests: demo ? demoIncoming.map((p) => ({ ...p, gift_count: 0 })) : [],
+      outgoing: [],
+    }),
+    [peopleTab, setPeopleTab] = useState<keyof People>("following"),
+    [viewed, setViewed] = useState<Viewed | null>(null);
+  // My people, whom I can invite to an event or a shared gift.
+  const friends: Friend[] = [
+    ...people.following,
+    ...people.followers.filter(
+      (f) => !people.following.some((x) => x.id === f.id),
+    ),
+  ];
   const [owner, setOwner] = useState<User | null>(demo ? demoUser : null),
     [gifts, setGifts] = useState<Wish[]>(demo ? demoGifts : []),
     [invitations, setInvitations] = useState<Invitation[]>([]),
     [archive, setArchive] = useState<Wish[]>(demo ? demoArchive : []);
-  const [tab, setTab] = useState<Tab>(guestToken ? "friends" : "mine"),
+  const [tab, setTab] = useState<Tab>(
+      guestToken || profileTarget || legacyLink ? "friends" : "mine",
+    ),
     [loading, setLoading] = useState(!demo),
     [error, setError] = useState(""),
     [toast, setToast] = useState("");
-  const [modal, setModal] = useState<ModalKind | null>(
-      friendInvite && !demo ? "invite" : null,
-    ),
+  const [modal, setModal] = useState<ModalKind | null>(null),
     [confirmation, setConfirmation] = useState<Confirmation | null>(null),
     [editing, setEditing] = useState<Wish | null>(null),
     [search, setSearch] = useState(""),
@@ -165,11 +187,7 @@ function App() {
   async function openList(id: string, named?: string) {
     if (user && id === user.id) await navigate("mine");
     else {
-      setTab("friends");
-      setFilters(noFilters);
-      const demoFriend = demo && friends.find((f) => f.id === id);
-      if (demoFriend) openFriend(demoFriend);
-      else await loadList(id);
+      await openPerson(id);
       setNamedList(named ? { owner: id, event: named } : null);
     }
   }
@@ -206,15 +224,15 @@ function App() {
     invite?: boolean;
   } | null>(null);
   const [guestName, setGuestName] = useState("");
-  /** Whose list the shared link opened for a signed-in user: it offers to add them as a friend. */
+  /** Whose profile a link opened: the welcome dialog names them. */
   const [sharedOwner, setSharedOwner] = useState("");
   const sharedOpened = useRef(false);
   /** The first-visit tour, with the bot status for its «Открыть бота». */
   const [welcome, setWelcome] = useState<Notifications | null | false>(false);
   const welcomeShown = useRef(false);
-  /** A link opened without an account: only that list, with bookings by name.
+  /** A guest link opened without an account: only that list, with bookings by name.
    * Signed in, the link just opens the list and the rest of the app works as usual. */
-  const guestView = () => !!guestToken && !authShare && !signedIn();
+  const guestView = () => !!guestToken && !signedIn();
   const own = !!user && owner?.id === user.id;
   const notice = (message: string) => {
     setToast(message);
@@ -238,10 +256,38 @@ function App() {
   }
   async function loadFriends() {
     if (demo) return;
-    const f = await api("/api/friends");
-    setFriends(f.friends);
-    setIncoming(f.incoming);
-    setOutgoing(f.outgoing);
+    setPeople(await api("/api/people"));
+  }
+  /**
+   * Someone's profile in «Подписки»: their list when it is open to me, or the
+   * card with «Подписаться» / «Запросить доступ».
+   */
+  async function openPerson(id: string) {
+    setTab("friends");
+    setNamedList(null);
+    setFilters(noFilters);
+    setSearch("");
+    setError("");
+    if (demo) {
+      const f = friends.find((x) => x.id === id);
+      if (f) openFriend(f);
+      return;
+    }
+    setLoading(true);
+    try {
+      const p: Viewed = await api(`/api/profiles/${id}`);
+      setViewed(p);
+      if (p.can_view) await loadList(id);
+      else {
+        setOwner(p.card);
+        setGifts([]);
+        setInvitations([]);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
   }
   async function loadArchive() {
     if (demo) return;
@@ -266,6 +312,10 @@ function App() {
         setOwner(d.owner);
         setGifts(d.gifts);
         setInvitations(d.invitations || []);
+      } else if (!signedIn()) {
+        // A profile link opened without signing in: an open list, or the card.
+        const id = profileTarget || (await linkedProfile());
+        if (id) await openPerson(id);
       } else if (signedIn()) {
         const me = await api("/api/me");
         setUser(me.user);
@@ -274,23 +324,30 @@ function App() {
           welcomeShown.current = true;
           setWelcome(me.notifications || null);
         }
+        await loadFriends();
         let id = tab === "mine" || !owner ? me.user.id : owner.id;
-        if (guestToken && !sharedOpened.current) {
-          // First open of a shared link: show that list like a friend's one.
+        if (!sharedOpened.current && (guestToken || profileTarget || legacyLink)) {
+          // First open of a link: show that profile; the rest of the app works as usual.
           sharedOpened.current = true;
-          const shared = await api("/api/guest").catch(() => null);
+          const shared = guestToken
+            ? (await api("/api/guest").catch(() => null))?.owner.id
+            : profileTarget || (await linkedProfile());
           if (!shared) notice("Ссылка не найдена или отозвана");
-          else if (shared.owner.id !== me.user.id) {
-            id = shared.owner.id;
-            setSharedOwner(id);
-            setTab("friends");
+          else if (shared !== me.user.id) {
+            setSharedOwner(shared);
+            await openPerson(shared);
+            return;
           } else setTab("mine");
+        }
+        if (tab === "friends" && viewed && owner?.id === viewed.card.id) {
+          // Stay on the profile; its access may have changed.
+          await openPerson(viewed.card.id);
+          return;
         }
         const d = await api(`/api/lists/${id}`);
         setOwner(d.owner);
         setGifts(d.gifts);
         setInvitations(d.invitations || []);
-        await loadFriends();
       }
     } catch (e) {
       setError((e as Error).message);
@@ -299,6 +356,13 @@ function App() {
     } finally {
       setLoading(false);
     }
+  }
+  /** Whose profile an old «Поделиться» or friend invitation link leads to. */
+  async function linkedProfile(): Promise<string> {
+    if (!legacyLink) return "";
+    return api("/api/links/resolve", "POST", { token: legacyLink })
+      .then((r) => r.owner_id as string)
+      .catch(() => "");
   }
   async function logout(everywhere: boolean) {
     try {
@@ -320,7 +384,8 @@ function App() {
     setUser(null);
     setOwner(null);
     setGifts([]);
-    setFriends([]);
+    setPeople({ following: [], followers: [], requests: [], outgoing: [] });
+    setViewed(null);
     setTab("mine");
     notice("Вы вышли из аккаунта");
   }
@@ -334,12 +399,12 @@ function App() {
     // «В браузере» from the Mini App: sign in with its one-time code first.
     const handoff = redeemHandoff().catch((e) => notice((e as Error).message));
     void handoff.then(refresh).then(async () => {
-      // Buttons in bot messages open a friend's list or «Мои брони».
-      if (demo || !signedIn() || guestToken) return;
-      if (new RegExp(`^l_(${ACCOUNT_ID_PART})$`).test(openTarget)) {
-        setTab("friends");
-        await loadList(openTarget.slice(2));
-      } else if (openTarget === "b") await navigate("bookings");
+      // Buttons in bot messages open a profile or «Мои брони».
+      if (demo || !signedIn() || guestToken || profileTarget || legacyLink)
+        return;
+      if (new RegExp(`^l_(${ACCOUNT_ID_PART})$`).test(openTarget))
+        await openPerson(openTarget.slice(2));
+      else if (openTarget === "b") await navigate("bookings");
       else {
         const e = openTarget.match(
           new RegExp(
@@ -375,6 +440,7 @@ function App() {
     if (next === "friends" && !guestView()) {
       setOwner(null);
       setGifts([]);
+      setViewed(null);
       try {
         await loadFriends();
       } catch (e) {
@@ -398,6 +464,8 @@ function App() {
     setNamedList(null);
     setFilters(noFilters);
     if (demo) {
+      setTab("friends");
+      setViewed({ card: { ...f, follow: "approved" }, can_view: true });
       setOwner(f);
       setGifts(
         demoGifts.slice(0, f.gift_count).map((g, n) => ({
@@ -408,7 +476,7 @@ function App() {
       );
       return;
     }
-    void loadList(f.id);
+    void openPerson(f.id);
   }
   async function guarded(action: () => Promise<void>, demoMessage: string) {
     if (demo) {
@@ -449,7 +517,7 @@ function App() {
       return;
     }
     if (g.reservation !== "mine") {
-      // Friends are needed to offer «Подарить вместе»; a shared link may come without them.
+      // My people are needed to offer «Подарить вместе»; a link may come without them.
       if (!friends.length) await loadFriends().catch(() => undefined);
       setReserving({ gift: g, ownerId: g.owner_id });
       return;
@@ -522,17 +590,18 @@ function App() {
         }, "В демо брони не меняются."),
     });
   }
-  async function toggleSubscription(f: Friend) {
+  async function toggleSubscription(f: Person) {
     await guarded(async () => {
       const r = await api(
         `/api/subscriptions/${f.id}`,
         f.subscribed ? "DELETE" : "PUT",
       );
-      setFriends((list) =>
-        list.map((x) =>
-          x.id === f.id ? { ...x, subscribed: r.subscribed } : x,
-        ),
+      setViewed((v) =>
+        v && v.card.id === f.id
+          ? { ...v, card: { ...v.card, subscribed: r.subscribed } }
+          : v,
       );
+      void loadFriends().catch(() => undefined);
       if (r.subscribed && !r.notifications.bot_connected) {
         notice("Уведомления включены. Откройте бота и нажмите «Запустить»");
         openBot(r.notifications.bot_url);
@@ -570,19 +639,49 @@ function App() {
         }, "В демо удаление недоступно."),
     });
   }
-  function unfriend(f: User) {
+  /** «Подписаться» / «Запросить доступ»: an open profile at once, a closed one after approval. */
+  async function followPerson(p: Person) {
+    await guarded(async () => {
+      const r = await api(`/api/follows/${p.id}`, "POST");
+      notice(
+        r.follow === "approved"
+          ? "Вы подписались"
+          : "Запрос отправлен. Вишлист откроется, когда его одобрят",
+      );
+      await loadFriends();
+      await openPerson(p.id);
+    }, "В демо подписки не меняются.");
+  }
+  function unfollow(p: Person) {
+    const pending = p.follow === "pending";
     setConfirmation({
-      text: `Убрать ${f.name} из друзей? Вы перестанете видеть вишлисты друг друга. Уже сделанные брони сохранятся.`,
+      text: pending
+        ? "Отменить запрос на подписку? Он ещё ждёт одобрения."
+        : `Отписаться?${p.is_private ? " Профиль закрытый: чтобы снова видеть вишлист, придётся запросить доступ." : ""} Уже сделанные брони сохранятся.`,
+      action: pending ? "Отменить запрос" : "Отписаться",
+      danger: !pending,
+      run: () =>
+        guarded(async () => {
+          await api(`/api/follows/${p.id}`, "DELETE");
+          await loadFriends();
+          await openPerson(p.id);
+          notice(pending ? "Запрос отменён" : "Вы отписались");
+        }, "В демо подписки не меняются."),
+    });
+  }
+  /** Take my list away from a follower; they are not told. */
+  function removeFollower(p: Person) {
+    setConfirmation({
+      text: `Убрать из подписчиков: ${p.name}? Если ваш профиль закрытый, этот человек перестанет видеть вишлист. Сообщения об этом не будет.`,
       action: "Убрать",
       danger: true,
       run: () =>
         guarded(async () => {
-          await api(`/api/friends/${f.id}`, "DELETE");
-          setOwner(null);
-          setGifts([]);
+          await api(`/api/followers/${p.id}`, "DELETE");
           await loadFriends();
-          notice("Удалено из друзей");
-        }, "В демо друзья не меняются."),
+          await openPerson(p.id);
+          notice("Убрано из подписчиков");
+        }, "В демо подписки не меняются."),
     });
   }
   const list = tab === "archive" ? archive : gifts;
@@ -604,11 +703,21 @@ function App() {
             ? a.priority - b.priority
             : b.priority - a.priority,
     );
-  const locked = !demo && !user && (!guestToken || authShare) && !loading;
+  // Without signing in only a guest link or an open profile shows a list.
+  const visitor = !user && !!viewed?.can_view;
+  const locked = !demo && !user && !guestToken && !visitor && !loading;
   const viewingFriend = tab === "friends" && !!owner && !own;
+  // A closed profile I do not follow shows its card instead of the list.
+  const closedCard =
+    viewingFriend && !demo && !!viewed && viewed.card.id === owner?.id && !viewed.can_view;
   const showList =
-    tab === "mine" || tab === "archive" || guestView() || viewingFriend;
+    tab === "mine" ||
+    tab === "archive" ||
+    guestView() ||
+    (viewingFriend && !closedCard);
   const ownerFirst = owner?.name.split(" ")[0] || "друга";
+  // «Поделиться» on someone's profile shares theirs; anywhere else my own.
+  const sharingOwn = !(tab === "friends" && owner && !own);
   return (
     <div className="app-shell">
       <aside className={`sidebar ${menu ? "is-open" : ""}`}>
@@ -624,7 +733,7 @@ function App() {
           {(
             [
               ["mine", Heart, "Мой вишлист", "Вишлист"],
-              ["friends", Users, "Друзья", "Друзья"],
+              ["friends", Users, "Подписки", "Подписки"],
               ["bookings", Bookmark, "Мои брони", "Брони"],
               ["events", CalendarDays, "Мероприятия", "Мероприятия"],
               ["archive", Archive, "Архив", "Архив"],
@@ -634,18 +743,18 @@ function App() {
               key={key}
               className={`nav-item ${tab === key || (key === "events" && tab === "event") ? "active" : ""}`}
               onClick={() => void navigate(key)}
-              disabled={!!guestToken && key !== "friends" && !user}
+              disabled={!user && !demo && key !== "friends"}
             >
               <I size={20} />
               <span className="nav-label">{label}</span>
               {/* The phone tab bar has no room for the long names. */}
               <span className="nav-label-short">{short}</span>
-              {key === "friends" && incoming.length > 0 && (
+              {key === "friends" && people.requests.length > 0 && (
                 <span
                   className="nav-count"
-                  aria-label={`Заявок: ${incoming.length}`}
+                  aria-label={`Запросов: ${people.requests.length}`}
                 >
-                  {incoming.length}
+                  {people.requests.length}
                 </span>
               )}
               {tab === key && <span className="nav-dot" />}
@@ -740,11 +849,20 @@ function App() {
         <main>
           {locked ? (
             <section className="welcome">
-              {guestToken ? (
+              {viewed ? (
                 <>
-                  <h1>Вам прислали вишлист</h1>
+                  <PersonCard card={viewed.card} />
                   <p>
-                    Войдите через Telegram, чтобы открыть его и забронировать
+                    Профиль закрытый. Войдите через Telegram и запросите доступ:
+                    вишлист откроется, когда {viewed.card.name.split(" ")[0]}{" "}
+                    одобрит подписку.
+                  </p>
+                </>
+              ) : profileTarget || legacyLink ? (
+                <>
+                  <h1>Вам прислали профиль</h1>
+                  <p>
+                    Войдите через Telegram, чтобы открыть вишлист и забронировать
                     подарок. Это бесплатно и займёт минуту.
                   </p>
                 </>
@@ -786,6 +904,15 @@ function App() {
                   <span>Вишлист для близких · без регистрации</span>
                 </div>
               )}
+              {visitor && (
+                <div className="guest-banner">
+                  <LinkIcon size={18} />
+                  <span>Открытый вишлист · чтобы забронировать, войдите</span>
+                  <a href={telegramLink()}>
+                    Открыть в Telegram <ArrowUpRight size={14} />
+                  </a>
+                </div>
+              )}
               {guestView() && (
                 <div className="guest-promo">
                   <p>
@@ -798,44 +925,12 @@ function App() {
                   </a>
                 </div>
               )}
-              {viewingFriend &&
-                owner?.id === sharedOwner &&
-                !friends.some((f) => f.id === owner.id) &&
-                !outgoing.some((f) => f.id === owner.id) && (
-                  <button
-                    className="button primary add-shared-friend"
-                    disabled={busy}
-                    onClick={() =>
-                      void guarded(async () => {
-                        // The owner's own link counts as their consent; a reshared one sends a request.
-                        const r = await api(
-                          "/api/friend-invites/accept",
-                          "POST",
-                          { token: guestToken },
-                        ).catch(async (e) => {
-                          if ((e as RequestError).status !== 404) throw e;
-                          return api("/api/friends/requests", "POST", {
-                            user_id: owner.id,
-                          });
-                        });
-                        notice(
-                          r.status === "pending"
-                            ? "Запрос в друзья отправлен"
-                            : `Вы теперь друзья с ${owner.name.split(" ")[0]}!`,
-                        );
-                        await loadFriends();
-                      }, "")
-                    }
-                  >
-                    <UserPlus size={17} /> Добавить в друзья · {owner.name}
-                  </button>
-                )}
-              {viewingFriend && (
+              {viewingFriend && user && (
                 <button
                   className="text-link back-to-friends"
                   onClick={() => void navigate("friends")}
                 >
-                  <ArrowLeft size={15} /> Все друзья
+                  <ArrowLeft size={15} /> Все подписки
                 </button>
               )}
               <div
@@ -853,10 +948,12 @@ function App() {
                           : tab === "archive"
                             ? "Архив"
                             : tab === "friends" && !guestView() && !viewingFriend
-                              ? "Друзья"
+                              ? "Подписки"
                               : own
                                 ? "Мой вишлист"
-                                : `Вишлист: ${owner?.name || ownerFirst}`}
+                                : closedCard
+                                  ? owner?.name || ownerFirst
+                                  : `Вишлист: ${owner?.name || ownerFirst}`}
                   </h1>
                   {tab === "mine" && user && (
                     <button
@@ -874,7 +971,7 @@ function App() {
                     </button>
                   )}
                   </div>
-                  {owner && showList && tab !== "bookings" && (
+                  {owner && showList && tab !== "bookings" && !closedCard && (
                     <div className="wishlist-meta">
                       {tab !== "archive" && (
                         <WishlistEvents
@@ -957,41 +1054,78 @@ function App() {
                   </button>
                 </div>
               )}
-              {!error && tab === "friends" && !guestView() && !viewingFriend && (
+              {!error && !loading && tab === "friends" && !guestView() && !viewingFriend && (
                 <section className="family-section">
                   <div className="section-heading">
-                    <span className="muted">
-                      {friends.length ? `Друзей: ${friends.length}` : ""}
-                    </span>
+                    <div className="segmented people-tabs" role="tablist">
+                      {(
+                        [
+                          ["following", "Подписки"],
+                          ["followers", "Подписчики"],
+                          ["requests", "Запросы"],
+                        ] as const
+                      ).map(([key, label]) => (
+                        <button
+                          key={key}
+                          role="tab"
+                          aria-selected={peopleTab === key}
+                          className={peopleTab === key ? "selected" : ""}
+                          onClick={() => setPeopleTab(key)}
+                        >
+                          {label}
+                          {key === "requests"
+                            ? people.requests.length > 0 && (
+                                <span className="nav-count">
+                                  {people.requests.length}
+                                </span>
+                              )
+                            : ` ${people[key].length}`}
+                        </button>
+                      ))}
+                    </div>
                     <button
                       className="text-link"
-                      onClick={() => setModal("add-friend")}
+                      onClick={() => {
+                        if (demo) {
+                          notice("В демо ссылки не создаются.");
+                          return;
+                        }
+                        setModal("share");
+                      }}
                     >
                       <UserPlus size={16} />
-                      Добавить друга
+                      Поделиться профилем
                     </button>
                   </div>
-                  <Requests
-                    incoming={incoming}
-                    outgoing={outgoing}
-                    notice={notice}
-                    onChanged={() => void loadFriends()}
-                  />
-                  {friends.length ? (
+                  {peopleTab === "requests" ? (
+                    people.requests.length || people.outgoing.length ? (
+                      <Requests
+                        incoming={people.requests}
+                        outgoing={people.outgoing}
+                        notice={notice}
+                        onOpen={(id) => void openPerson(id)}
+                        onChanged={() => void loadFriends()}
+                      />
+                    ) : (
+                      <div className="empty compact">
+                        <Users />
+                        <h3>Запросов нет</h3>
+                        <p>
+                          Здесь появятся те, кто хочет подписаться на ваш
+                          закрытый профиль.
+                        </p>
+                      </div>
+                    )
+                  ) : people[peopleTab].length ? (
                     <div className="members">
-                      {friends.map((m, i) => (
+                      {people[peopleTab].map((m, i) => (
                         <button
-                          className={`member ${m.id === owner?.id ? "selected" : ""}`}
+                          className="member"
                           key={m.id}
                           onClick={() => openFriend(m)}
                         >
                           <span className={`avatar tone-${i % 4}`}>
                             <Face user={m} />
-                            {m.id === owner?.id && (
-                              <span className="avatar-check">
-                                <Check size={10} />
-                              </span>
-                            )}
                           </span>
                           <strong>{m.name.split(" ")[0]}</strong>
                           {m.username && <small>@{m.username}</small>}
@@ -1002,85 +1136,110 @@ function App() {
                   ) : (
                     <div className="empty compact">
                       <Users />
-                      <h3>Друзей пока нет</h3>
+                      <h3>
+                        {peopleTab === "following"
+                          ? "Вы пока ни на кого не подписаны"
+                          : "Подписчиков пока нет"}
+                      </h3>
                       <p>
-                        Добавьте друга по нику Telegram или отправьте
-                        приглашение.
+                        {peopleTab === "following"
+                          ? "Попросите близких прислать ссылку на их профиль."
+                          : "Отправьте близким ссылку на свой профиль."}
                       </p>
                     </div>
                   )}
-                  {friends.length > 0 && !viewingFriend && (
-                    <p className="muted pick-hint">
-                      Выберите друга, чтобы открыть его вишлист.
-                    </p>
+                </section>
+              )}
+              {!error && closedCard && viewed && (
+                <section className="closed-profile">
+                  <PersonCard card={viewed.card} />
+                  <p className="muted">
+                    <Lock size={15} /> Закрытый профиль. Вишлист увидят
+                    подписчики, которых одобрит {viewed.card.name.split(" ")[0]}.
+                  </p>
+                  {user && (
+                    <FollowButton
+                      card={viewed.card}
+                      busy={busy}
+                      onFollow={() => void followPerson(viewed.card)}
+                      onUnfollow={() => unfollow(viewed.card)}
+                    />
+                  )}
+                  {viewed.card.follows_you && (
+                    <button
+                      className="text-link danger"
+                      onClick={() => removeFollower(viewed.card)}
+                    >
+                      <UserMinus size={15} />
+                      Убрать из подписчиков
+                    </button>
                   )}
                 </section>
               )}
               {!error && showList && (
                 <>
                   {(() => {
-                    // Share, notifications and unfriending in one row.
-                    const canShare =
-                      !!user &&
-                      !own &&
-                      !!owner &&
-                      tab !== "archive" &&
-                      owner.allow_resharing !== 0;
-                    const friend = viewingFriend
-                      ? friends.find((f) => f.id === owner?.id)
-                      : undefined;
-                    if (!owner || (!canShare && !friend)) return null;
+                    // Following, notifications and sharing the profile in one row.
+                    if (!owner || own || tab === "archive" || !user) return null;
+                    const card =
+                      viewed && viewed.card.id === owner.id ? viewed.card : null;
+                    if (!card) return null;
+                    const sees = card.follow === "approved" || !card.is_private;
                     return (
                       <div className="wishlist-actions">
-                        {canShare && (
+                        <FollowButton
+                          card={card}
+                          busy={busy}
+                          onFollow={() => void followPerson(card)}
+                          onUnfollow={() => unfollow(card)}
+                        />
+                        {sees && (
+                          // A switch for bot messages, not unfollowing the person.
                           <button
-                            className="button secondary"
-                            onClick={() => {
-                              if (demo) {
-                                notice("В демо ссылки не создаются.");
-                                return;
-                              }
-                              setModal("share");
-                            }}
+                            className={`button secondary notify-toggle ${card.subscribed ? "on" : ""}`}
+                            disabled={busy}
+                            aria-pressed={!!card.subscribed}
+                            onClick={() => void toggleSubscription(card)}
+                            title={
+                              card.subscribed
+                                ? "Бот пишет в Telegram, когда вишлист меняется, и напоминает о дне рождения. Нажмите, чтобы выключить"
+                                : "Бот напишет в Telegram о новых желаниях и напомнит о дне рождения"
+                            }
                           >
-                            <LinkIcon size={16} />
-                            Поделиться
+                            {card.subscribed ? (
+                              <>
+                                <BellRing size={16} />
+                                Уведомления включены
+                              </>
+                            ) : (
+                              <>
+                                <Bell size={16} />
+                                Уведомлять
+                              </>
+                            )}
                           </button>
                         )}
-                        {friend && (
-                          <>
-                            {/* A switch for bot messages, not «unfollowing» the person. */}
-                            <button
-                              className={`button secondary notify-toggle ${friend.subscribed ? "on" : ""}`}
-                              disabled={busy}
-                              aria-pressed={!!friend.subscribed}
-                              onClick={() => void toggleSubscription(friend)}
-                              title={
-                                friend.subscribed
-                                  ? "Бот пишет в Telegram, когда вишлист меняется. Нажмите, чтобы выключить"
-                                  : "Бот напишет в Telegram о новых и удалённых желаниях"
-                              }
-                            >
-                              {friend.subscribed ? (
-                                <>
-                                  <BellRing size={16} />
-                                  Уведомления включены
-                                </>
-                              ) : (
-                                <>
-                                  <Bell size={16} />
-                                  Уведомлять об изменениях
-                                </>
-                              )}
-                            </button>
-                            <button
-                              className="text-link danger remove-friend"
-                              onClick={() => unfriend(owner)}
-                            >
-                              <UserMinus size={15} />
-                              Удалить из друзей
-                            </button>
-                          </>
+                        <button
+                          className="button secondary"
+                          onClick={() => {
+                            if (demo) {
+                              notice("В демо ссылки не создаются.");
+                              return;
+                            }
+                            setModal("share");
+                          }}
+                        >
+                          <LinkIcon size={16} />
+                          Поделиться
+                        </button>
+                        {card.follows_you && (
+                          <button
+                            className="text-link danger remove-friend"
+                            onClick={() => removeFollower(card)}
+                          >
+                            <UserMinus size={15} />
+                            Убрать из подписчиков
+                          </button>
                         )}
                       </div>
                     );
@@ -1189,7 +1348,9 @@ function App() {
                                 ? "own"
                                 : user
                                   ? "friend"
-                                  : "guest"
+                                  : guestView()
+                                    ? "guest"
+                                    : "visitor"
                           }
                           busy={busy}
                           onEdit={() => {
@@ -1526,6 +1687,7 @@ function App() {
                 ? owner.name.split(" ")[0]
                 : undefined
             }
+            sharedOpen={!closedCard}
             notifications={welcome}
             onDone={(updated) => {
               setWelcome(false);
@@ -1544,11 +1706,9 @@ function App() {
           title={
             {
               gift: editing ? "Редактировать желание" : "Добавить желание",
-              share: "Поделиться вишлистом",
-              "add-friend": "Добавить друга",
+              share: sharingOwn ? "Поделиться профилем" : "Поделиться",
               profile: "Мой профиль",
               import: "Добавить много желаний",
-              invite: "Приглашение в друзья",
             }[modal]
           }
           closeOnBackdrop={modal !== "gift"}
@@ -1567,14 +1727,9 @@ function App() {
               }}
             />
           ) : modal === "share" ? (
-            <Share ownerId={owner?.id} own={own} />
-          ) : modal === "add-friend" ? (
-            <AddFriend
-              onDone={async (message) => {
-                setModal(null);
-                notice(message);
-                await loadFriends().catch(() => undefined);
-              }}
+            <Share
+              ownerId={sharingOwn ? user?.id : owner?.id}
+              own={sharingOwn}
             />
           ) : modal === "profile" ? (
             <Profile
@@ -1587,28 +1742,19 @@ function App() {
                     : current,
                 );
               }}
-              friends={friends.length}
+              followers={people.followers.length}
+              following={people.following.length}
               webSession={webSession}
-              onAddFriend={() => setModal("add-friend")}
+              onShare={() => setModal("share")}
               onLogout={(everywhere) => void logout(everywhere)}
             />
-          ) : modal === "import" ? (
+          ) : (
             <ImportDialog
               activeCount={own ? gifts.length : 0}
               onClose={() => setModal(null)}
               onImported={async (message) => {
                 notice(message);
                 if (user) await loadList(user.id);
-              }}
-            />
-          ) : (
-            <AcceptInvite
-              token={friendInvite}
-              onDone={async (message) => {
-                setModal(null);
-                notice(message);
-                await loadFriends().catch(() => undefined);
-                void navigate("friends");
               }}
             />
           )}
@@ -1630,6 +1776,55 @@ function App() {
     </div>
   );
 }
+/** The public card: name, photo, @nick, how many wishes and followers. */
+function PersonCard({ card }: { card: Person }) {
+  return (
+    <div className="person-card">
+      <span className="avatar large">
+        <Face user={card} />
+      </span>
+      <h2>{card.name}</h2>
+      {card.username && <p className="muted">@{card.username}</p>}
+      <p className="small-text">
+        {wishCount(card.gift_count)}
+        {card.follower_count !== undefined &&
+          ` · подписчиков: ${card.follower_count}`}
+      </p>
+    </div>
+  );
+}
+/** Follow an open profile, ask a closed one for access, or undo either. */
+function FollowButton({
+  card,
+  busy,
+  onFollow,
+  onUnfollow,
+}: {
+  card: Person & { is_private?: boolean };
+  busy: boolean;
+  onFollow: () => void;
+  onUnfollow: () => void;
+}) {
+  if (card.follow === "approved")
+    return (
+      <button className="button secondary" disabled={busy} onClick={onUnfollow}>
+        <Check size={16} /> Вы подписаны
+      </button>
+    );
+  if (card.follow === "pending")
+    return (
+      <button className="button secondary" disabled={busy} onClick={onUnfollow}>
+        <Clock size={16} /> Запрос отправлен
+      </button>
+    );
+  return (
+    <button className="button primary" disabled={busy} onClick={onFollow}>
+      <UserPlus size={16} />
+      {card.is_private ? "Запросить доступ" : "Подписаться"}
+      {card.follows_you && !card.is_private ? " в ответ" : ""}
+    </button>
+  );
+}
 function GiftCard({
   wish: g,
   mode,
@@ -1642,7 +1837,8 @@ function GiftCard({
   onAnswer,
 }: {
   wish: Wish;
-  mode: "own" | "friend" | "guest" | "archive";
+  /** «visitor»: an open profile seen without signing in; booking needs Telegram. */
+  mode: "own" | "friend" | "guest" | "visitor" | "archive";
   busy: boolean;
   onEdit: () => void;
   onBought: () => void;

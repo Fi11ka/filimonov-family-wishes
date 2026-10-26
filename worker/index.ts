@@ -21,13 +21,13 @@ import { aiNamer } from "./shops/naming";
 import { isQuotaError, readScreenshot, screenshotBytes } from "./screenshot";
 import { cleanupHelperJobs, helperRoute, homeHelper } from "./helper";
 import {
-  FRIEND_OF,
+  CONNECTED,
   LINK_ACTIVE,
+  SEES,
   bookers,
-  friendship,
+  follow,
   giftInfo,
   now,
-  pair,
   saveUser,
   stmt,
   telegramIdOf,
@@ -136,7 +136,11 @@ async function canView(
   guest: string | null,
 ) {
   if (user?.id === owner) return true;
-  if (user && (await friendship(db, user.id, owner))?.status === "accepted")
+  // An open profile, or an approved follower of a closed one.
+  if (
+    await stmt(db, `SELECT 1 AS ok WHERE ${SEES("?2")}`, user?.id || "", owner)
+      .first()
+  )
     return true;
   if (
     user &&
@@ -151,11 +155,11 @@ async function canView(
   if (guest && /^[A-Za-z0-9_-]{43}$/.test(guest))
     return !!(await stmt(
       db,
-      `SELECT 1 AS ok FROM guest_links WHERE owner_id=? AND token_hash=? AND ${LINK_ACTIVE("guest_links", "?")} AND (kind='guest' OR ? IS NOT NULL)`,
+      // Only the guest link: the Telegram «Поделиться» links now lead to the profile.
+      `SELECT 1 AS ok FROM guest_links WHERE owner_id=? AND token_hash=? AND ${LINK_ACTIVE("guest_links", "?")} AND kind='guest'`,
       owner,
       await hash(guest),
       now(),
-      user?.id || null,
     ).first());
   return false;
 }
@@ -165,8 +169,9 @@ async function list(
   user: Identity | null,
   guestView = false,
 ) {
-  // The normal owner list never reads reservations; guest links explicitly expose statuses.
-  if (!guestView && (!user || user.id === owner))
+  // The owner's list never reads reservations; others (an open profile seen
+  // without signing in too) see only whether a gift is free.
+  if (!guestView && user?.id === owner)
     return (
       await stmt(
         db,
@@ -248,13 +253,13 @@ async function inviteFriends(
       "VALIDATION",
       `В совместном подарке может быть до ${GROUP_LIMIT} друзей.`,
     );
-  // Only accepted friends of the organizer; the insert itself checks friendship.
+  // Only the organizer's own people (followers, people followed); the insert itself checks it.
   const inserted = await db.batch(
     wanted.map((id) =>
       stmt(
         db,
         `INSERT INTO reservation_members(gift_id,user_id,status)
-        SELECT ?2,?3,'invited' WHERE ${FRIEND_OF("?3")} ON CONFLICT DO NOTHING RETURNING user_id`,
+        SELECT ?2,?3,'invited' WHERE ${CONNECTED("?3")} ON CONFLICT DO NOTHING RETURNING user_id`,
         user.id,
         giftId,
         id,
@@ -269,6 +274,8 @@ async function inviteFriends(
 }
 /** Profile photo of an account: Telegram (digits) or other sign-in (a_<uuid>) IDs. */
 const AVATAR_PATH = new RegExp(`^/api/users/(${ACCOUNT_ID_PART})/photo$`);
+const LIST_PATH = new RegExp(`^/api/lists/(${ACCOUNT_ID_PART})$`);
+const PROFILE_PATH = new RegExp(`^/api/profiles/(${ACCOUNT_ID_PART})$`);
 const SESSION_DAYS = 30,
   SESSION_LIMIT = 10;
 async function sessionUser(db: D1Database, raw: string): Promise<Identity> {
@@ -326,7 +333,7 @@ const HANDOFF_TTL = 120;
 async function profile(db: D1Database, id: string, self = false) {
   const p = await stmt(
     db,
-    "SELECT id,name,username,birthday,gender,event_title,event_date,allow_resharing,wishlist_updated_at,about,CASE WHEN photo='' THEN NULL ELSE photo_at END AS photo_at FROM users WHERE id=?",
+    "SELECT id,name,username,birthday,gender,event_title,event_date,allow_resharing,is_private,wishlist_updated_at,about,CASE WHEN photo='' THEN NULL ELSE photo_at END AS photo_at FROM users WHERE id=?",
     id,
   ).first<{
     id: string;
@@ -337,14 +344,58 @@ async function profile(db: D1Database, id: string, self = false) {
     event_title: string | null;
     event_date: string | null;
     allow_resharing: number;
+    is_private: number;
     wishlist_updated_at: number | null;
     about: string | null;
     photo_at: number | null;
   }>();
   if (!p) return null;
-  const { gender, event_title: _, event_date: __, ...rest } = p;
-  return { ...rest, ...(self ? { gender } : {}), events: eventSpecs(p) };
+  const { gender, event_title: _, event_date: __, is_private, ...rest } = p;
+  return {
+    ...rest,
+    is_private: !!is_private,
+    ...(self ? { gender } : {}),
+    events: eventSpecs(p),
+  };
 }
+/**
+ * What anyone with the profile link sees, even of a closed profile: name, photo,
+ * @nick, how many wishes and followers. Plus how the viewer follows this person.
+ */
+async function card(db: D1Database, id: string, viewer: string | null) {
+  const c = await stmt(
+    db,
+    `SELECT u.id,u.name,u.username,u.is_private,CASE WHEN u.photo='' THEN NULL ELSE u.photo_at END AS photo_at,
+      (SELECT COUNT(*) FROM gifts g WHERE g.owner_id=u.id AND g.archived_at IS NULL) AS gift_count,
+      (SELECT COUNT(*) FROM follows f WHERE f.target_id=u.id AND f.status='approved') AS follower_count,
+      (SELECT status FROM follows f WHERE f.follower_id=?2 AND f.target_id=u.id) AS follow,
+      EXISTS(SELECT 1 FROM follows f WHERE f.follower_id=u.id AND f.target_id=?2 AND f.status='approved') AS follows_you,
+      EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscriber_id=?2 AND s.target_id=u.id) AS subscribed
+    FROM users u WHERE u.id=?1`,
+    id,
+    viewer || "",
+  ).first<PersonRow>();
+  return c ? person(c) : null;
+}
+type PersonRow = {
+  id: string;
+  name: string;
+  username: string | null;
+  is_private: number;
+  photo_at: number | null;
+  gift_count: number;
+  follower_count?: number;
+  follow?: "pending" | "approved" | null;
+  follows_you?: number;
+  subscribed?: number;
+};
+const person = (r: PersonRow) => ({
+  ...r,
+  is_private: !!r.is_private,
+  follow: r.follow ?? null,
+  follows_you: !!r.follows_you,
+  subscribed: !!r.subscribed,
+});
 /** Binary passthrough for images and spreadsheets. Never rendered by the API origin. */
 function binary(bytes: Uint8Array, type: string) {
   return new Response(bytes as Uint8Array<ArrayBuffer>, {
@@ -452,10 +503,14 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     !(
       (method === "POST" &&
         /^\/api\/guest-reservations\/[a-f0-9-]{36}(\/cancel)?$/.test(path)) ||
+      (method === "POST" && path === "/api/links/resolve") ||
       (method === "GET" &&
         (path === "/api/guest" ||
           /^\/api\/gifts\/[a-f0-9-]{36}\/photo$/.test(path) ||
-          AVATAR_PATH.test(path)))
+          AVATAR_PATH.test(path) ||
+          // An open profile is seen without signing in; a closed one shows its card.
+          LIST_PATH.test(path) ||
+          PROFILE_PATH.test(path)))
     )
   )
     fail(401, "AUTH_REQUIRED", "Откройте приложение через Telegram.");
@@ -472,16 +527,10 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     // The Telegram photo is taken once, after the answer, so the app never waits for it.
     out.jobs.push(firstPhoto(env, user.id, telegram).catch(() => {}));
   }
-  // A profile photo is visible to whoever may see this person: friends, requests, events, list links.
+  // A profile photo is part of the public card, like the name.
   const avatar = path.match(AVATAR_PATH);
   if (avatar && method === "GET") {
     const id = avatar[1];
-    if (!(
-      user?.id === id ||
-      (user && (await friendship(db, user.id, id))) ||
-      (await canView(db, id, user, guest))
-    ))
-      missing();
     const p = await stmt(db, "SELECT photo FROM users WHERE id=?", id).first<{
       photo: string;
     }>();
@@ -492,22 +541,58 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     if (!guest || !/^[A-Za-z0-9_-]{43}$/.test(guest)) missing();
     const link = await stmt(
       db,
-      `SELECT owner_id,kind FROM guest_links WHERE token_hash=? AND ${LINK_ACTIVE("guest_links", "?")} AND (kind='guest' OR ? IS NOT NULL)`,
+      `SELECT owner_id FROM guest_links WHERE token_hash=? AND ${LINK_ACTIVE("guest_links", "?")} AND kind='guest'`,
       await hash(guest),
       now(),
-      user?.id || null,
-    ).first<{ owner_id: string; kind: string }>();
+    ).first<{ owner_id: string }>();
     if (!link) missing();
     return {
       owner: await profile(db, link.owner_id, user?.id === link.owner_id),
-      gifts: await list(db, link.owner_id, user, link.kind === "guest"),
-      invitations:
-        link.kind === "guest"
-          ? []
-          : await invitations(db, link.owner_id, user?.id || null),
-      can_reserve:
-        link.kind === "guest" || (!!user && user.id !== link.owner_id),
+      gifts: await list(db, link.owner_id, user, true),
+      invitations: [],
+      can_reserve: true,
       is_owner: user?.id === link.owner_id,
+    };
+  }
+  if (path === "/api/links/resolve" && method === "POST") {
+    // Old «Поделиться» (s_) and friend invitation (f_) links lead to the owner's profile only.
+    await rate(db, `resolve:${user?.id || (await ipKey())}`, 20);
+    const raw = (await body(req)).token;
+    const valid = typeof raw === "string" && /^[A-Za-z0-9_-]{43}$/.test(raw);
+    const owner = valid
+      ? await stmt(
+          db,
+          `SELECT owner_id FROM guest_links WHERE token_hash=?1 AND kind='telegram' AND revoked_at IS NULL
+          UNION ALL SELECT owner_id FROM friend_invites WHERE token_hash=?1 AND revoked_at IS NULL AND expires_at>?2 LIMIT 1`,
+          await hash(raw),
+          now(),
+        ).first<{ owner_id: string }>()
+      : null;
+    if (!owner) fail(404, "NOT_FOUND", "Ссылка не найдена или отозвана.");
+    return { owner_id: owner.owner_id };
+  }
+  const profileMatch = path.match(PROFILE_PATH);
+  if (profileMatch && method === "GET") {
+    const c = await card(db, profileMatch[1], user?.id || null);
+    if (!c) missing();
+    return {
+      card: c,
+      can_view: await canView(db, c.id, user, guest),
+      is_owner: c.id === user?.id,
+    };
+  }
+  const listMatch = path.match(LIST_PATH);
+  if (listMatch && method === "GET") {
+    const owner = listMatch[1];
+    if (!(await canView(db, owner, user, guest))) missing();
+    const p = await profile(db, owner, owner === user?.id);
+    if (!p) missing();
+    return {
+      owner: p,
+      gifts: await list(db, owner, user),
+      invitations: await invitations(db, owner, user?.id || null),
+      is_owner: owner === user?.id,
+      can_reserve: !!user && owner !== user.id,
     };
   }
   const guestReservation = path.match(
@@ -656,11 +741,34 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       fail(400, "VALIDATION", "Выберите пол.");
     if (b.notify !== undefined && typeof b.notify !== "boolean")
       fail(400, "VALIDATION", "Проверьте настройку уведомлений.");
+    if (b.is_private !== undefined && typeof b.is_private !== "boolean")
+      fail(400, "VALIDATION", "Выберите, открытый профиль или закрытый.");
     if (b.welcomed !== undefined && b.welcomed !== true)
       fail(400, "VALIDATION", "Проверьте настройку приветствия.");
     const about =
       b.about === undefined || b.about === null ? b.about : text(b.about, 500);
     const updates = [];
+    if (b.is_private !== undefined)
+      updates.push(
+        stmt(
+          db,
+          "UPDATE users SET is_private=? WHERE id=?",
+          b.is_private ? 1 : 0,
+          uid,
+        ),
+      );
+    // An open profile has nothing to approve: waiting requests become followers.
+    const approved =
+      b.is_private === false
+        ? (
+            await stmt(
+              db,
+              "UPDATE follows SET status='approved',approved_at=unixepoch() WHERE target_id=? AND status='pending' RETURNING follower_id",
+              uid,
+            ).all<{ follower_id: string }>()
+          ).results.map((r) => r.follower_id)
+        : [];
+    for (const id of approved) out.followApproved(user, id);
     if (b.welcomed)
       updates.push(
         stmt(
@@ -742,133 +850,113 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     ]);
     return { ok: true };
   }
-  // ---- Friends ----
-  if (path === "/api/friends" && method === "GET") {
+  // ---- Followers (docs/FOLLOWERS.md) ----
+  if (path === "/api/people" && method === "GET") {
+    // Only the person sees their followers and whom they follow.
     const rows = (
       await stmt(
         db,
-        `SELECT u.id,u.name,u.username,f.status,f.requested_by,CASE WHEN u.photo='' THEN NULL ELSE u.photo_at END AS photo_at,
+        `SELECT u.id,u.name,u.username,u.is_private,CASE WHEN u.photo='' THEN NULL ELSE u.photo_at END AS photo_at,
           (SELECT COUNT(*) FROM gifts g WHERE g.owner_id=u.id AND g.archived_at IS NULL) AS gift_count,
-          EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscriber_id=?1 AND s.target_id=u.id) AS subscribed
-        FROM friendships f JOIN users u ON u.id=CASE WHEN f.user_a=?1 THEN f.user_b ELSE f.user_a END
-        WHERE f.user_a=?1 OR f.user_b=?1 ORDER BY u.name,u.id`,
+          EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscriber_id=?1 AND s.target_id=u.id) AS subscribed,
+          CASE WHEN f.follower_id=?1 THEN 'out' ELSE 'in' END AS side,f.status
+        FROM follows f JOIN users u ON u.id=CASE WHEN f.follower_id=?1 THEN f.target_id ELSE f.follower_id END
+        WHERE f.follower_id=?1 OR f.target_id=?1 ORDER BY u.name,u.id`,
         uid,
-      ).all<{
-        id: string;
-        name: string;
-        username: string | null;
-        status: string;
-        requested_by: string;
-        photo_at: number | null;
-        gift_count: number;
-        subscribed: number;
-      }>()
+      ).all<PersonRow & { side: "in" | "out"; status: string }>()
     ).results;
-    const view = ({
-      id,
-      name,
-      username,
-      photo_at,
-      gift_count,
-      subscribed,
-    }: (typeof rows)[number]) => ({
-      id,
-      name,
-      username,
-      photo_at,
-      gift_count,
-      subscribed: !!subscribed,
-    });
+    const pick = (side: string, status: string) =>
+      rows
+        .filter((r) => r.side === side && r.status === status)
+        .map(({ side: _, status: __, ...r }) => person(r));
     return {
-      friends: rows.filter((r) => r.status === "accepted").map(view),
-      incoming: rows
-        .filter((r) => r.status === "pending" && r.requested_by !== uid)
-        .map(({ id, name, username }) => ({ id, name, username })),
-      outgoing: rows
-        .filter((r) => r.status === "pending" && r.requested_by === uid)
-        .map(({ id, name, username }) => ({ id, name, username })),
+      following: pick("out", "approved"),
+      followers: pick("in", "approved"),
+      requests: pick("in", "pending"),
+      outgoing: pick("out", "pending"),
     };
   }
-  if (path === "/api/friends/requests" && method === "POST") {
-    const b = await body(req);
-    await rate(db, `friendreq:${uid}`, 10);
-    const username = usernameOf(b.username);
-    if (!username && !isAccountId(b.user_id))
-      fail(
-        400,
-        "VALIDATION",
-        "Введите ник Telegram, например @anna_filimonova.",
-      );
-    // A nickname is looked up among Telegram sign-ins; an account ID directly.
-    const target = await stmt(
+  const followMatch = path.match(
+    new RegExp(`^/api/follows/(${ACCOUNT_ID_PART})$`),
+  );
+  if (followMatch && method === "POST") {
+    // Follow an open profile at once, a closed one after its owner approves.
+    await rate(db, `follow:${uid}`, 20);
+    const target = followMatch[1];
+    if (target === uid)
+      fail(400, "SELF_FOLLOW", "Нельзя подписаться на самого себя.");
+    const t = await stmt(
       db,
-      "SELECT user_id AS id FROM identities WHERE provider='telegram' AND username=? UNION SELECT id FROM users WHERE id=?",
-      username,
-      isAccountId(b.user_id) ? b.user_id : "",
-    ).first<{ id: string }>();
-    if (!target)
-      fail(
-        404,
-        "USER_NOT_FOUND",
-        "Пользователь не найден. Он должен хотя бы раз открыть приложение в Telegram.",
-      );
-    if (target.id === uid)
-      fail(400, "SELF_FRIEND", "Нельзя добавить в друзья самого себя.");
-    const existing = await friendship(db, uid, target.id);
-    if (existing?.status === "accepted")
-      fail(409, "ALREADY_FRIENDS", "Вы уже друзья.");
-    const [a, bId] = pair(uid, target.id);
-    if (existing && existing.requested_by !== uid) {
-      // They already asked us: sending a request back means accepting it.
-      await stmt(
-        db,
-        "UPDATE friendships SET status='accepted',accepted_at=unixepoch() WHERE user_a=? AND user_b=? AND status='pending'",
-        a,
-        bId,
-      ).run();
-      out.friendAdded(user, target.id);
-      return { status: "accepted" };
-    }
+      "SELECT is_private FROM users WHERE id=?",
+      target,
+    ).first<{ is_private: number }>();
+    if (!t) missing();
+    const status = t.is_private ? "pending" : "approved";
     const created = await stmt(
       db,
-      "INSERT INTO friendships(user_a,user_b,status,requested_by) VALUES(?,?,'pending',?) ON CONFLICT DO NOTHING RETURNING user_a",
-      a,
-      bId,
+      `INSERT INTO follows(follower_id,target_id,status,approved_at) VALUES(?,?,?,?)
+      ON CONFLICT DO NOTHING RETURNING status`,
+      uid,
+      target,
+      status,
+      status === "approved" ? now() : null,
+    ).first();
+    if (created) {
+      if (status === "pending") out.followRequest(user, target);
+      else out.newFollower(user, target);
+    }
+    return { follow: await follow(db, uid, target) };
+  }
+  if (followMatch && method === "DELETE") {
+    // Unfollow or cancel a request; the bell about this person goes too.
+    // Bookings stay: the person can still cancel them in «Мои брони».
+    await db.batch([
+      stmt(
+        db,
+        "DELETE FROM follows WHERE follower_id=? AND target_id=?",
+        uid,
+        followMatch[1],
+      ),
+      stmt(
+        db,
+        "DELETE FROM subscriptions WHERE subscriber_id=? AND target_id=?",
+        uid,
+        followMatch[1],
+      ),
+    ]);
+    return { follow: null };
+  }
+  const followerMatch = path.match(
+    new RegExp(`^/api/followers/(${ACCOUNT_ID_PART})(/approve)?$`),
+  );
+  if (followerMatch?.[2] && method === "POST") {
+    const r = await stmt(
+      db,
+      "UPDATE follows SET status='approved',approved_at=unixepoch() WHERE follower_id=? AND target_id=? AND status='pending' RETURNING follower_id",
+      followerMatch[1],
       uid,
     ).first();
-    if (created) out.friendRequest(user, target.id);
-    return { status: "pending" };
+    if (!r) fail(404, "NOT_FOUND", "Запрос не найден.");
+    out.followApproved(user, followerMatch[1]);
+    return { ok: true };
   }
-  const friendMatch = path.match(
-    new RegExp(`^/api/friends/(${ACCOUNT_ID_PART})(/accept)?$`),
-  );
-  if (friendMatch) {
-    const [a, b] = pair(uid, friendMatch[1]);
-    if (friendMatch[2] && method === "POST") {
-      const r = await stmt(
+  if (followerMatch && !followerMatch[2] && method === "DELETE") {
+    // Decline a request or remove a follower, silently. Their bell on me goes too.
+    await db.batch([
+      stmt(
         db,
-        "UPDATE friendships SET status='accepted',accepted_at=unixepoch() WHERE user_a=? AND user_b=? AND status='pending' AND requested_by<>? RETURNING user_a",
-        a,
-        b,
+        "DELETE FROM follows WHERE follower_id=? AND target_id=?",
+        followerMatch[1],
         uid,
-      ).first();
-      if (!r) fail(404, "NOT_FOUND", "Заявка не найдена.");
-      out.friendAdded(user, friendMatch[1]);
-      return { ok: true };
-    }
-    if (!friendMatch[2] && method === "DELETE") {
-      // Decline, cancel or unfriend. Their reservations stay; they can cancel them.
-      await db.batch([
-        stmt(db, "DELETE FROM friendships WHERE user_a=? AND user_b=?", a, b),
-        stmt(
-          db,
-          "DELETE FROM subscriptions WHERE (subscriber_id=?1 AND target_id=?2) OR (subscriber_id=?2 AND target_id=?1)",
-          a,
-          b,
-        ),
-      ]);
-      return { ok: true };
-    }
+      ),
+      stmt(
+        db,
+        "DELETE FROM subscriptions WHERE subscriber_id=? AND target_id=?",
+        followerMatch[1],
+        uid,
+      ),
+    ]);
+    return { ok: true };
   }
   // Subscriptions: news about a friend's wishlist in the bot.
   const subscriptionMatch = path.match(
@@ -885,8 +973,12 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       ).run();
       return { subscribed: false, notifications: await notifications(db, uid) };
     }
-    if ((await friendship(db, uid, target))?.status !== "accepted")
-      fail(403, "NOT_FRIENDS", "Подписаться можно только на друзей.");
+    if (!(await canView(db, target, user, null)))
+      fail(
+        403,
+        "NO_ACCESS",
+        "Уведомления доступны, когда вам виден вишлист.",
+      );
     await stmt(
       db,
       "INSERT OR IGNORE INTO subscriptions(subscriber_id,target_id) VALUES(?,?)",
@@ -895,117 +987,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     ).run();
     return { subscribed: true, notifications: await notifications(db, uid) };
   }
-  if (path === "/api/friend-invites" && method === "GET")
-    return {
-      invites: (
-        await stmt(
-          db,
-          "SELECT id,expires_at FROM friend_invites WHERE owner_id=? AND revoked_at IS NULL AND expires_at>? ORDER BY created_at DESC",
-          uid,
-          now(),
-        ).all()
-      ).results,
-    };
-  if (path === "/api/friend-invites" && method === "POST") {
-    await rate(db, `finvite:${uid}`, 5);
-    const raw = token(),
-      id = crypto.randomUUID(),
-      expires = now() + 30 * 86400;
-    await db.batch([
-      stmt(
-        db,
-        "UPDATE friend_invites SET revoked_at=? WHERE owner_id=? AND revoked_at IS NULL",
-        now(),
-        uid,
-      ),
-      stmt(
-        db,
-        "INSERT INTO friend_invites(id,owner_id,token_hash,expires_at) VALUES(?,?,?,?)",
-        id,
-        uid,
-        await hash(raw),
-        expires,
-      ),
-    ]);
-    return {
-      id,
-      expires_at: expires,
-      telegram_url: `${BOT_LINK}?startapp=f_${raw}`,
-    };
-  }
-  const inviteMatch = path.match(/^\/api\/friend-invites\/([a-f0-9-]{36})$/);
-  if (inviteMatch && method === "DELETE") {
-    await stmt(
-      db,
-      "UPDATE friend_invites SET revoked_at=? WHERE id=? AND owner_id=?",
-      now(),
-      inviteMatch[1],
-      uid,
-    ).run();
-    return { ok: true };
-  }
-  if (
-    (path === "/api/friend-invites/preview" ||
-      path === "/api/friend-invites/accept") &&
-    method === "POST"
-  ) {
-    const b = await body(req);
-    await rate(db, `fjoin:${uid}`, 10);
-    const raw = typeof b.token === "string" ? b.token : "";
-    if (!/^[A-Za-z0-9_-]{43}$/.test(raw))
-      fail(404, "INVITE_INVALID", "Приглашение не найдено или устарело.");
-    // The owner's own «Поделиться» link for Telegram doubles as a friend invitation.
-    const invite =
-      (await stmt(
-        db,
-        "SELECT owner_id FROM friend_invites WHERE token_hash=? AND revoked_at IS NULL AND expires_at>?",
-        await hash(raw),
-        now(),
-      ).first<{ owner_id: string }>()) ||
-      (await stmt(
-        db,
-        "SELECT owner_id FROM guest_links WHERE token_hash=? AND kind='telegram' AND created_by=owner_id AND revoked_at IS NULL AND expires_at>?",
-        await hash(raw),
-        now(),
-      ).first<{ owner_id: string }>());
-    if (!invite)
-      fail(404, "INVITE_INVALID", "Приглашение не найдено или устарело.");
-    if (invite.owner_id === uid)
-      fail(400, "SELF_FRIEND", "Это ваше собственное приглашение.");
-    const existing = await friendship(db, uid, invite.owner_id);
-    if (path.endsWith("/preview"))
-      return {
-        owner: await profile(db, invite.owner_id),
-        already_friends: existing?.status === "accepted",
-      };
-    // The inviter agreed by creating the link; the visitor agrees by confirming.
-    const [a, bId] = pair(uid, invite.owner_id);
-    if (existing?.status !== "accepted") out.friendAdded(user, invite.owner_id);
-    await stmt(
-      db,
-      `INSERT INTO friendships(user_a,user_b,status,requested_by,accepted_at) VALUES(?,?,'accepted',?,unixepoch())
-      ON CONFLICT(user_a,user_b) DO UPDATE SET status='accepted',accepted_at=COALESCE(accepted_at,unixepoch())`,
-      a,
-      bId,
-      invite.owner_id,
-    ).run();
-    return { ok: true, owner: await profile(db, invite.owner_id) };
-  }
   // ---- Lists and gifts ----
-  const listMatch = path.match(new RegExp(`^/api/lists/(${ACCOUNT_ID_PART})$`));
-  if (listMatch && method === "GET") {
-    const owner = listMatch[1];
-    if (!(await canView(db, owner, user, guest))) missing();
-    const p = await profile(db, owner, owner === uid);
-    if (!p) missing();
-    return {
-      owner: p,
-      gifts: await list(db, owner, user),
-      invitations: await invitations(db, owner, uid),
-      is_owner: owner === uid,
-      can_reserve: owner !== uid,
-    };
-  }
   if (path === "/api/archive" && method === "GET")
     return {
       owner: await profile(db, uid, true),
@@ -1234,14 +1216,14 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       const b = req.headers.get("content-type")?.startsWith("application/json")
         ? await body(req)
         : {};
-      // Access is rechecked INSIDE the atomic write; revocation/unfriending cannot race this insert.
+      // Access is rechecked INSIDE the atomic write; revocation/unfollowing cannot race this insert.
       const guestHash =
         guest && /^[A-Za-z0-9_-]{43}$/.test(guest) ? await hash(guest) : "";
       const r = await stmt(
         db,
         `INSERT INTO reservations(gift_id,user_id)
         SELECT id,?1 FROM gifts WHERE id=?2 AND owner_id<>?1 AND archived_at IS NULL AND (
-          ${FRIEND_OF("gifts.owner_id")}
+          ${SEES("gifts.owner_id")}
           OR ${PARTY_PEER("?1", "gifts.owner_id")}
           OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=gifts.owner_id AND l.token_hash=?3 AND ${LINK_ACTIVE("l", "?4")})
         ) ON CONFLICT(gift_id) DO NOTHING RETURNING gift_id`,
@@ -1270,7 +1252,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         db,
         `SELECT r.gift_id,
         CASE WHEN r.user_id=?1 THEN 'organizer' ELSE m.status END AS role,
-        CASE WHEN m.user_id IS NOT NULL OR ${FRIEND_OF("g.owner_id")} OR ${PARTY_PEER("?1", "g.owner_id")} OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=g.owner_id AND ${LINK_ACTIVE("l", "?2")}) THEN 1 ELSE 0 END AS visible,
+        CASE WHEN m.user_id IS NOT NULL OR ${SEES("g.owner_id")} OR ${PARTY_PEER("?1", "g.owner_id")} OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=g.owner_id AND ${LINK_ACTIVE("l", "?2")}) THEN 1 ELSE 0 END AS visible,
         g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.owner_id,ou.name AS owner_name,org.name AS organizer_name,
         ou.birthday,ou.gender,ou.event_title,ou.event_date,
         CASE WHEN g.archived_at IS NULL THEN 0 ELSE 1 END AS archived
@@ -1337,87 +1319,52 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       ),
     };
   }
-  const shareList = path.match(
-    new RegExp(`^/api/lists/(${ACCOUNT_ID_PART})/share-links$`),
-  );
-  if (
-    (path === "/api/guest-links" || shareList) &&
-    (method === "GET" || method === "POST")
-  ) {
-    const ownerId = shareList ? shareList[1] : uid;
-    if (!(await canView(db, ownerId, user, guest))) missing();
-    if (ownerId !== uid && !(await profile(db, ownerId))?.allow_resharing)
-      fail(
-        403,
-        "SHARING_DISABLED",
-        "Владелец запретил делиться этим вишлистом.",
-      );
+  if (path === "/api/guest-links" && (method === "GET" || method === "POST")) {
+    // «Поделиться»: the profile link (gives no access by itself) and the owner's
+    // secret guest link for booking by name without Telegram.
     if (method === "POST") await rate(db, `links:${uid}`, 5);
-    const links = [];
-    for (const kind of ["telegram", "guest"]) {
-      let link = await stmt(
+    const find = () =>
+      stmt(
         db,
-        "SELECT id,token_value FROM guest_links WHERE owner_id=? AND created_by=? AND kind=? AND revoked_at IS NULL AND token_value IS NOT NULL LIMIT 1",
-        ownerId,
+        "SELECT id,token_value FROM guest_links WHERE owner_id=?1 AND created_by=?1 AND kind='guest' AND revoked_at IS NULL AND token_value IS NOT NULL LIMIT 1",
         uid,
-        kind,
       ).first<{ id: string; token_value: string }>();
-      if (!link && method === "GET") continue;
-      if (!link) {
-        const raw = token(),
-          id = crypto.randomUUID();
+    let link = await find();
+    if (!link && method === "POST") {
+      const raw = token();
+      await stmt(
+        db,
+        `INSERT OR IGNORE INTO guest_links(id,owner_id,created_by,token_hash,expires_at,kind,token_value)
+        VALUES(?1,?2,?2,?3,253402300799,'guest',?4)`,
+        crypto.randomUUID(),
+        uid,
+        await hash(raw),
+        raw,
+      ).run();
+      link = await find();
+    }
+    const links = link
+      ? [
+          {
+            id: link.id,
+            kind: "guest",
+            web_url: `${https(env.APP_URL)}#guest=${link.token_value}`,
+          },
+        ]
+      : [];
+    return {
+      profile_url: `${BOT_LINK}?startapp=p_${uid}`,
+      links,
+      legacy_links: (
         await stmt(
           db,
-          `INSERT OR IGNORE INTO guest_links(id,owner_id,created_by,token_hash,expires_at,kind,token_value)
-          SELECT ?,?,?,?,253402300799,?,? FROM users WHERE id=? AND (id=? OR allow_resharing=1)`,
-          id,
-          ownerId,
+          "SELECT id FROM guest_links WHERE owner_id=? AND kind='guest' AND token_value IS NULL AND revoked_at IS NULL AND expires_at>?",
           uid,
-          await hash(raw),
-          kind,
-          raw,
-          ownerId,
-          uid,
-        ).run();
-        link = await stmt(
-          db,
-          "SELECT id,token_value FROM guest_links WHERE owner_id=? AND created_by=? AND kind=? AND revoked_at IS NULL AND token_value IS NOT NULL",
-          ownerId,
-          uid,
-          kind,
-        ).first<{ id: string; token_value: string }>();
-        if (!link)
-          fail(
-            403,
-            "SHARING_DISABLED",
-            "Владелец запретил делиться этим вишлистом.",
-          );
-      }
-      links.push({
-        id: link.id,
-        kind,
-        web_url:
-          kind === "guest"
-            ? `${https(env.APP_URL)}#guest=${link.token_value}`
-            : `${BOT_LINK}?startapp=s_${link.token_value}`,
-      });
-    }
-    const guestLink = links.find((l) => l.kind === "guest");
-    return {
-      links,
-      legacy_links:
-        ownerId === uid
-          ? (
-              await stmt(
-                db,
-                "SELECT id FROM guest_links WHERE owner_id=? AND token_value IS NULL AND revoked_at IS NULL AND expires_at>?",
-                uid,
-                now(),
-              ).all()
-            ).results
-          : [],
-      id: guestLink?.id,
-      token: guestLink?.web_url.split("#guest=")[1],
+          now(),
+        ).all()
+      ).results,
+      id: link?.id,
+      token: link?.token_value,
     };
   }
   const linkMatch = path.match(/^\/api\/guest-links\/([a-f0-9-]{36})$/);

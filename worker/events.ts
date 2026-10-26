@@ -11,7 +11,7 @@ import {
 } from "../shared/events";
 import { ACCOUNT_ID_PART, isAccountId } from "../shared/account-id";
 import { fail, text, usernameOf, type Identity } from "./security";
-import { FRIEND_OF, now, stmt } from "./core";
+import { CONNECTED, now, stmt } from "./core";
 import type { Outbox } from "./notify";
 export const GUEST_LIMIT = 50;
 type Person = { id: string; name: string; username: string | null };
@@ -407,12 +407,12 @@ export async function eventRoute(
               date,
               ...wanted,
             ),
-            // Friends by ID; anyone else only by the username typed now.
+            // Own people (followers, people followed) by ID; anyone else only by the username typed now.
             ...wanted.map((id) =>
               stmt(
                 db,
                 `INSERT INTO event_guests(owner_id,event_key,event_on,user_id)
-                SELECT ?1,?2,?3,?4 WHERE ?5=1 OR ${FRIEND_OF("?4")} ON CONFLICT DO NOTHING RETURNING user_id`,
+                SELECT ?1,?2,?3,?4 WHERE ?5=1 OR ${CONNECTED("?4")} ON CONFLICT DO NOTHING RETURNING user_id`,
                 uid,
                 key,
                 date,

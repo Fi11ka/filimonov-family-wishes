@@ -98,15 +98,19 @@ async function messages(chat: number, count = 1) {
     .filter((c) => c.body.chat_id === String(chat))
     .map((c) => c.body);
 }
+/** Two people who follow each other with approval: what former friends became. */
 async function befriend(x: number, y: number) {
   for (const id of [x, y]) await call("/me", id);
-  const [a, b] = [String(x), String(y)].sort();
-  await db
-    .prepare(
-      "INSERT OR REPLACE INTO friendships(user_a,user_b,status,requested_by,accepted_at) VALUES(?,?,'accepted',?,unixepoch())",
-    )
-    .bind(a, b, a)
-    .run();
+  for (const [a, b] of [
+    [x, y],
+    [y, x],
+  ])
+    await db
+      .prepare(
+        "INSERT OR REPLACE INTO follows(follower_id,target_id,status,approved_at) VALUES(?,?,'approved',unixepoch())",
+      )
+      .bind(String(a), String(b))
+      .run();
 }
 const settle = () => new Promise((r) => setTimeout(r, 150));
 let db: Awaited<ReturnType<Miniflare["getD1Database"]>>;
@@ -251,9 +255,19 @@ before(async () => {
   await migrate("migrations/0012_events.sql");
   await migrate("migrations/0013_event_page.sql");
   await migrate("migrations/0014_profile_photo.sql");
+  // A friend request still waiting when followers replace friends.
+  await db.batch([
+    db.prepare(
+      "INSERT INTO users(id,name) VALUES('999201','Asker'),('999202','Asked')",
+    ),
+    db.prepare(
+      "INSERT INTO friendships(user_a,user_b,status,requested_by) VALUES('999201','999202','pending','999202')",
+    ),
+  ]);
   await migrate("migrations/0015_identities.sql");
   await migrate("migrations/0016_login_handoff.sql");
   await migrate("migrations/0017_welcome.sql");
+  await migrate("migrations/0018_followers.sql");
   assert.equal(
     (
       await db
@@ -325,24 +339,28 @@ test("unauthenticated identity and untrusted user ID cannot grant access", async
     401,
   );
 });
-test("former family members become friends of each other", async () => {
-  const f = (await call("/friends", 1)).body;
+test("former family members, then friends, follow each other; profiles stay closed", async () => {
+  const p = (await call("/people", 1)).body;
   assert.deepEqual(
-    f.friends.map((x: any) => x.id),
+    p.following.map((x: any) => x.id),
     ["2", "3"],
   );
-  assert.equal(f.friends[0].username, "user_2");
-  assert.equal((await call("/friends", 4)).body.friends.length, 0);
-  assert.equal(
-    (
-      await db
-        .prepare(
-          "SELECT COUNT(*) AS n FROM friendships WHERE status='accepted'",
-        )
-        .first()
-    )?.n,
-    3,
+  assert.deepEqual(
+    p.followers.map((x: any) => x.id),
+    ["2", "3"],
   );
+  assert.equal(p.following[0].username, "user_2");
+  assert.equal((await call("/people", 4)).body.following.length, 0);
+  assert.equal((await call("/me", 1)).body.user.is_private, true);
+  // A waiting friend request became a request to follow from its sender.
+  const pending = await db
+    .prepare(
+      "SELECT follower_id,target_id,status FROM follows WHERE '999201' IN (follower_id,target_id)",
+    )
+    .all();
+  assert.deepEqual(pending.results, [
+    { follower_id: "999202", target_id: "999201", status: "pending" },
+  ]);
 });
 test("friend isolation and gift ownership are enforced", async () => {
   const g = await gift();
@@ -520,7 +538,7 @@ test("guest scope, anonymous booking statuses, authenticated reservation and rev
   );
   assert.equal((await call(`/gifts/${g}`, 4, "PUT", input, raw)).status, 404);
   assert.equal(
-    (await call("/friends", 4, "GET", undefined, raw)).body.friends.length,
+    (await call("/people", 4, "GET", undefined, raw)).body.following.length,
     0,
   );
   assert.equal(
@@ -557,118 +575,132 @@ test("permanent guest links are reused and revocation remains available", async 
     404,
   );
 });
-test("friend requests by username need confirmation", async () => {
-  assert.equal(
-    (await call("/friends/requests", 5, "POST", { username: "@nobody_here" }))
-      .status,
-    404,
-  );
-  assert.equal(
-    (await call("/friends/requests", 5, "POST", { username: "@user_5" }))
-      .status,
-    400,
-  );
-  const r = await call("/friends/requests", 5, "POST", { username: "@User_6" });
-  assert.deepEqual(r.body, { status: "pending" });
+test("a closed profile shows its card, and its list after the owner approves; one way only", async () => {
+  await call("/me", 6);
+  // Anyone with the link sees the card, signed in or not; never the list.
+  const anon = await call("/profiles/6");
+  assert.equal(anon.status, 200);
+  assert.equal(anon.body.card.name, "User 6");
+  assert.equal(anon.body.card.username, "user_6");
+  assert.equal(anon.body.card.is_private, true);
+  assert.equal(anon.body.card.gift_count, 0);
+  assert.equal(anon.body.card.follower_count, 0);
+  assert.equal(anon.body.can_view, false);
+  assert.equal(anon.body.card.about, undefined);
+  assert.equal(anon.body.card.birthday, undefined);
+  assert.equal((await call("/lists/6")).status, 404);
+  assert.equal((await call("/lists/6", 5)).status, 404);
+  assert.equal((await call("/follows/5", 5, "POST")).status, 400);
+  assert.equal((await call("/follows/999999999", 5, "POST")).status, 404);
+  // A request: still no list.
+  assert.deepEqual((await call("/follows/6", 5, "POST")).body, {
+    follow: "pending",
+  });
+  assert.equal((await call("/profiles/6", 5)).body.card.follow, "pending");
   assert.equal((await call("/lists/6", 5)).status, 404);
   assert.deepEqual(
-    (await call("/friends", 6)).body.incoming.map((x: any) => x.id),
+    (await call("/people", 6)).body.requests.map((x: any) => x.id),
     ["5"],
   );
   assert.deepEqual(
-    (await call("/friends", 5)).body.outgoing.map((x: any) => x.id),
+    (await call("/people", 5)).body.outgoing.map((x: any) => x.id),
     ["6"],
   );
-  // The requester cannot accept on the other person's behalf.
-  assert.equal((await call("/friends/6/accept", 5, "POST")).status, 404);
-  assert.equal((await call("/friends/5/accept", 6, "POST")).status, 200);
+  // The requester cannot approve themself.
+  assert.equal((await call("/followers/6/approve", 5, "POST")).status, 404);
+  assert.equal((await call("/followers/5/approve", 6, "POST")).status, 200);
   assert.equal((await call("/lists/6", 5)).status, 200);
-  assert.equal((await call("/lists/5", 6)).status, 200);
-  assert.equal(
-    (await call("/friends/requests", 5, "POST", { username: "user_6" })).status,
-    409,
-  );
-  // Unfriending removes access both ways.
-  assert.equal((await call("/friends/5", 6, "DELETE")).status, 200);
+  assert.equal((await call("/profiles/6", 5)).body.can_view, true);
+  assert.equal((await call("/profiles/6")).body.card.follower_count, 1);
+  // Approving 5 does not open 5's closed list to 6.
+  assert.equal((await call("/lists/5", 6)).status, 404);
+  assert.equal((await call("/profiles/5", 6)).body.card.follows_you, true);
+  // Removing a follower closes the list again.
+  assert.equal((await call("/followers/5", 6, "DELETE")).status, 200);
   assert.equal((await call("/lists/6", 5)).status, 404);
-  // A counter-request accepts the pending one.
-  await call("/friends/requests", 5, "POST", { username: "user_6" });
-  assert.deepEqual(
-    (await call("/friends/requests", 6, "POST", { username: "user_5" })).body,
-    { status: "accepted" },
-  );
+  // Declining a request works the same way; unfollowing cancels one.
+  await call("/follows/6", 5, "POST");
+  assert.equal((await call("/follows/6", 5, "DELETE")).status, 200);
+  assert.equal((await call("/people", 6)).body.requests.length, 0);
 });
-test("friend invite links: preview, confirm, revoke", async () => {
-  const inv = await call("/friend-invites", 7, "POST");
-  assert.equal(inv.status, 200);
-  const raw = new URL(inv.body.telegram_url).searchParams
-    .get("startapp")!
-    .slice(2);
-  assert.match(raw, /^[A-Za-z0-9_-]{43}$/);
+test("an open profile is seen by everyone and followed at once; opening approves waiting requests", async () => {
+  await call("/me", 8);
+  await call("/follows/7", 8, "POST");
+  assert.equal((await call("/lists/7", 9)).status, 404);
+  const g = await gift(7, { title: "Открытый подарок" });
+  const opened = await call("/me", 7, "PATCH", { is_private: false });
+  assert.equal(opened.body.user.is_private, false);
+  assert.equal((await call("/profiles/8", 7)).body.card.follows_you, true);
+  // Without signing in: the list with free and booked gifts, no booking.
+  const anon = await call("/lists/7");
+  assert.equal(anon.status, 200);
+  assert.equal(anon.body.can_reserve, false);
+  assert.equal(anon.body.gifts[0].reservation, "available");
+  // Signed in, a stranger books without following, and others see it as taken.
+  assert.equal((await call(`/gifts/${g}/reservation`, 9, "POST")).status, 200);
+  assert.equal((await call("/lists/7")).body.gifts[0].reservation, "reserved");
+  assert.deepEqual((await call("/follows/7", 9, "POST")).body, {
+    follow: "approved",
+  });
+  assert.deepEqual(
+    (await call("/people", 7)).body.followers.map((x: any) => x.id),
+    ["8", "9"],
+  );
+  // Closing again keeps approved followers and hides the list from others.
+  await call("/me", 7, "PATCH", { is_private: true });
+  assert.equal((await call("/lists/7")).status, 404);
+  assert.equal((await call("/lists/7", 9)).status, 200);
   assert.equal(
-    (await call("/friend-invites/preview", 7, "POST", { token: raw })).status,
+    (await call("/me", 7, "PATCH", { is_private: "yes" })).status,
     400,
   );
-  const preview = await call("/friend-invites/preview", 8, "POST", {
-    token: raw,
-  });
-  assert.equal(preview.body.owner.id, "7");
-  assert.equal(preview.body.already_friends, false);
-  assert.equal((await call("/lists/7", 8)).status, 404);
-  assert.equal(
-    (await call("/friend-invites/accept", 8, "POST", { token: raw })).status,
-    200,
-  );
-  assert.equal((await call("/lists/7", 8)).status, 200);
-  assert.equal(
-    (await call(`/friend-invites/${inv.body.id}`, 7, "DELETE")).status,
-    200,
-  );
-  assert.equal(
-    (await call("/friend-invites/accept", 9, "POST", { token: raw })).status,
-    404,
-  );
 });
-test("the owner's «Поделиться» link for Telegram also adds a friend; a reshared one does not", async () => {
-  const own = (await call("/guest-links", 9101, "POST")).body.links;
-  const raw = own
-    .find((l: any) => l.kind === "telegram")
-    .web_url.split("startapp=s_")[1];
-  // A newcomer opens the shared list first, then confirms the friendship.
-  assert.equal((await call("/guest", 9102, "GET", undefined, raw)).status, 200);
-  const preview = await call("/friend-invites/preview", 9102, "POST", {
-    token: raw,
-  });
-  assert.equal(preview.body.owner.id, "9101");
-  assert.equal(preview.body.already_friends, false);
+test("old «Поделиться» and friend invitation links only lead to the profile", async () => {
+  await call("/me", 9101);
+  const share = "s".repeat(43),
+    invite = "f".repeat(43),
+    guestRaw = (await call("/guest-links", 9101, "POST")).body.token;
+  const hashOf = async (v: string) =>
+    Buffer.from(
+      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(v)),
+    ).toString("hex");
+  await db.batch([
+    db
+      .prepare(
+        "INSERT INTO guest_links(id,owner_id,created_by,token_hash,expires_at,kind,token_value) VALUES('old-share','9101','9101',?,253402300799,'telegram',?)",
+      )
+      .bind(await hashOf(share), share),
+    db
+      .prepare(
+        "INSERT INTO friend_invites(id,owner_id,token_hash,expires_at) VALUES('old-invite','9101',?,?)",
+      )
+      .bind(await hashOf(invite), Math.floor(Date.now() / 1000) + 86400),
+  ]);
+  for (const token of [share, invite])
+    assert.deepEqual(
+      (await call("/links/resolve", undefined, "POST", { token })).body,
+      { owner_id: "9101" },
+    );
   assert.equal(
-    (await call("/friend-invites/accept", 9102, "POST", { token: raw }))
-      .status,
-    200,
-  );
-  assert.equal((await call("/lists/9101", 9102)).status, 200);
-  assert.equal((await call("/lists/9102", 9101)).status, 200);
-  // The guest link without sign-in is not a friend invitation.
-  const guestRaw = own
-    .find((l: any) => l.kind === "guest")
-    .web_url.split("#guest=")[1];
-  assert.equal(
-    (await call("/friend-invites/accept", 9103, "POST", { token: guestRaw }))
-      .status,
+    (await call("/links/resolve", 9102, "POST", { token: guestRaw })).status,
     404,
   );
-  // A friend's reshared link only lets others view the list.
-  const reshared = (
-    await call("/lists/9101/share-links", 9102, "POST")
-  ).body.links
-    .find((l: any) => l.kind === "telegram")
-    .web_url.split("startapp=s_")[1];
+  // The old Telegram link no longer opens the closed list.
+  assert.equal((await call("/guest", 9102, "GET", undefined, share)).status, 404);
   assert.equal(
-    (await call("/friend-invites/accept", 9103, "POST", { token: reshared }))
-      .status,
+    (await call("/lists/9101", 9102, "GET", undefined, share)).status,
     404,
   );
-  assert.equal((await call("/lists/9101", 9103)).status, 404);
+  // «Поделиться» now gives the profile link and the guest link only.
+  const links = (await call("/guest-links", 9101)).body;
+  assert.equal(
+    links.profile_url,
+    "https://t.me/FilimonovFamilyWishes_bot?startapp=p_9101",
+  );
+  assert.deepEqual(
+    links.links.map((l: any) => l.kind),
+    ["guest"],
+  );
 });
 test("the first-visit welcome shows once, until it is saved or skipped", async () => {
   assert.equal((await call("/me", 9201)).body.welcome, true);
@@ -689,10 +721,10 @@ test("the first-visit welcome shows once, until it is saved or skipped", async (
   assert.equal((await call("/me", 9202, "PATCH", { welcomed: true })).status, 200);
   assert.equal((await call("/me", 9202)).body.welcome, false);
 });
-test("removed friend loses list access and can cancel their own reservation", async () => {
+test("a removed follower loses list access and can cancel their own reservation", async () => {
   const g = await gift();
   assert.equal((await call(`/gifts/${g}/reservation`, 3, "POST")).status, 200);
-  assert.equal((await call("/friends/3", 1, "DELETE")).status, 200);
+  assert.equal((await call("/followers/3", 1, "DELETE")).status, 200);
   assert.equal((await call("/lists/1", 3)).status, 404);
   assert.equal(
     (await call(`/gifts/${g}/reservation`, 3, "DELETE")).status,
@@ -800,23 +832,18 @@ test("private responses are never cached and CORS is restricted", async () => {
   const preflight = await call("/me", undefined, "OPTIONS");
   assert.equal(preflight.status, 204);
 });
-test("friend request guessing and link creation have per-user rate limits", async () => {
+test("following guessed profiles and link creation have per-user rate limits", async () => {
   // Limits count per calendar minute: start well inside one, or the counter
   // may reset halfway through and the 429 never comes.
   const second = Math.floor(Date.now() / 1000) % 60;
   if (second > 50)
     await new Promise((r) => setTimeout(r, (61 - second) * 1000));
-  for (let i = 0; i < 10; i++)
+  for (let i = 0; i < 20; i++)
     assert.equal(
-      (await call("/friends/requests", 9, "POST", { username: `missing_${i}` }))
-        .status,
+      (await call(`/follows/${880000 + i}`, 9301, "POST")).status,
       404,
     );
-  assert.equal(
-    (await call("/friends/requests", 9, "POST", { username: "missing_x" }))
-      .status,
-    429,
-  );
+  assert.equal((await call("/follows/880099", 9301, "POST")).status, 429);
   for (let i = 0; i < 5; i++)
     assert.equal((await call("/guest-links", 8, "POST")).status, 200);
   assert.equal((await call("/guest-links", 8, "POST")).status, 429);
@@ -872,6 +899,7 @@ test("website sign-in: Telegram id_token issues a revocable session for the same
     allow_resharing,
     wishlist_updated_at,
     about,
+    is_private,
     gender: _gender,
     events: _events,
     photo_at,
@@ -881,6 +909,7 @@ test("website sign-in: Telegram id_token issues a revocable session for the same
   assert.equal(birthday, null);
   assert.equal(about, null);
   assert.equal(allow_resharing, 1);
+  assert.equal(is_private, true);
   assert.equal(typeof wishlist_updated_at, "number");
   assert.deepEqual(identity, {
     id: "1",
@@ -1081,41 +1110,15 @@ test("website sign-in keeps at most 10 sessions per account and limits attempts"
   );
 });
 
-test("permanent Telegram share requires login and allows friend requests by profile ID", async () => {
+test("«Поделиться» returns the same links again and a stranger can request to follow by the profile", async () => {
   await call("/me", 21);
   const shared = await call("/guest-links", 21, "POST");
-  const telegram = shared.body.links.find((l: any) => l.kind === "telegram");
-  const raw = telegram.web_url.split("startapp=s_")[1];
-  assert.equal(
-    (await call("/guest", undefined, "GET", undefined, raw)).status,
-    404,
-  );
-  const view = await call("/guest", 22, "GET", undefined, raw);
-  assert.equal(view.status, 200, view.raw);
-  assert.equal(view.body.owner.id, "21");
-  const g = await gift(21);
-  assert.equal(
-    (await call(`/gifts/${g}/photo`, undefined, "GET", undefined, raw)).status,
-    404,
-  );
-  assert.equal(
-    (
-      await call(
-        `/guest-reservations/${g}`,
-        undefined,
-        "POST",
-        { name: "Гость" },
-        raw,
-      )
-    ).status,
-    409,
-  );
-  assert.equal(
-    (await call("/friends/requests", 22, "POST", { user_id: "21" })).status,
-    200,
-  );
   const again = await call("/guest-links", 21);
   assert.deepEqual(again.body.links, shared.body.links);
+  assert.equal(again.body.profile_url, shared.body.profile_url);
+  assert.deepEqual((await call("/follows/21", 22, "POST")).body, {
+    follow: "pending",
+  });
 });
 
 test("guest reservations require names, reveal status only, and share the atomic booking slot", async () => {
@@ -1354,140 +1357,27 @@ test("wishlist freshness changes on all gift mutations but never on bookings or 
   assert.ok(guest.body.owner.wishlist_updated_at > 1);
 });
 
-test("viewers share independent links and owner disabling resharing revokes only viewers' links", async () => {
-  const g = await gift(45);
-  const original = (await call("/guest-links", 45, "POST")).body;
-  // Existing access is required; strangers cannot mint links by guessing an owner ID.
-  assert.equal((await call("/lists/45/share-links", 46, "POST")).status, 404);
-  const shared = await call(
-    "/lists/45/share-links",
-    46,
-    "POST",
-    undefined,
-    original.token,
-  );
-  assert.equal(shared.status, 200, shared.raw);
-  assert.notEqual(shared.body.token, original.token);
-  assert.deepEqual(
-    (await call("/lists/45/share-links", 46, "GET", undefined, original.token))
-      .body.links,
-    shared.body.links,
-  );
-  assert.deepEqual((await call("/guest-links", 45)).body.links, original.links);
-  assert.equal(
-    (await call("/guest", undefined, "GET", undefined, shared.body.token))
-      .status,
-    200,
-  );
-  const telegram = shared.body.links
-    .find((l: any) => l.kind === "telegram")
-    .web_url.split("startapp=s_")[1];
-  assert.equal(
-    (await call("/guest", 47, "GET", undefined, telegram)).status,
-    200,
-  );
-  await call("/me", 45, "PATCH", { allow_resharing: false });
-  assert.equal(
-    (await call("/guest", undefined, "GET", undefined, shared.body.token))
-      .status,
-    404,
-  );
-  assert.equal(
-    (
-      await call(
-        `/gifts/${g}/photo`,
-        undefined,
-        "GET",
-        undefined,
-        shared.body.token,
-      )
-    ).status,
-    404,
-  );
-  assert.equal(
-    (
-      await call(
-        `/guest-reservations/${g}`,
-        undefined,
-        "POST",
-        { name: "Гость" },
-        shared.body.token,
-      )
-    ).status,
-    409,
-  );
-  assert.equal(
-    (await call(`/gifts/${g}/reservation`, 47, "POST", undefined, telegram))
-      .status,
-    404,
-  );
-  assert.equal(
-    (await call("/lists/45/share-links", 46, "POST", undefined, original.token))
-      .status,
-    403,
-  );
-  assert.equal(
-    (await call("/guest", undefined, "GET", undefined, original.token)).status,
-    200,
-  );
-  assert.equal((await call("/guest-links", 45)).body.links.length, 2);
-  await call("/me", 45, "PATCH", { allow_resharing: true });
-  assert.equal(
-    (await call("/guest", undefined, "GET", undefined, shared.body.token))
-      .status,
-    404,
-  );
-  const fresh = await call(
-    "/lists/45/share-links",
-    46,
-    "POST",
-    undefined,
-    original.token,
-  );
-  assert.equal(fresh.status, 200);
-  assert.notEqual(fresh.body.token, shared.body.token);
-  // An unrelated viewer cannot revoke another person's links.
-  await call(`/guest-links/${fresh.body.id}`, 47, "DELETE");
-  assert.equal(
-    (await call("/guest", undefined, "GET", undefined, fresh.body.token))
-      .status,
-    200,
-  );
-  await call(`/guest-links/${fresh.body.id}`, 46, "DELETE");
-  assert.equal(
-    (await call("/guest", undefined, "GET", undefined, fresh.body.token))
-      .status,
-    404,
-  );
-});
-
-test("disabled resharing is rechecked on access and booking even for an unrevoked delegated link", async () => {
+test("guest links made by viewers before followers no longer open the list; only the owner's do", async () => {
   const g = await gift(48);
   const original = (await call("/guest-links", 48, "POST")).body.token;
-  const delegated = (
-    await call("/lists/48/share-links", 49, "POST", undefined, original)
-  ).body;
-  await call("/me", 48, "PATCH", { allow_resharing: false });
-  // Simulate a link left over by an in-flight operation: policy checks must still deny it.
+  await call("/me", 49);
+  const delegated = "d".repeat(43);
+  const digest = Buffer.from(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(delegated)),
+  ).toString("hex");
   await db
     .prepare(
-      "UPDATE guest_links SET revoked_at=NULL WHERE owner_id='48' AND created_by='49'",
+      "INSERT INTO guest_links(id,owner_id,created_by,token_hash,expires_at,kind,token_value) VALUES('delegated','48','49',?,253402300799,'guest',?)",
     )
+    .bind(digest, delegated)
     .run();
   assert.equal(
-    (await call("/guest", undefined, "GET", undefined, delegated.token)).status,
+    (await call("/guest", undefined, "GET", undefined, delegated)).status,
     404,
   );
   assert.equal(
-    (
-      await call(
-        `/gifts/${g}/photo`,
-        undefined,
-        "GET",
-        undefined,
-        delegated.token,
-      )
-    ).status,
+    (await call(`/gifts/${g}/photo`, undefined, "GET", undefined, delegated))
+      .status,
     404,
   );
   assert.equal(
@@ -1497,16 +1387,14 @@ test("disabled resharing is rechecked on access and booking even for an unrevoke
         undefined,
         "POST",
         { name: "Гость" },
-        delegated.token,
+        delegated,
       )
     ).status,
     409,
   );
-  const telegram = delegated.links
-    .find((l: any) => l.kind === "telegram")
-    .web_url.split("startapp=s_")[1];
+  // Viewers can no longer make links for someone else's list.
   assert.equal(
-    (await call(`/gifts/${g}/reservation`, 50, "POST", undefined, telegram))
+    (await call("/lists/48/share-links", 49, "POST", undefined, original))
       .status,
     404,
   );
@@ -1515,8 +1403,7 @@ test("disabled resharing is rechecked on access and booking even for an unrevoke
     200,
   );
 });
-
-test("subscribers of a friend hear about added and removed wishes; bookers learn their gift is gone", async () => {
+test("followers with the bell on hear about added and removed wishes; bookers learn their gift is gone", async () => {
   await befriend(701, 702);
   await befriend(701, 703);
   await call("/me", 704);
@@ -1525,7 +1412,7 @@ test("subscribers of a friend hear about added and removed wishes; bookers learn
   assert.equal(sub.status, 200);
   assert.equal(sub.body.subscribed, true);
   assert.equal(
-    (await call("/friends", 702)).body.friends.find((f: any) => f.id === "701")
+    (await call("/people", 702)).body.following.find((f: any) => f.id === "701")
       .subscribed,
     true,
   );
@@ -1584,7 +1471,8 @@ test("subscribers of a friend hear about added and removed wishes; bookers learn
     (await messages(703, 2))[1].text,
     /отметил\(а\) «Самокат» как подаренный/,
   );
-  await call("/friends/701", 702, "DELETE");
+  // Unfollowing turns the bell off too.
+  await call("/follows/701", 702, "DELETE");
   assert.equal(
     (
       await db
@@ -1598,27 +1486,24 @@ test("subscribers of a friend hear about added and removed wishes; bookers learn
   assert.equal((await call("/subscriptions/701", 702, "DELETE")).status, 200);
 });
 
-test("friend requests, accepted invitations and accepted requests are announced in the bot", async () => {
+test("follow requests, approvals and new followers of an open profile are announced in the bot", async () => {
   for (const id of [711, 712, 713]) await call("/me", id);
-  await call("/friends/requests", 711, "POST", { username: "user_712" });
+  await call("/follows/712", 711, "POST");
   const request = (await messages(712))[0];
-  assert.match(request.text, /User 711.*хочет добавить вас в друзья/);
+  assert.match(request.text, /User 711.*хочет подписаться на вас/);
   assert.equal(
     request.reply_markup.inline_keyboard[0][0].callback_data,
     "fa:711",
   );
-  await call("/friends/711/accept", 712, "POST");
+  await call("/followers/711/approve", 712, "POST");
   assert.match(
     (await messages(711))[0].text,
-    /User 712.*теперь у вас в друзьях/,
+    /User 712.*одобряет вашу подписку/,
   );
-  const invite = await call("/friend-invites", 713, "POST");
-  const tokenValue = invite.body.telegram_url.split("startapp=f_")[1];
-  await call("/friend-invites/accept", 711, "POST", { token: tokenValue });
-  assert.match(
-    (await messages(713))[0].text,
-    /User 711.*теперь у вас в друзьях/,
-  );
+  // An open profile has nothing to approve: its owner just hears about it.
+  await call("/me", 713, "PATCH", { is_private: false });
+  await call("/follows/713", 711, "POST");
+  assert.match((await messages(713))[0].text, /User 711.*подписывается на вас/);
 });
 
 test("group gifts: invite friends, answer from the site or the bot, owner sees nothing", async () => {
@@ -1856,14 +1741,12 @@ test("bot webhook: secret required, menu, adding and editing one's own wishes", 
     )?.n,
     0,
   );
-  // Answering a friend request from the bot.
+  // Approving a follow request from the bot.
   await call("/me", 732);
-  await replied(731, () =>
-    call("/friends/requests", 732, "POST", { user_id: "731" }),
-  );
+  await replied(731, () => call("/follows/731", 732, "POST"));
   await press("fa:732");
   assert.equal(
-    (await call("/friends", 731)).body.friends.some((f: any) => f.id === "732"),
+    (await call("/people", 731)).body.followers.some((f: any) => f.id === "732"),
     true,
   );
 });
@@ -1897,10 +1780,13 @@ test("notifications can be switched off and a blocked chat is not retried", asyn
   );
 });
 
-test("birthday reminders reach friends a week and a day before, once, with a wishlist link", async () => {
+test("birthday reminders reach followers with the bell on a week and a day before, once, with a wishlist link", async () => {
   await befriend(751, 752);
   await befriend(753, 752);
+  await befriend(751, 755);
   await call("/me", 754);
+  // 752 turned the bell on about 751; 755 follows 751 without it.
+  assert.equal((await call("/subscriptions/751", 752, "PUT")).status, 200);
   const inDays = (n: number) =>
     new Date(Date.now() + n * 86400000).toISOString().slice(5, 10);
   await call("/me", 751, "PATCH", { birthday: inDays(7) });
@@ -1924,8 +1810,13 @@ test("birthday reminders reach friends a week and a day before, once, with a wis
     reminders[0].reply_markup.inline_keyboard[0][0].web_app.url,
     "https://family.example/app/?open=l_751",
   );
-  // Not a friend, and the person themself: nothing.
-  assert.equal((await messages(754, 0)).length, 0);
+  // A follower without the bell, a stranger, and the person themself: nothing.
+  for (const id of [754, 755])
+    assert.equal(
+      (await messages(id, 0)).filter((m) => m.text.includes("день рождения"))
+        .length,
+      0,
+    );
   assert.equal(
     (await messages(751, 0)).filter((m) => m.text.includes("день рождения"))
       .length,
@@ -2431,7 +2322,7 @@ async function storedPhoto(id: number, wait = false) {
     .bind(String(id))
     .first<{ photo: string; photo_checked: number }>();
 }
-test("profile photo: own upload is checked and visible only to people who may see the person", async () => {
+test("profile photo: own upload is checked and shown on the public card", async () => {
   const up = await call("/me/photo", 7001, "PUT", { photo: WEBP });
   assert.equal(up.status, 200, up.raw);
   assert.equal(typeof up.body.user.photo_at, "number");
@@ -2440,16 +2331,20 @@ test("profile photo: own upload is checked and visible only to people who may se
     up.body.user.photo_at,
   );
   assert.equal((await call("/users/7001/photo", 7001)).body.photo, WEBP);
-  // A friend sees it, also in the friends list; a stranger and an anonymous visitor do not.
+  // Part of the card of even a closed profile: followers, strangers and visitors see it.
   await befriend(7001, 7002);
   assert.equal((await call("/users/7001/photo", 7002)).body.photo, WEBP);
-  const friends = (await call("/friends", 7002)).body.friends;
+  const friends = (await call("/people", 7002)).body.following;
   assert.equal(
     friends.find((u: any) => u.id === "7001").photo_at,
     up.body.user.photo_at,
   );
-  assert.equal((await call("/users/7001/photo", 7003)).status, 404);
-  assert.equal((await call("/users/7001/photo")).status, 404);
+  assert.equal((await call("/users/7001/photo", 7003)).body.photo, WEBP);
+  assert.equal((await call("/users/7001/photo")).body.photo, WEBP);
+  assert.equal(
+    (await call("/profiles/7001")).body.card.photo_at,
+    up.body.user.photo_at,
+  );
   // No photo yet: 404, and photo_at stays empty.
   assert.equal((await call("/users/7002/photo", 7001)).status, 404);
   assert.equal(
@@ -2673,11 +2568,9 @@ test("identities: a Telegram sign-in linked to another account works in the app,
     )?.owner_id,
     account,
   );
-  // Found by the Telegram nickname; the request notification goes to the Telegram chat.
+  // A request to follow the a_ account; the notification goes to its Telegram chat.
   await call("/me", 7303);
-  const req = await call("/friends/requests", 7303, "POST", {
-    username: "user_7302",
-  });
+  const req = await call(`/follows/${account}`, 7303, "POST");
   assert.equal(req.status, 200, req.raw);
   const note = (await messages(7302)).at(-1);
   assert.match(note.text, /User 7303/);
@@ -2686,7 +2579,7 @@ test("identities: a Telegram sign-in linked to another account works in the app,
     ["fa:7303", "fd:7303"],
   );
   assert.ok(!telegram.some((c) => c.body.chat_id === account));
-  // «Принять» in the chat works for the linked account.
+  // «Одобрить» in the chat works for the linked account.
   const sent = (await messages(7302)).length;
   await botHook({
     callback_query: {
@@ -2697,17 +2590,18 @@ test("identities: a Telegram sign-in linked to another account works in the app,
     },
   });
   await messages(7302, sent + 1);
-  const [a, b] = [account, "7303"].sort();
   assert.equal(
     (
       await db
-        .prepare("SELECT status FROM friendships WHERE user_a=? AND user_b=?")
-        .bind(a, b)
+        .prepare(
+          "SELECT status FROM follows WHERE follower_id='7303' AND target_id=?",
+        )
+        .bind(account)
         .first()
     )?.status,
-    "accepted",
+    "approved",
   );
-  // The new friend sees the list and the photo through the a_ account ID.
+  // The new follower sees the list and the photo through the a_ account ID.
   const list = await call(`/lists/${account}`, 7303);
   assert.equal(list.status, 200, list.raw);
   assert.equal(list.body.gifts.length, 1);
@@ -2746,31 +2640,22 @@ test("identities: a person without Telegram gets no messages and nothing breaks"
     .run();
   await call("/me", 7305);
   const calls = telegram.length;
-  const r = await call("/friends/requests", 7305, "POST", { user_id: account });
+  const r = await call(`/follows/${account}`, 7305, "POST");
   assert.equal(r.status, 200, r.raw);
   await settle();
   assert.ok(
     telegram.slice(calls).every((c) => c.method !== "sendMessage"),
     "nothing is sent for an account without Telegram",
   );
-  // Not findable by a Telegram nickname, and invalid IDs are still refused.
-  assert.equal(
-    (
-      await call("/friends/requests", 7305, "POST", {
-        username: "no_such_nick",
-      })
-    ).status,
-    404,
-  );
+  // Invalid account IDs match no route.
   for (const bad of [
     "a_1",
     "7305x",
-    "../7305",
     "a_7304BBBB-0000-4000-8000-000000007304",
   ])
     assert.equal(
-      (await call("/friends/requests", 7305, "POST", { user_id: bad })).status,
-      400,
+      (await call(`/follows/${bad}`, 7305, "POST")).status,
+      404,
       bad,
     );
 });
@@ -2793,12 +2678,12 @@ test("identities: a Telegram nickname moves to its newest owner in sign-ins and 
       ?.username,
     null,
   );
-  await call("/me", 7308);
-  const r = await call("/friends/requests", 7308, "POST", {
-    username: "moving_nick",
-  });
-  assert.equal(r.status, 200, r.raw);
-  assert.equal((await call("/friends", 7307)).body.incoming[0]?.id, "7308");
+  // The public card shows the nickname of its newest owner only.
+  assert.equal(
+    (await call("/profiles/7307", 7308)).body.card.username,
+    "moving_nick",
+  );
+  assert.equal((await call("/profiles/7306", 7308)).body.card.username, null);
 });
 
 // ---- «В браузере»: one-time sign-in code from the Mini App ----
