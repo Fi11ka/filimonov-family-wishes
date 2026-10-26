@@ -427,18 +427,24 @@ function App() {
   async function reserve(g: Wish) {
     if (guestView()) {
       if (g.reservation === "reserved" && guestCodes()[g.id])
-        await guarded(async () => {
-          try {
-            await api(`/api/guest-reservations/${g.id}/cancel`, "POST", {
-              code: guestCodes()[g.id],
-            });
-            notice("Бронь отменена");
-          } finally {
-            // Cancelled now or earlier by someone else: the code is no longer needed.
-            setGuestCode(g.id, null);
-            await refresh();
-          }
-        }, "");
+        setConfirmation({
+          text: `Отменить бронь «${g.title}»? Подарок снова станет свободным, его сможет забронировать кто-то другой.`,
+          action: "Отменить бронь",
+          danger: true,
+          run: () =>
+            guarded(async () => {
+              try {
+                await api(`/api/guest-reservations/${g.id}/cancel`, "POST", {
+                  code: guestCodes()[g.id],
+                });
+                notice("Бронь отменена");
+              } finally {
+                // Cancelled now or earlier by someone else: the code is no longer needed.
+                setGuestCode(g.id, null);
+                await refresh();
+              }
+            }, ""),
+        });
       else setGuestGift(g);
       return;
     }
@@ -448,14 +454,22 @@ function App() {
       setReserving({ gift: g, ownerId: g.owner_id });
       return;
     }
-    await guarded(async () => {
-      try {
-        await api(`/api/gifts/${g.id}/reservation`, "DELETE");
-        notice("Бронь отменена");
-      } finally {
-        if (owner) await loadList(owner.id);
-      }
-    }, "Бронирование доступно после подключения приложения.");
+    setConfirmation({
+      text: g.group_joined
+        ? `Отменить бронь «${g.title}»? Это совместный подарок, бот сообщит об этом в Telegram.`
+        : `Отменить бронь «${g.title}»? Подарок снова станет свободным, его сможет забронировать кто-то другой.`,
+      action: "Отменить бронь",
+      danger: true,
+      run: () =>
+        guarded(async () => {
+          try {
+            await api(`/api/gifts/${g.id}/reservation`, "DELETE");
+            notice("Бронь отменена");
+          } finally {
+            if (owner) await loadList(owner.id);
+          }
+        }, "Бронирование доступно после подключения приложения."),
+    });
   }
   async function answerInvite(giftId: string, join: boolean) {
     await guarded(async () => {
@@ -472,12 +486,23 @@ function App() {
       }
     }, "В демо брони не меняются.");
   }
-  async function cancelBooking(b: Booking) {
-    await guarded(async () => {
-      await api(`/api/gifts/${b.gift_id}/reservation`, "DELETE");
-      setBookings(bookings.filter((x) => x.gift_id !== b.gift_id));
-      notice(b.role === "organizer" ? "Бронь отменена" : "Вы вышли из подарка");
-    }, "Бронирование доступно после подключения приложения.");
+  function cancelBooking(b: Booking) {
+    const organizer = b.role === "organizer";
+    setConfirmation({
+      text: !organizer
+        ? `Выйти из совместного подарка «${b.title}»? Бронь останется за организатором, бот ему сообщит.`
+        : b.members.length
+          ? `Отменить бронь «${b.title}»? Совместный подарок отменится для всех участников, бот им сообщит.`
+          : `Отменить бронь «${b.title}»? Подарок снова станет свободным, его сможет забронировать кто-то другой.`,
+      action: organizer ? "Отменить бронь" : "Выйти",
+      danger: true,
+      run: () =>
+        guarded(async () => {
+          await api(`/api/gifts/${b.gift_id}/reservation`, "DELETE");
+          setBookings((list) => list.filter((x) => x.gift_id !== b.gift_id));
+          notice(organizer ? "Бронь отменена" : "Вы вышли из подарка");
+        }, "Бронирование доступно после подключения приложения."),
+    });
   }
   /** «Куплю сам»: the organizer keeps the booking, the others leave it. */
   function buyAlone(b: Booking) {
@@ -1359,7 +1384,7 @@ function App() {
                                 <button
                                   className="button secondary"
                                   disabled={busy}
-                                  onClick={() => void cancelBooking(b)}
+                                  onClick={() => cancelBooking(b)}
                                 >
                                   {b.role === "organizer"
                                     ? "Отменить бронь"
