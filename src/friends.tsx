@@ -303,6 +303,93 @@ export function AcceptInvite({
     </div>
   );
 }
+const months = [
+  "Январь",
+  "Февраль",
+  "Март",
+  "Апрель",
+  "Май",
+  "Июнь",
+  "Июль",
+  "Август",
+  "Сентябрь",
+  "Октябрь",
+  "Ноябрь",
+  "Декабрь",
+];
+/** Birthday and gender: from them the profile gets its events (birthday, 8 March or 23 February). */
+export function BirthdayGender({
+  day,
+  month,
+  gender,
+  setDay,
+  setMonth,
+  setGender,
+}: {
+  day: string;
+  month: string;
+  gender: string;
+  setDay: (v: string) => void;
+  setMonth: (v: string) => void;
+  setGender: (v: string) => void;
+}) {
+  return (
+    <>
+      <fieldset>
+        <legend>Дата рождения</legend>
+        <div className="birthday-inputs">
+          <select
+            aria-label="День рождения"
+            value={day}
+            onChange={(e) => setDay(e.target.value)}
+          >
+            <option value="">День</option>
+            {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+              <option key={d} value={String(d).padStart(2, "0")}>
+                {d}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Месяц рождения"
+            value={month}
+            onChange={(e) => setMonth(e.target.value)}
+          >
+            <option value="">Месяц</option>
+            {months.map((m, i) => (
+              <option key={m} value={String(i + 1).padStart(2, "0")}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Пол</legend>
+        <select
+          aria-label="Пол"
+          value={gender}
+          onChange={(e) => setGender(e.target.value)}
+        >
+          <option value="">Не указан</option>
+          <option value="female">Женский</option>
+          <option value="male">Мужской</option>
+        </select>
+        <p className="small-text">
+          Виден только вам. По нему в вишлист добавляется 8 Марта или 23
+          Февраля.
+        </p>
+      </fieldset>
+    </>
+  );
+}
+/** The error to show for a half-filled or impossible birthday, or "" when it is fine. */
+export function birthdayError(day: string, month: string) {
+  if (!!day !== !!month) return "Укажите день и месяц рождения.";
+  if (day && month && !validBirthday(`${month}-${day}`))
+    return "Укажите существующую дату рождения.";
+  return "";
+}
 export function Profile({
   user,
   friends,
@@ -338,20 +425,6 @@ export function Profile({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
-  const months = [
-    "Январь",
-    "Февраль",
-    "Март",
-    "Апрель",
-    "Май",
-    "Июнь",
-    "Июль",
-    "Август",
-    "Сентябрь",
-    "Октябрь",
-    "Ноябрь",
-    "Декабрь",
-  ];
   return (
     <div className="share-result">
       <AvatarEditor user={user} onUpdated={onUpdated} />
@@ -373,12 +446,9 @@ export function Profile({
           e.preventDefault();
           setError("");
           setSaved(false);
-          if (!!day !== !!month) {
-            setError("Укажите день и месяц рождения.");
-            return;
-          }
-          if (day && month && !validBirthday(`${month}-${day}`)) {
-            setError("Укажите существующую дату рождения.");
+          const invalid = birthdayError(day, month);
+          if (invalid) {
+            setError(invalid);
             return;
           }
           setSaving(true);
@@ -408,51 +478,14 @@ export function Profile({
           }
         }}
       >
-        <fieldset>
-          <legend>Дата рождения</legend>
-          <div className="birthday-inputs">
-            <select
-              aria-label="День рождения"
-              value={day}
-              onChange={(e) => setDay(e.target.value)}
-            >
-              <option value="">День</option>
-              {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
-                <option key={d} value={String(d).padStart(2, "0")}>
-                  {d}
-                </option>
-              ))}
-            </select>
-            <select
-              aria-label="Месяц рождения"
-              value={month}
-              onChange={(e) => setMonth(e.target.value)}
-            >
-              <option value="">Месяц</option>
-              {months.map((m, i) => (
-                <option key={m} value={String(i + 1).padStart(2, "0")}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </div>
-        </fieldset>
-        <fieldset>
-          <legend>Пол</legend>
-          <select
-            aria-label="Пол"
-            value={gender}
-            onChange={(e) => setGender(e.target.value)}
-          >
-            <option value="">Не указан</option>
-            <option value="female">Женский</option>
-            <option value="male">Мужской</option>
-          </select>
-          <p className="small-text">
-            Виден только вам. По нему в вишлист добавляется 8 Марта или 23
-            Февраля.
-          </p>
-        </fieldset>
+        <BirthdayGender
+          day={day}
+          month={month}
+          gender={gender}
+          setDay={setDay}
+          setMonth={setMonth}
+          setGender={setGender}
+        />
         <label className="setting-toggle">
           <input
             type="checkbox"

@@ -39,6 +39,7 @@ import {
   BellRing,
   Globe,
   Send,
+  Bot,
   SlidersHorizontal,
 } from "lucide-react";
 import { useFullscreen } from "./fullscreen";
@@ -46,6 +47,7 @@ import { Hearts } from "./hearts";
 import {
   api,
   apiConfigured,
+  BOT,
   demo,
   friendInvite,
   guestCodes,
@@ -61,6 +63,7 @@ import {
   signedIn,
   telegram,
   telegramLink,
+  type Notifications,
 } from "./api";
 import { WebLogin } from "./login";
 import {
@@ -73,6 +76,8 @@ import {
 } from "./demo";
 import { GiftForm, Share, Modal, Confirm } from "./forms";
 import { AcceptInvite, AddFriend, Profile, Requests } from "./friends";
+import { Features, Welcome } from "./welcome";
+import { telegramAppLink } from "./telegram-links";
 import { Face } from "./avatar";
 import { ImportDialog } from "./import/ImportDialog";
 import { comparePrice } from "../shared/wish-price";
@@ -204,6 +209,9 @@ function App() {
   /** Whose list the shared link opened for a signed-in user: it offers to add them as a friend. */
   const [sharedOwner, setSharedOwner] = useState("");
   const sharedOpened = useRef(false);
+  /** The first-visit tour, with the bot status for its «Открыть бота». */
+  const [welcome, setWelcome] = useState<Notifications | null | false>(false);
+  const welcomeShown = useRef(false);
   /** A link opened without an account: only that list, with bookings by name.
    * Signed in, the link just opens the list and the rest of the app works as usual. */
   const guestView = () => !!guestToken && !authShare && !signedIn();
@@ -262,6 +270,10 @@ function App() {
         const me = await api("/api/me");
         setUser(me.user);
         setWebSession(!!me.web_session);
+        if (me.welcome && !welcomeShown.current) {
+          welcomeShown.current = true;
+          setWelcome(me.notifications || null);
+        }
         let id = tab === "mine" || !owner ? me.user.id : owner.id;
         if (guestToken && !sharedOpened.current) {
           // First open of a shared link: show that list like a friend's one.
@@ -676,6 +688,16 @@ function App() {
                     <span>В Telegram</span>
                   </a>
                 )}
+            {/* The bot chat: notifications, reminders and answers to requests. */}
+            <button
+              className="switch-app"
+              onClick={() => openBot(`https://t.me/${BOT}`)}
+              aria-label="Открыть бота"
+              title="Открыть чат с ботом в Telegram"
+            >
+              <Bot size={16} />
+              <span>Открыть бота</span>
+            </button>
             <span className="profile-name">
               {user ? handle(user) || user.name.split(" ")[0] : "Гость"}
             </span>
@@ -693,11 +715,23 @@ function App() {
         <main>
           {locked ? (
             <section className="welcome">
-              <h1>Вишлист</h1>
-              <p>
-                Войдите через Telegram, чтобы добавить желания и выбрать подарки
-                друзьям.
-              </p>
+              {guestToken ? (
+                <>
+                  <h1>Вам прислали вишлист</h1>
+                  <p>
+                    Войдите через Telegram, чтобы открыть его и забронировать
+                    подарок. Это бесплатно и займёт минуту.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <h1>Вишлист</h1>
+                  <p>
+                    Войдите через Telegram, чтобы добавить желания и выбрать
+                    подарки друзьям.
+                  </p>
+                </>
+              )}
               {apiConfigured && !telegram?.initData && (
                 <WebLogin onSignedIn={() => void refresh()} />
               )}
@@ -717,6 +751,7 @@ function App() {
               <a className="text-link" href="?demo=1">
                 Попробовать демо
               </a>
+              <Features />
             </section>
           ) : (
             <>
@@ -724,6 +759,18 @@ function App() {
                 <div className="guest-banner">
                   <LinkIcon size={18} />
                   <span>Вишлист для близких · без регистрации</span>
+                </div>
+              )}
+              {guestView() && (
+                <div className="guest-promo">
+                  <p>
+                    <strong>Хотите такой же?</strong> Заведите свой вишлист:
+                    друзья увидят, что вам подарить, а бот напомнит об их днях
+                    рождения.
+                  </p>
+                  <a className="button secondary" href={telegramAppLink()}>
+                    <Gift size={16} /> Создать свой вишлист
+                  </a>
                 </div>
               )}
               {viewingFriend &&
@@ -1434,6 +1481,37 @@ function App() {
             notice("Желание перенесено в архив");
           }}
         />
+      )}
+      {welcome !== false && user && !modal && (
+        <Modal
+          title="Добро пожаловать!"
+          closeOnBackdrop={false}
+          onClose={() => {
+            setWelcome(false);
+            if (!demo)
+              void api("/api/me", "PATCH", { welcomed: true }).catch(
+                () => undefined,
+              );
+          }}
+        >
+          <Welcome
+            user={user}
+            sharedName={
+              sharedOwner && owner?.id === sharedOwner
+                ? owner.name.split(" ")[0]
+                : undefined
+            }
+            notifications={welcome}
+            onDone={(updated) => {
+              setWelcome(false);
+              if (updated) {
+                setUser(updated);
+                if (own) setOwner(updated);
+                notice("Профиль сохранён");
+              }
+            }}
+          />
+        </Modal>
       )}
       {modal && (
         <Modal

@@ -587,6 +587,12 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       user: await profile(db, uid, true),
       web_session: !!session,
       notifications: await notifications(db, uid),
+      // The first-visit tour, until the person fills it in or skips it.
+      welcome: !(await stmt(
+        db,
+        "SELECT welcomed_at FROM users WHERE id=?",
+        uid,
+      ).first<{ welcomed_at: number | null }>())?.welcomed_at,
     };
   if (path === "/api/me/photo" && method === "PUT") {
     const photo = photoInput((await body(req)).photo);
@@ -649,9 +655,20 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       fail(400, "VALIDATION", "Выберите пол.");
     if (b.notify !== undefined && typeof b.notify !== "boolean")
       fail(400, "VALIDATION", "Проверьте настройку уведомлений.");
+    if (b.welcomed !== undefined && b.welcomed !== true)
+      fail(400, "VALIDATION", "Проверьте настройку приветствия.");
     const about =
       b.about === undefined || b.about === null ? b.about : text(b.about, 500);
     const updates = [];
+    if (b.welcomed)
+      updates.push(
+        stmt(
+          db,
+          "UPDATE users SET welcomed_at=COALESCE(welcomed_at,?) WHERE id=?",
+          now(),
+          uid,
+        ),
+      );
     if (about !== undefined)
       updates.push(
         stmt(db, "UPDATE users SET about=? WHERE id=?", about || null, uid),
