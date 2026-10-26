@@ -3014,7 +3014,11 @@ footer svg {
   align-self: flex-start;
 }
 /* ---- Profile photo ---- */
+/* Fills the whole circle regardless of padding: the header avatar is a button,
+   and its default padding used to squeeze the photo into an oval. */
 .avatar-photo {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   border-radius: 50%;
