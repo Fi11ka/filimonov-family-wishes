@@ -317,6 +317,8 @@ class Chat {
     const userTitle = !!title;
     let shopImage = "",
       blocked = false,
+      // Ozon, DNS and the like: only the home helper can read them, and it is off.
+      helperOff = "",
       seen: ScreenshotResult | null = null,
       shotNote = "";
     let currency =
@@ -339,6 +341,7 @@ class Chat {
           this.env.AI ? aiNamer(this.env.AI) : undefined,
         );
         blocked = p.blocked;
+        if (p.blocked && p.helper_offline) helperOff = p.shop || "Магазин";
         if (!title) title = p.title;
         description = p.details || "";
         if (/^https:\/\//.test(p.image_url)) shopImage = p.image_url;
@@ -394,9 +397,11 @@ class Chat {
     const notes = [
       shotNote,
       link && noPrice && !shot
-        ? blocked
-          ? "Магазин не дал прочитать страницу. Пришлите скриншот карточки товара — дополню это желание названием и ценой. Или укажите цену кнопкой «Цена»."
-          : "Цену магазин не отдал — укажите её кнопкой «Цена»."
+        ? helperOff
+          ? `${helperOff} открывается только через домашний помощник, а он сейчас не в сети. Пришлите скриншот карточки товара — дополню это желание названием и ценой. Или укажите цену кнопкой «Цена», или пришлите ссылку ещё раз позже.`
+          : blocked
+            ? "Магазин не дал прочитать страницу. Пришлите скриншот карточки товара — дополню это желание названием и ценой. Или укажите цену кнопкой «Цена»."
+            : "Цену магазин не отдал — укажите её кнопкой «Цена»."
         : noPrice && shot
           ? "Цену не нашла — укажите её кнопкой «Цена»."
           : "",

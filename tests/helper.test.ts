@@ -358,3 +358,27 @@ test("DNS: links are cleaned and schema.org data is read", async () => {
   });
   assert.equal(blocked.blocked, true);
 });
+
+test("Ozon with the home helper off: blocked, and the app and the bot can say why", async () => {
+  const { db } = fakeD1();
+  // Nobody polls /api/helper/next: the computer is off.
+  const helper = homeHelper(db, fast);
+  const ctx: ShopContext = {
+    async page(url) {
+      const p = await helper.page(url);
+      if (!p) throw new Error("direct fetch is blocked");
+      return p;
+    },
+    async json() {
+      throw new Error("HTTP 403");
+    },
+    helperStatus: () => helper.status(),
+  };
+  const result = await lookupProduct(
+    "https://www.ozon.ru/product/stolik-zhurnalnyy-kruglyy-1588518859/",
+    ctx,
+  );
+  assert.equal(result.shop, "Ozon");
+  assert.equal(result.blocked, true);
+  assert.equal(result.helper_offline, true);
+});
