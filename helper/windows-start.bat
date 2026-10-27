@@ -7,8 +7,9 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-if not exist node_modules (
-  echo Первый запуск: устанавливаю компоненты...
+node -e "require('./node_modules/playwright-core/package.json').version===require('./package.json').dependencies['playwright-core']||process.exit(1)" 2>nul
+if errorlevel 1 (
+  echo Устанавливаю или обновляю компоненты...
   call npm install --omit=dev --no-audit --no-fund
 )
 node helper.mjs %*
