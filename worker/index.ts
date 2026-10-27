@@ -139,32 +139,19 @@ async function canView(
   guest: string | null,
 ) {
   if (user?.id === owner) return true;
-  // An open profile, or an approved follower of a closed one.
-  if (
-    await stmt(db, `SELECT 1 AS ok WHERE ${SEES("?2")}`, user?.id || "", owner)
-      .first()
-  )
-    return true;
-  if (
-    user &&
-    (await stmt(
-      db,
-      `SELECT 1 AS ok WHERE ${PARTY_PEER("?1", "?2")}`,
-      user.id,
-      owner,
-    ).first())
-  )
-    return true;
-  if (isToken(guest))
-    return !!(await stmt(
-      db,
-      // Only the guest link: the Telegram «Поделиться» links now lead to the profile.
-      `SELECT 1 AS ok FROM guest_links WHERE owner_id=? AND token_hash=? AND ${LINK_ACTIVE("guest_links", "?")} AND kind='guest'`,
-      owner,
-      await hash(guest),
-      now(),
-    ).first());
-  return false;
+  // One query: an open profile or an approved follower of a closed one, a fellow
+  // guest of an upcoming party, or the guest link (the Telegram «Поделиться»
+  // links now lead to the profile only).
+  return !!(await stmt(
+    db,
+    `SELECT 1 AS ok WHERE ${SEES("?2")}
+    OR (?1<>'' AND ${PARTY_PEER("?1", "?2")})
+    OR (?3<>'' AND EXISTS(SELECT 1 FROM guest_links WHERE owner_id=?2 AND token_hash=?3 AND ${LINK_ACTIVE("guest_links", "?4")} AND kind='guest'))`,
+    user?.id || "",
+    owner,
+    isToken(guest) ? await hash(guest) : "",
+    now(),
+  ).first());
 }
 async function list(
   db: D1Database,
@@ -182,20 +169,22 @@ async function list(
         owner,
       ).all<Gift>()
     ).results;
-  const r = await stmt(
-    db,
-    `SELECT ${giftColumns},CASE WHEN r.gift_id IS NULL THEN 'available'
+  // Guests of an event see who booked; the owner returned above and never does.
+  // Both queries go to the database at once.
+  const [r, names] = await Promise.all([
+    stmt(
+      db,
+      `SELECT ${giftColumns},CASE WHEN r.gift_id IS NULL THEN 'available'
       WHEN r.user_id=?1 OR EXISTS(SELECT 1 FROM reservation_members m WHERE m.gift_id=g.id AND m.user_id=?1 AND m.status='joined') THEN 'mine'
       WHEN EXISTS(SELECT 1 FROM reservation_members m WHERE m.gift_id=g.id AND m.user_id=?1) THEN 'invited'
       ELSE 'reserved' END AS reservation,
       CASE WHEN r.user_id=?1 OR EXISTS(SELECT 1 FROM reservation_members m WHERE m.gift_id=g.id AND m.user_id=?1) THEN (SELECT COUNT(*) FROM reservation_members m WHERE m.gift_id=g.id AND m.status='joined') END AS group_joined
       FROM gifts g LEFT JOIN reservations r ON r.gift_id=g.id WHERE g.owner_id=?2 AND g.archived_at IS NULL ORDER BY g.hearts DESC,g.created_at DESC,g.id`,
-    guestView ? "" : user?.id || "",
-    owner,
-  ).all();
-  // Guests of an event see who booked; the owner returned above and never does.
-  const names =
-    guestView || !user ? null : await bookerNames(db, owner, user.id);
+      guestView ? "" : user?.id || "",
+      owner,
+    ).all(),
+    guestView || !user ? null : bookerNames(db, owner, user.id),
+  ]);
   return names?.size
     ? r.results.map((g) =>
         g.reservation === "reserved" && names.has(g.id as string)
@@ -546,9 +535,13 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       now(),
     ).first<{ owner_id: string }>();
     if (!link) missing();
+    const [owner, gifts] = await Promise.all([
+      profile(db, link.owner_id, user?.id === link.owner_id),
+      list(db, link.owner_id, user, true),
+    ]);
     return {
-      owner: await profile(db, link.owner_id, user?.id === link.owner_id),
-      gifts: await list(db, link.owner_id, user, true),
+      owner,
+      gifts,
       invitations: [],
       can_reserve: true,
       is_owner: user?.id === link.owner_id,
@@ -585,12 +578,17 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   if (listMatch && method === "GET") {
     const owner = listMatch[1];
     if (!(await canView(db, owner, user, guest))) missing();
-    const p = await profile(db, owner, owner === user?.id);
+    // Access is settled; the three reads do not depend on each other.
+    const [p, gifts, invited] = await Promise.all([
+      profile(db, owner, owner === user?.id),
+      list(db, owner, user),
+      invitations(db, owner, user?.id || null),
+    ]);
     if (!p) missing();
     return {
       owner: p,
-      gifts: await list(db, owner, user),
-      invitations: await invitations(db, owner, user?.id || null),
+      gifts,
+      invitations: invited,
       is_owner: owner === user?.id,
       can_reserve: !!user && owner !== user.id,
     };
