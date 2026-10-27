@@ -70,6 +70,7 @@ import {
   type Notifications,
 } from "./api";
 import { WebLogin } from "./login";
+import { ErrorScreen } from "./error-screen";
 import {
   demoArchive,
   demoBookings,
@@ -2122,7 +2123,11 @@ function Photo({ wish, own }: { wish: Wish; own: boolean }) {
     </div>
   );
 }
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(
+  <ErrorScreen>
+    <App />
+  </ErrorScreen>,
+);
 
 /** Full price and, for a shared gift, each participant's part. */
 function BookingPrice({ booking: b }: { booking: Booking }) {
