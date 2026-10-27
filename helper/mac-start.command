@@ -6,8 +6,9 @@ if ! command -v node >/dev/null; then
   read -r
   exit 1
 fi
-if [ ! -d node_modules ]; then
-  echo "Первый запуск: устанавливаю компоненты..."
+# Компоненты ставятся при первом запуске и обновляются, когда меняется их версия в package.json.
+if ! node -e "require('./node_modules/playwright-core/package.json').version===require('./package.json').dependencies['playwright-core']||process.exit(1)" 2>/dev/null; then
+  echo "Устанавливаю или обновляю компоненты..."
   npm install --omit=dev --no-audit --no-fund
 fi
 node helper.mjs "$@"

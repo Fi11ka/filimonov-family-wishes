@@ -7,7 +7,7 @@ if [ -z "$NODE" ]; then echo "Сначала установите Node.js с htt
 if [ ! -f helper.config.json ]; then
   echo "Сначала один раз запустите mac-start.command и введите адрес и ключ."; read -r; exit 1
 fi
-[ -d node_modules ] || npm install --omit=dev --no-audit --no-fund
+"$NODE" -e "require('./node_modules/playwright-core/package.json').version===require('./package.json').dependencies['playwright-core']||process.exit(1)" 2>/dev/null || npm install --omit=dev --no-audit --no-fund
 PLIST="$HOME/Library/LaunchAgents/ru.filimonov.wishlist-helper.plist"
 mkdir -p "$HOME/Library/LaunchAgents"
 cat > "$PLIST" <<PL
