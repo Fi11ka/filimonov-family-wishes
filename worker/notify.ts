@@ -212,7 +212,7 @@ export class Outbox {
   followRequest(from: Named, to: string) {
     this.send(
       [to],
-      `👋 ${who(from)} хочет подписаться на вас и видеть ваш вишлист.`,
+      `👋 ${who(from)} хочет добавить вас в друзья и видеть ваш вишлист.\n\n«Одобрить» — и вы тоже добавите этого человека в друзья.`,
       [
         [
           { text: "✅ Одобрить", callback_data: `fa:${from.id}` },
@@ -221,18 +221,30 @@ export class Outbox {
       ],
     );
   }
-  /** `by` approved the request of `to`, or `to` followed an open profile of `by`. */
-  followApproved(by: Named, to: string) {
+  /** `by` approved the request of `to`, and maybe added `to` back. */
+  followApproved(by: Named, to: string, mutual = false) {
     this.send(
       [to],
-      `🤝 ${who(by)} одобряет вашу подписку. Теперь вам виден вишлист.`,
+      mutual
+        ? `🤝 ${who(by)} принимает вас в друзья и добавляет в ответ. Теперь вам видны вишлисты друг друга.`
+        : `🤝 ${who(by)} принимает вас в друзья. Теперь вам виден вишлист.`,
       [[openButton(this.env, "Открыть вишлист", `l_${by.id}`)]],
     );
   }
-  newFollower(from: Named, to: string) {
-    this.send([to], `👋 ${who(from)} подписывается на вас.`, [
-      [openButton(this.env, "Открыть профиль", `l_${from.id}`)],
-    ]);
+  /** `from` added `to`, whose list was open to them. `back`: `to` had added `from` already. */
+  newFollower(from: Named, to: string, back = false) {
+    this.send(
+      [to],
+      back
+        ? `🤝 ${who(from)} добавляет вас в друзья в ответ.`
+        : `👋 ${who(from)} добавляет вас в друзья.`,
+      back
+        ? [[openButton(this.env, "Открыть вишлист", `l_${from.id}`)]]
+        : [
+            [{ text: "➕ Добавить в ответ", callback_data: `fb:${from.id}` }],
+            [openButton(this.env, "Открыть профиль", `l_${from.id}`)],
+          ],
+    );
   }
   groupInvite(organizer: Named, owner: Named, gift: GiftLike, ids: string[]) {
     this.send(

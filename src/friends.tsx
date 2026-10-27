@@ -92,7 +92,7 @@ export function birthdayError(day: string, month: string) {
     return "Укажите существующую дату рождения.";
   return "";
 }
-/** Open or closed profile: who sees the wishlist besides approved followers. */
+/** Open or closed profile: who sees the wishlist besides friends I approved. */
 export function Privacy({
   value,
   onChange,
@@ -102,7 +102,7 @@ export function Privacy({
 }) {
   return (
     <fieldset className="privacy">
-      <legend>Кто видит вишлист</legend>
+      <legend>Кто видит мой вишлист</legend>
       <label className="setting-toggle">
         <input
           type="radio"
@@ -111,10 +111,10 @@ export function Privacy({
           onChange={() => onChange(true)}
         />
         <span>
-          <strong>Закрытый профиль</strong>
+          <strong>Только те, кого я одобрю</strong>
           <small>
-            Только подписчики, которых вы одобрили. Остальные видят имя, фото и
-            кнопку «Запросить доступ».
+            Остальные видят имя, фото и кнопку «Добавить в друзья»: вишлист
+            откроется, когда вы одобрите запрос.
           </small>
         </span>
       </label>
@@ -126,9 +126,10 @@ export function Privacy({
           onChange={() => onChange(false)}
         />
         <span>
-          <strong>Открытый профиль</strong>
+          <strong>Все, у кого есть ссылка</strong>
           <small>
-            Все, у кого есть ссылка. Подписаться можно без одобрения.
+            Добавить вас в друзья можно без одобрения. В ваших друзьях эти люди
+            не появятся, пока вы сами их не добавите.
           </small>
         </span>
       </label>
@@ -137,16 +138,14 @@ export function Privacy({
 }
 export function Profile({
   user,
-  followers,
-  following,
+  friends,
   webSession,
   onShare,
   onLogout,
   onUpdated,
 }: {
   user: User | null;
-  followers: number;
-  following: number;
+  friends: number;
   webSession: boolean;
   onShare: () => void;
   onLogout: (everywhere: boolean) => void;
@@ -186,7 +185,7 @@ export function Profile({
         )}
       </p>
       <p className="small-text">
-        Подписчиков: {followers} · Подписок: {following}
+        Друзей: {friends}
       </p>
       <form
         className="profile-settings"
@@ -248,7 +247,7 @@ export function Profile({
               Уведомления в Telegram
             </label>
             <p className="small-text">
-              Бот напишет о запросах на подписку, а ещё о днях рождения, новых
+              Бот напишет о запросах в друзья, а ещё о днях рождения, новых
               желаниях и мероприятиях тех, у кого вы включили колокольчик, о
               приглашениях на мероприятия и скинуться, об удалённых подарках из
               ваших броней.

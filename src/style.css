@@ -3373,17 +3373,7 @@ button.event-chip:hover {
 .add-shared-friend {
   margin-bottom: 16px;
 }
-/* «Подписки»: following / followers / requests. */
-.people-tabs {
-  flex: 1 1 320px;
-  margin: 0;
-}
-.people-tabs button {
-  white-space: nowrap;
-}
-.people-tabs .nav-count {
-  position: static;
-}
+/* «Друзья»: the heading of the tab. */
 .family-section .section-heading {
   flex-wrap: wrap;
   gap: 10px 16px;
@@ -3448,7 +3438,7 @@ button.event-chip:hover {
   font-weight: 400;
   line-height: 1.35;
 }
-/* A request in «Подписки» / «Подписчики»: not counted until approved. */
+/* Someone in «Друзья»: a request is dashed and not counted until approved. */
 .member-tile {
   display: flex;
   flex-direction: column;
@@ -3479,4 +3469,29 @@ button.event-chip:hover {
   min-height: 34px;
   padding: 0 8px;
   font-size: var(--fs-sm);
+}
+/* «Друзья»: requests, friends, my requests, who added me — one under another. */
+.people-group + .people-group,
+.empty + .people-group {
+  margin-top: 24px;
+}
+.people-group > h2 {
+  margin: 0 0 6px;
+  font-size: var(--fs-lg);
+}
+.people-group > .small-text,
+.people-group > .add-back {
+  margin: 0 0 12px;
+}
+.member > strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.member > strong svg {
+  flex: none;
+  color: var(--purple-dark);
+}
+.confirm-option {
+  margin: 4px 0 16px;
 }
