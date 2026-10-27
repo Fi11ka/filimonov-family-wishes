@@ -322,6 +322,16 @@ function App() {
         const id = profileTarget || (await linkedProfile());
         if (id) await openPerson(id);
       } else if (signedIn()) {
+        // Friends depend on nothing below: ask for them together with «me».
+        // Their error, if any, is raised where they used to be awaited.
+        const friends = loadFriends().then(
+          () => null,
+          (e: Error) => e,
+        );
+        const friendsLoaded = async () => {
+          const failed = await friends;
+          if (failed) throw failed;
+        };
         const me = await api("/api/me");
         setUser(me.user);
         setWebSession(!!me.web_session);
@@ -329,7 +339,6 @@ function App() {
           welcomeShown.current = true;
           setWelcome(me.notifications || null);
         }
-        await loadFriends();
         let id = tab === "mine" || !owner ? me.user.id : owner.id;
         if (!sharedOpened.current && (guestToken || profileTarget || legacyLink)) {
           // First open of a link: show that profile; the rest of the app works as usual.
@@ -341,18 +350,21 @@ function App() {
           else if (shared !== me.user.id) {
             setSharedOwner(shared);
             await openPerson(shared);
+            await friendsLoaded();
             return;
           } else setTab("mine");
         }
         if (tab === "friends" && viewed && owner?.id === viewed.card.id) {
           // Stay on the profile; its access may have changed.
           await openPerson(viewed.card.id);
+          await friendsLoaded();
           return;
         }
         const d = await api(`/api/lists/${id}`);
         setOwner(d.owner);
         setGifts(d.gifts);
         setInvitations(d.invitations || []);
+        await friendsLoaded();
       }
     } catch (e) {
       setError((e as Error).message);
