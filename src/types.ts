@@ -49,6 +49,8 @@ export type Wish = {
   priority: number;
   shop_url: string;
   has_photo: number;
+  /** Changes with every edit; tells a new photo from a remembered one. */
+  updated_at?: number;
   photo?: string;
   archive_reason?: "changed_mind" | "gifted" | "bought_self" | null;
   archived_at?: number | null;

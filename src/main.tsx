@@ -71,6 +71,7 @@ import {
 } from "./api";
 import { WebLogin } from "./login";
 import { ErrorScreen } from "./error-screen";
+import { forgetGiftPhoto, giftPhoto } from "./gift-photo";
 import {
   demoArchive,
   demoBookings,
@@ -1841,6 +1842,7 @@ function App() {
               onSavingChange={setGiftSaving}
               onSaved={async () => {
                 setModal(null);
+                if (editing) forgetGiftPhoto(editing.id);
                 if (user) await loadList(user.id);
                 setGiftDirty(false);
                 notice("Желание сохранено");
@@ -2208,15 +2210,36 @@ function keepShopPhoto(id: string, link: string) {
 }
 function Photo({ wish, own }: { wish: Wish; own: boolean }) {
   const [src, setSrc] = useState(wish.photo || ""),
-    [failed, setFailed] = useState(false);
+    [failed, setFailed] = useState(false),
+    // The photo is asked for when the card is about half a screen away.
+    [near, setNear] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = box.current;
+    if (near || !el) return;
+    if (!("IntersectionObserver" in window)) {
+      setNear(true);
+      return;
+    }
+    const seen = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) setNear(true);
+      },
+      { rootMargin: "50% 0px" },
+    );
+    seen.observe(el);
+    return () => seen.disconnect();
+  }, [near]);
   useEffect(() => {
     let alive = true;
-    if (!demo && wish.has_photo)
-      void api<{ photo: string }>(`/api/gifts/${wish.id}/photo`)
-        .then((r) => {
-          if (alive) setSrc(r.photo);
-          if (own && /^https:\/\//.test(r.photo))
-            keepShopPhoto(wish.id, r.photo);
+    if (!demo && near && wish.has_photo)
+      void giftPhoto(wish.id, wish.updated_at)
+        .then((photo) => {
+          if (alive) {
+            setSrc(photo);
+            setFailed(false);
+          }
+          if (own && /^https:\/\//.test(photo)) keepShopPhoto(wish.id, photo);
         })
         .catch(() => {
           if (alive) setFailed(true);
@@ -2224,7 +2247,7 @@ function Photo({ wish, own }: { wish: Wish; own: boolean }) {
     return () => {
       alive = false;
     };
-  }, [wish, own]);
+  }, [wish.id, wish.updated_at, wish.has_photo, own, near]);
   return src && !failed ? (
     <img
       loading="lazy"
@@ -2234,7 +2257,7 @@ function Photo({ wish, own }: { wish: Wish; own: boolean }) {
       onError={() => setFailed(true)}
     />
   ) : (
-    <div className="photo-placeholder">
+    <div className="photo-placeholder" ref={box}>
       <Gift size={42} />
     </div>
   );
