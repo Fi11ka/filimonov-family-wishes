@@ -110,40 +110,36 @@ import {
 import "./style.css";
 type Tab = "mine" | "friends" | "bookings" | "events" | "archive" | "event";
 type ModalKind = "gift" | "share" | "profile" | "import";
-/** «Подписки»: whom I follow, my followers, requests to follow me. */
+/** «Друзья»: whom I added, requests to me and mine, who added me without me adding back. */
 type People = {
-  following: Person[];
-  followers: Person[];
+  friends: Person[];
   requests: Person[];
   outgoing: Person[];
+  added_me: Person[];
 };
-/** A profile opened in «Подписки»: its card, and whether its list is open to me. */
+/** A profile opened in «Друзья»: its card, and whether its list is open to me. */
 type Viewed = { card: Person & { is_private?: boolean }; can_view: boolean };
 interface Confirmation {
   text: string;
   action: string;
   danger?: boolean;
-  run: () => Promise<void>;
+  /** A checkbox in the dialog, ticked at first; run gets its value. */
+  option?: string;
+  run: (option: boolean) => Promise<void>;
 }
 function App() {
   const [user, setUser] = useState<User | null>(demo ? demoUser : null),
     [people, setPeople] = useState<People>({
-      following: demo ? demoFriends : [],
-      followers: demo ? demoFriends : [],
+      friends: demo ? demoFriends : [],
       requests: demo ? demoIncoming.map((p) => ({ ...p, gift_count: 0 })) : [],
       outgoing: [],
+      added_me: [],
     }),
-    [peopleTab, setPeopleTab] = useState<"following" | "followers">(
-      "following",
-    ),
+    // Approving a request adds the person back unless this is unticked.
+    [addBack, setAddBack] = useState(true),
     [viewed, setViewed] = useState<Viewed | null>(null);
   // My people, whom I can invite to an event or a shared gift.
-  const friends: Friend[] = [
-    ...people.following,
-    ...people.followers.filter(
-      (f) => !people.following.some((x) => x.id === f.id),
-    ),
-  ];
+  const friends: Friend[] = [...people.friends, ...people.added_me];
   const [owner, setOwner] = useState<User | null>(demo ? demoUser : null),
     [gifts, setGifts] = useState<Wish[]>(demo ? demoGifts : []),
     [invitations, setInvitations] = useState<Invitation[]>([]),
@@ -268,8 +264,8 @@ function App() {
     setPeople(await api("/api/people"));
   }
   /**
-   * Someone's profile in «Подписки»: their list when it is open to me, or the
-   * card with «Подписаться» / «Запросить доступ».
+   * Someone's profile in «Друзья»: their list when it is open to me, or the
+   * card with «Добавить в друзья».
    */
   async function openPerson(id: string) {
     setTab("friends");
@@ -393,7 +389,7 @@ function App() {
     setUser(null);
     setOwner(null);
     setGifts([]);
-    setPeople({ following: [], followers: [], requests: [], outgoing: [] });
+    setPeople({ friends: [], requests: [], outgoing: [], added_me: [] });
     setViewed(null);
     setTab("mine");
     notice("Вы вышли из аккаунта");
@@ -653,63 +649,74 @@ function App() {
         }, "В демо удаление недоступно."),
     });
   }
-  /** «Подписаться» / «Запросить доступ»: an open profile at once, a closed one after approval. */
+  /** «Добавить в друзья»: an open list at once, a closed one after approval. */
   async function followPerson(p: Person) {
     await guarded(async () => {
       const r = await api(`/api/follows/${p.id}`, "POST");
       notice(
         r.follow === "approved"
-          ? "Вы подписались"
+          ? "Добавлено в друзья"
           : "Запрос отправлен. Вишлист откроется, когда его одобрят",
       );
       await loadFriends();
-      await openPerson(p.id);
-    }, "В демо подписки не меняются.");
+      if (viewed?.card.id === p.id) await openPerson(p.id);
+    }, "В демо друзья не меняются.");
   }
+  /** Remove from friends or cancel my request; a friend who sees my closed list may lose it too. */
   function unfollow(p: Person) {
     const pending = p.follow === "pending";
+    const sees = !!user?.is_private && !!p.follows_you;
     setConfirmation({
       text: pending
-        ? "Отменить запрос на подписку? Он ещё ждёт одобрения."
-        : `Отписаться?${p.is_private ? " Профиль закрытый: чтобы снова видеть вишлист, придётся запросить доступ." : ""} Уже сделанные брони сохранятся.`,
-      action: pending ? "Отменить запрос" : "Отписаться",
+        ? "Отменить запрос в друзья? Он ещё ждёт одобрения."
+        : `Убрать ${p.name} из друзей?${p.is_private && !sees ? " Вишлист закрытый: чтобы снова его видеть, придётся отправить запрос." : ""} Уже сделанные брони сохранятся.`,
+      action: pending ? "Отменить запрос" : "Убрать",
       danger: !pending,
-      run: () =>
+      option:
+        !pending && sees
+          ? "И закрыть этому человеку доступ к моему вишлисту"
+          : undefined,
+      run: (revoke) =>
         guarded(async () => {
-          await api(`/api/follows/${p.id}`, "DELETE");
+          await api(
+            `/api/follows/${p.id}${revoke ? "?revoke=1" : ""}`,
+            "DELETE",
+          );
           await loadFriends();
-          await openPerson(p.id);
-          notice(pending ? "Запрос отменён" : "Вы отписались");
-        }, "В демо подписки не меняются."),
+          if (viewed?.card.id === p.id) await openPerson(p.id);
+          notice(pending ? "Запрос отменён" : "Убрано из друзей");
+        }, "В демо друзья не меняются."),
     });
   }
   async function approveFollower(p: Person) {
     await guarded(async () => {
-      await api(`/api/followers/${p.id}/approve`, "POST");
-      notice("Подписка одобрена");
+      await api(`/api/followers/${p.id}/approve`, "POST", {
+        add_back: addBack,
+      });
+      notice(addBack ? "Теперь вы друзья" : "Запрос одобрен");
       await loadFriends();
-    }, "В демо подписки не меняются.");
+    }, "В демо друзья не меняются.");
   }
   async function declineFollower(p: Person) {
     await guarded(async () => {
       await api(`/api/followers/${p.id}`, "DELETE");
       notice("Запрос отклонён");
       await loadFriends();
-    }, "В демо подписки не меняются.");
+    }, "В демо друзья не меняются.");
   }
-  /** Take my list away from a follower; they are not told. */
+  /** Take my closed list away from someone who added me; they are not told. */
   function removeFollower(p: Person) {
     setConfirmation({
-      text: `Убрать из подписчиков: ${p.name}? Если ваш профиль закрытый, этот человек перестанет видеть вишлист. Сообщения об этом не будет.`,
-      action: "Убрать",
+      text: `Закрыть ${p.name} доступ к вашему вишлисту? Сообщения об этом не будет.`,
+      action: "Закрыть доступ",
       danger: true,
       run: () =>
         guarded(async () => {
           await api(`/api/followers/${p.id}`, "DELETE");
           await loadFriends();
-          await openPerson(p.id);
-          notice("Убрано из подписчиков");
-        }, "В демо подписки не меняются."),
+          if (viewed?.card.id === p.id) await openPerson(p.id);
+          notice("Доступ закрыт");
+        }, "В демо друзья не меняются."),
     });
   }
   const list = tab === "archive" ? archive : gifts;
@@ -761,7 +768,7 @@ function App() {
           {(
             [
               ["mine", Heart, "Мой вишлист", "Вишлист"],
-              ["friends", Users, "Подписки", "Подписки"],
+              ["friends", Users, "Друзья", "Друзья"],
               ["bookings", Bookmark, "Мои брони", "Брони"],
               ["events", CalendarDays, "Мероприятия", "Мероприятия"],
               ["archive", Archive, "Архив", "Архив"],
@@ -881,9 +888,9 @@ function App() {
                 <>
                   <PersonCard card={viewed.card} />
                   <p>
-                    Профиль закрытый. Войдите через Telegram и запросите доступ:
-                    вишлист откроется, когда {viewed.card.name.split(" ")[0]}{" "}
-                    одобрит подписку.
+                    Вишлист закрытый. Войдите через Telegram и добавьте в
+                    друзья: вишлист откроется, когда{" "}
+                    {viewed.card.name.split(" ")[0]} одобрит запрос.
                   </p>
                 </>
               ) : profileTarget || legacyLink ? (
@@ -958,7 +965,7 @@ function App() {
                   className="text-link back-to-friends"
                   onClick={() => void navigate("friends")}
                 >
-                  <ArrowLeft size={15} /> Все подписки
+                  <ArrowLeft size={15} /> Все друзья
                 </button>
               )}
               <div
@@ -976,7 +983,7 @@ function App() {
                           : tab === "archive"
                             ? "Архив"
                             : tab === "friends" && !guestView() && !viewingFriend
-                              ? "Подписки"
+                              ? "Друзья"
                               : own
                                 ? "Мой вишлист"
                                 : closedCard
@@ -1085,33 +1092,9 @@ function App() {
               {!error && !loading && tab === "friends" && !guestView() && !viewingFriend && (
                 <section className="family-section">
                   <div className="section-heading">
-                    <div className="segmented people-tabs" role="tablist">
-                      {(
-                        [
-                          ["following", "Подписки"],
-                          ["followers", "Подписчики"],
-                        ] as const
-                      ).map(([key, label]) => (
-                        <button
-                          key={key}
-                          role="tab"
-                          aria-selected={peopleTab === key}
-                          className={peopleTab === key ? "selected" : ""}
-                          onClick={() => setPeopleTab(key)}
-                        >
-                          {/* Waiting requests are not counted until approved. */}
-                          {label} {people[key].length}
-                          {key === "followers" && people.requests.length > 0 && (
-                            <span
-                              className="nav-count"
-                              aria-label={`Запросов: ${people.requests.length}`}
-                            >
-                              +{people.requests.length}
-                            </span>
-                          )}
-                        </button>
-                      ))}
-                    </div>
+                    <p className="muted">
+                      Друзей: {people.friends.length}
+                    </p>
                     <button
                       className="text-link"
                       onClick={() => {
@@ -1126,82 +1109,149 @@ function App() {
                       Поделиться профилем
                     </button>
                   </div>
-                  {(() => {
-                    // Requests sit with the people they concern: mine to follow
-                    // others in «Подписки», others' to follow me in «Подписчики».
-                    const waiting =
-                      peopleTab === "following" ? people.outgoing : people.requests;
-                    const shown = [...waiting, ...people[peopleTab]];
-                    return shown.length ? (
-                      <div className="members">
-                        {shown.map((m, i) => {
-                          const pending = i < waiting.length;
-                          return (
-                            <div className="member-tile" key={m.id}>
-                              <button
-                                className={`member ${pending ? "pending" : ""}`}
-                                onClick={() => openFriend(m)}
-                              >
-                                <span className={`avatar tone-${i % 4}`}>
-                                  <Face user={m} />
-                                </span>
-                                <strong>{m.name.split(" ")[0]}</strong>
-                                {m.username && <small>@{m.username}</small>}
-                                {pending && peopleTab === "following" ? (
-                                  <em className="pending-badge">ждёт одобрения</em>
-                                ) : pending ? (
-                                  <em className="pending-badge">просит доступ</em>
-                                ) : (
-                                  <span>{wishCount(m.gift_count)}</span>
-                                )}
-                              </button>
-                              {pending && peopleTab === "followers" && (
-                                <div className="member-actions">
-                                  <button
-                                    className="button primary"
-                                    disabled={busy}
-                                    onClick={() => void approveFollower(m)}
-                                  >
-                                    <Check size={14} /> Одобрить
-                                  </button>
-                                  <button
-                                    className="icon-button"
-                                    aria-label={`Отклонить запрос: ${m.name}`}
-                                    disabled={busy}
-                                    onClick={() => void declineFollower(m)}
-                                  >
-                                    <X size={16} />
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="empty compact">
-                        <Users />
-                        <h3>
-                          {peopleTab === "following"
-                            ? "Вы пока ни на кого не подписаны"
-                            : "Подписчиков пока нет"}
-                        </h3>
-                        <p>
-                          {peopleTab === "following"
-                            ? "Попросите близких прислать ссылку на их профиль."
-                            : "Отправьте близким ссылку на свой профиль."}
+                  {people.requests.length > 0 && (
+                    <PeopleGroup
+                      title="Хотят в друзья"
+                      note={
+                        <label className="setting-toggle add-back">
+                          <input
+                            type="checkbox"
+                            checked={addBack}
+                            onChange={(e) => setAddBack(e.target.checked)}
+                          />
+                          <span>При одобрении добавлять в друзья в ответ</span>
+                        </label>
+                      }
+                    >
+                      {people.requests.map((m, i) => (
+                        <MemberTile
+                          key={m.id}
+                          person={m}
+                          tone={i}
+                          pending
+                          badge="просит доступ"
+                          onOpen={() => openFriend(m)}
+                        >
+                          <button
+                            className="button primary"
+                            disabled={busy}
+                            onClick={() => void approveFollower(m)}
+                          >
+                            <Check size={14} /> Одобрить
+                          </button>
+                          <button
+                            className="icon-button"
+                            aria-label={`Отклонить запрос: ${m.name}`}
+                            disabled={busy}
+                            onClick={() => void declineFollower(m)}
+                          >
+                            <X size={16} />
+                          </button>
+                        </MemberTile>
+                      ))}
+                    </PeopleGroup>
+                  )}
+                  <PeopleGroup
+                    title={people.requests.length ? "Друзья" : undefined}
+                  >
+                    {people.friends.map((m, i) => (
+                      <MemberTile
+                        key={m.id}
+                        person={m}
+                        tone={i}
+                        badge={m.follows_you ? "вы друг у друга" : undefined}
+                        onOpen={() => openFriend(m)}
+                      />
+                    ))}
+                  </PeopleGroup>
+                  {!people.friends.length && (
+                    <div className="empty compact">
+                      <Users />
+                      <h3>Друзей пока нет</h3>
+                      <p>
+                        Попросите близких прислать ссылку на их профиль, а им
+                        отправьте свою.
+                      </p>
+                    </div>
+                  )}
+                  {people.outgoing.length > 0 && (
+                    <PeopleGroup
+                      title="Ждут одобрения"
+                      note={
+                        <p className="small-text">
+                          Ваши запросы к закрытым вишлистам. Откроются, когда
+                          их одобрят.
                         </p>
-                      </div>
-                    );
-                  })()}
+                      }
+                    >
+                      {people.outgoing.map((m, i) => (
+                        <MemberTile
+                          key={m.id}
+                          person={m}
+                          tone={i}
+                          pending
+                          badge="ждёт одобрения"
+                          onOpen={() => openFriend(m)}
+                        >
+                          <button
+                            className="button secondary"
+                            disabled={busy}
+                            onClick={() => unfollow(m)}
+                          >
+                            Отменить запрос
+                          </button>
+                        </MemberTile>
+                      ))}
+                    </PeopleGroup>
+                  )}
+                  {people.added_me.length > 0 && (
+                    <PeopleGroup
+                      title="Добавили вас"
+                      note={
+                        <p className="small-text">
+                          {user?.is_private
+                            ? "Эти люди видят ваш вишлист. В ваших друзьях их нет, пока вы не добавите их в ответ."
+                            : "Эти люди добавили вас в друзья. В ваших друзьях их нет, пока вы не добавите их в ответ."}
+                        </p>
+                      }
+                    >
+                      {people.added_me.map((m, i) => (
+                        <MemberTile
+                          key={m.id}
+                          person={m}
+                          tone={i}
+                          onOpen={() => openFriend(m)}
+                        >
+                          <button
+                            className="button primary"
+                            disabled={busy}
+                            onClick={() => void followPerson(m)}
+                          >
+                            <UserPlus size={14} /> Добавить в ответ
+                          </button>
+                          {user?.is_private && (
+                            <button
+                              className="icon-button"
+                              aria-label={`Закрыть доступ: ${m.name}`}
+                              title="Закрыть доступ к моему вишлисту"
+                              disabled={busy}
+                              onClick={() => removeFollower(m)}
+                            >
+                              <UserMinus size={16} />
+                            </button>
+                          )}
+                        </MemberTile>
+                      ))}
+                    </PeopleGroup>
+                  )}
                 </section>
               )}
               {!error && closedCard && viewed && (
                 <section className="closed-profile">
                   <PersonCard card={viewed.card} />
                   <p className="muted">
-                    <Lock size={15} /> Закрытый профиль. Вишлист увидят
-                    подписчики, которых одобрит {viewed.card.name.split(" ")[0]}.
+                    <Lock size={15} /> Закрытый вишлист. Его увидят друзья,
+                    которых одобрит {viewed.card.name.split(" ")[0]}.
                   </p>
                   {user && (
                     <FollowButton
@@ -1211,13 +1261,13 @@ function App() {
                       onUnfollow={() => unfollow(viewed.card)}
                     />
                   )}
-                  {viewed.card.follows_you && (
+                  {user?.is_private && viewed.card.follows_you && (
                     <button
                       className="text-link danger"
                       onClick={() => removeFollower(viewed.card)}
                     >
                       <UserMinus size={15} />
-                      Убрать из подписчиков
+                      Закрыть доступ к моему вишлисту
                     </button>
                   )}
                 </section>
@@ -1240,7 +1290,7 @@ function App() {
                           onUnfollow={() => unfollow(card)}
                         />
                         {sees && (
-                          // A switch for bot messages, not unfollowing the person.
+                          // A switch for bot messages, not removing the person from friends.
                           <button
                             className={`button secondary notify-toggle ${card.subscribed ? "on" : ""}`}
                             disabled={busy}
@@ -1278,15 +1328,18 @@ function App() {
                           <LinkIcon size={16} />
                           Поделиться
                         </button>
-                        {card.follows_you && (
-                          <button
-                            className="text-link danger remove-friend"
-                            onClick={() => removeFollower(card)}
-                          >
-                            <UserMinus size={15} />
-                            Убрать из подписчиков
-                          </button>
-                        )}
+                        {user.is_private &&
+                          card.follows_you &&
+                          card.follow !== "approved" && (
+                            // A friend loses access in «Убрать из друзей» instead.
+                            <button
+                              className="text-link danger remove-friend"
+                              onClick={() => removeFollower(card)}
+                            >
+                              <UserMinus size={15} />
+                              Закрыть доступ к моему вишлисту
+                            </button>
+                          )}
                       </div>
                     );
                   })()}
@@ -1797,8 +1850,7 @@ function App() {
                     : current,
                 );
               }}
-              followers={people.followers.length}
-              following={people.following.length}
+              friends={people.friends.length}
               webSession={webSession}
               onShare={() => setModal("share")}
               onLogout={(everywhere) => void logout(everywhere)}
@@ -1820,18 +1872,73 @@ function App() {
           text={confirmation.text}
           action={confirmation.action}
           danger={confirmation.danger}
+          option={confirmation.option}
           onCancel={() => setConfirmation(null)}
-          onConfirm={() => {
+          onConfirm={(option) => {
             const c = confirmation;
             setConfirmation(null);
-            void c.run();
+            void c.run(option);
           }}
         />
       )}
     </div>
   );
 }
-/** The public card: name, photo, @nick, how many wishes and followers. */
+/** One block of «Друзья»: a heading, a note and the people in it. */
+function PeopleGroup({
+  title,
+  note,
+  children,
+}: {
+  title?: string;
+  note?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="people-group">
+      {title && <h2>{title}</h2>}
+      {note}
+      <div className="members">{children}</div>
+    </div>
+  );
+}
+/** Someone in «Друзья»; buttons under the tile, if any. */
+function MemberTile({
+  person: m,
+  tone,
+  pending,
+  badge,
+  onOpen,
+  children,
+}: {
+  person: Person;
+  tone: number;
+  pending?: boolean;
+  badge?: string;
+  onOpen: () => void;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="member-tile">
+      <button className={`member ${pending ? "pending" : ""}`} onClick={onOpen}>
+        <span className={`avatar tone-${tone % 4}`}>
+          <Face user={m} />
+        </span>
+        <strong>
+          {m.name.split(" ")[0]}
+          {m.subscribed && (
+            <BellRing size={13} aria-label="Уведомления включены" />
+          )}
+        </strong>
+        {m.username && <small>@{m.username}</small>}
+        {!pending && <span>{wishCount(m.gift_count)}</span>}
+        {badge && <em className="pending-badge">{badge}</em>}
+      </button>
+      {children && <div className="member-actions">{children}</div>}
+    </div>
+  );
+}
+/** The public card: name, photo, @nick, how many wishes. */
 function PersonCard({ card }: { card: Person }) {
   return (
     <div className="person-card">
@@ -1842,13 +1949,11 @@ function PersonCard({ card }: { card: Person }) {
       {card.username && <p className="muted">@{card.username}</p>}
       <p className="small-text">
         {wishCount(card.gift_count)}
-        {card.follower_count !== undefined &&
-          ` · подписчиков: ${card.follower_count}`}
       </p>
     </div>
   );
 }
-/** Follow an open profile, ask a closed one for access, or undo either. */
+/** Add to friends (a closed list after approval), or undo it. */
 function FollowButton({
   card,
   busy,
@@ -1863,7 +1968,7 @@ function FollowButton({
   if (card.follow === "approved")
     return (
       <button className="button secondary" disabled={busy} onClick={onUnfollow}>
-        <Check size={16} /> Вы подписаны
+        <Check size={16} /> В друзьях
       </button>
     );
   if (card.follow === "pending")
@@ -1875,8 +1980,7 @@ function FollowButton({
   return (
     <button className="button primary" disabled={busy} onClick={onFollow}>
       <UserPlus size={16} />
-      {card.is_private ? "Запросить доступ" : "Подписаться"}
-      {card.follows_you && !card.is_private ? " в ответ" : ""}
+      {card.follows_you ? "Добавить в ответ" : "Добавить в друзья"}
     </button>
   );
 }

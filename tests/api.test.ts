@@ -355,15 +355,15 @@ test("unauthenticated identity and untrusted user ID cannot grant access", async
 test("former family members, then friends, follow each other; profiles stay closed", async () => {
   const p = (await call("/people", 1)).body;
   assert.deepEqual(
-    p.following.map((x: any) => x.id),
-    ["2", "3"],
+    p.friends.map((x: any) => [x.id, x.follows_you]),
+    [
+      ["2", true],
+      ["3", true],
+    ],
   );
-  assert.deepEqual(
-    p.followers.map((x: any) => x.id),
-    ["2", "3"],
-  );
-  assert.equal(p.following[0].username, "user_2");
-  assert.equal((await call("/people", 4)).body.following.length, 0);
+  assert.equal(p.added_me.length, 0);
+  assert.equal(p.friends[0].username, "user_2");
+  assert.equal((await call("/people", 4)).body.friends.length, 0);
   assert.equal((await call("/me", 1)).body.user.is_private, true);
   // A waiting friend request became a request to follow from its sender.
   const pending = await db
@@ -551,7 +551,7 @@ test("guest scope, anonymous booking statuses, authenticated reservation and rev
   );
   assert.equal((await call(`/gifts/${g}`, 4, "PUT", input, raw)).status, 404);
   assert.equal(
-    (await call("/people", 4, "GET", undefined, raw)).body.following.length,
+    (await call("/people", 4, "GET", undefined, raw)).body.friends.length,
     0,
   );
   assert.equal(
@@ -597,7 +597,7 @@ test("a closed profile shows its card, and its list after the owner approves; on
   assert.equal(anon.body.card.username, "user_6");
   assert.equal(anon.body.card.is_private, true);
   assert.equal(anon.body.card.gift_count, 0);
-  assert.equal(anon.body.card.follower_count, 0);
+  assert.equal(anon.body.card.follower_count, undefined);
   assert.equal(anon.body.can_view, false);
   assert.equal(anon.body.card.about, undefined);
   assert.equal(anon.body.card.birthday, undefined);
@@ -624,7 +624,10 @@ test("a closed profile shows its card, and its list after the owner approves; on
   assert.equal((await call("/followers/5/approve", 6, "POST")).status, 200);
   assert.equal((await call("/lists/6", 5)).status, 200);
   assert.equal((await call("/profiles/6", 5)).body.can_view, true);
-  assert.equal((await call("/profiles/6")).body.card.follower_count, 1);
+  assert.deepEqual(
+    (await call("/people", 6)).body.added_me.map((x: any) => x.id),
+    ["5"],
+  );
   // Approving 5 does not open 5's closed list to 6.
   assert.equal((await call("/lists/5", 6)).status, 404);
   assert.equal((await call("/profiles/5", 6)).body.card.follows_you, true);
@@ -656,7 +659,7 @@ test("an open profile is seen by everyone and followed at once; opening approves
     follow: "approved",
   });
   assert.deepEqual(
-    (await call("/people", 7)).body.followers.map((x: any) => x.id),
+    (await call("/people", 7)).body.added_me.map((x: any) => x.id),
     ["8", "9"],
   );
   // Closing again keeps approved followers and hides the list from others.
@@ -676,20 +679,81 @@ test("a request left waiting when a profile became open counts as a follow", asy
   await db.prepare("UPDATE users SET is_private=0 WHERE id='9501'").run();
   const card = (await call("/profiles/9501", 9502)).body.card;
   assert.equal(card.follow, "approved");
-  assert.equal(card.follower_count, 2);
-  // Pressing «Подписаться» again finishes it, and so does opening «Подписки».
+  // Pressing «Добавить в друзья» again finishes it, and so does opening «Друзья».
   assert.deepEqual((await call("/follows/9501", 9502, "POST")).body, {
     follow: "approved",
   });
   const people = (await call("/people", 9503)).body;
   assert.equal(people.outgoing.length, 0);
   assert.deepEqual(
-    people.following.map((p: any) => p.id),
+    people.friends.map((p: any) => p.id),
     ["9501"],
   );
   assert.deepEqual(
-    (await call("/people", 9501)).body.followers.map((p: any) => p.id).sort(),
+    (await call("/people", 9501)).body.added_me.map((p: any) => p.id).sort(),
     ["9502", "9503"],
+  );
+});
+test("friends: approve and add back, add back who added me, remove with or without my list", async () => {
+  for (const id of [9601, 9602, 9603, 9604]) await call("/me", id);
+  // 9602 asks 9601 (closed); approving with add_back makes them friends both ways.
+  await call("/follows/9601", 9602, "POST");
+  assert.equal(
+    (await call("/followers/9602/approve", 9601, "POST", { add_back: true }))
+      .status,
+    200,
+  );
+  assert.equal((await call("/lists/9602", 9601)).status, 200);
+  assert.equal((await call("/lists/9601", 9602)).status, 200);
+  let p = (await call("/people", 9601)).body;
+  assert.deepEqual(
+    p.friends.map((x: any) => [x.id, x.follows_you]),
+    [["9602", true]],
+  );
+  assert.equal(p.requests.length, 0);
+  assert.equal(
+    (await call("/followers/9602/approve", 9601, "POST", { add_back: true }))
+      .status,
+    404,
+  );
+  // 9603 is open; 9604 adds it, and 9603 sees 9604 only under «Добавили вас».
+  await call("/me", 9603, "PATCH", { is_private: false });
+  await call("/follows/9603", 9604, "POST");
+  p = (await call("/people", 9603)).body;
+  assert.equal(p.friends.length, 0);
+  assert.deepEqual(
+    p.added_me.map((x: any) => x.id),
+    ["9604"],
+  );
+  // Adding back someone who added me needs no approval, though 9604 is closed.
+  assert.deepEqual((await call("/follows/9604", 9603, "POST")).body, {
+    follow: "approved",
+  });
+  assert.equal((await call("/lists/9604", 9603)).status, 200);
+  assert.equal((await call("/people", 9603)).body.added_me.length, 0);
+  // A closed stranger still gets a request.
+  assert.deepEqual((await call("/follows/9601", 9604, "POST")).body, {
+    follow: "pending",
+  });
+  // Adding someone who asked me approves their request too.
+  assert.deepEqual((await call("/follows/9604", 9601, "POST")).body, {
+    follow: "approved",
+  });
+  assert.equal((await call("/lists/9601", 9604)).status, 200);
+  // Removing from friends keeps my list open to them, unless asked otherwise.
+  await call("/follows/9602", 9601, "DELETE");
+  assert.equal((await call("/lists/9601", 9602)).status, 200);
+  assert.deepEqual(
+    (await call("/people", 9601)).body.added_me.map((x: any) => x.id),
+    ["9602"],
+  );
+  await call("/follows/9604?revoke=1", 9601, "DELETE");
+  assert.equal((await call("/lists/9601", 9604)).status, 404);
+  assert.equal((await call("/lists/9604", 9601)).status, 404);
+  p = (await call("/people", 9601)).body;
+  assert.deepEqual(
+    p.added_me.map((x: any) => x.id),
+    ["9602"],
   );
 });
 test("old «Поделиться» and friend invitation links only lead to the profile", async () => {
@@ -1440,7 +1504,7 @@ test("guest links made by viewers before followers no longer open the list; only
     200,
   );
 });
-test("followers with the bell on hear about added and removed wishes; bookers learn their gift is gone", async () => {
+test("friends with the bell on hear about added and removed wishes; bookers learn their gift is gone", async () => {
   await befriend(701, 702);
   await befriend(701, 703);
   await call("/me", 704);
@@ -1449,7 +1513,7 @@ test("followers with the bell on hear about added and removed wishes; bookers le
   assert.equal(sub.status, 200);
   assert.equal(sub.body.subscribed, true);
   assert.equal(
-    (await call("/people", 702)).body.following.find((f: any) => f.id === "701")
+    (await call("/people", 702)).body.friends.find((f: any) => f.id === "701")
       .subscribed,
     true,
   );
@@ -1523,11 +1587,11 @@ test("followers with the bell on hear about added and removed wishes; bookers le
   assert.equal((await call("/subscriptions/701", 702, "DELETE")).status, 200);
 });
 
-test("follow requests, approvals and new followers of an open profile are announced in the bot", async () => {
+test("friend requests, approvals and new friends of an open profile are announced in the bot", async () => {
   for (const id of [711, 712, 713]) await call("/me", id);
   await call("/follows/712", 711, "POST");
   const request = (await messages(712))[0];
-  assert.match(request.text, /User 711.*хочет подписаться на вас/);
+  assert.match(request.text, /User 711.*хочет добавить вас в друзья/);
   assert.equal(
     request.reply_markup.inline_keyboard[0][0].callback_data,
     "fa:711",
@@ -1535,12 +1599,17 @@ test("follow requests, approvals and new followers of an open profile are announ
   await call("/followers/711/approve", 712, "POST");
   assert.match(
     (await messages(711))[0].text,
-    /User 712.*одобряет вашу подписку/,
+    /User 712.*принимает вас в друзья\. Теперь вам виден вишлист/,
   );
   // An open profile has nothing to approve: its owner just hears about it.
   await call("/me", 713, "PATCH", { is_private: false });
   await call("/follows/713", 711, "POST");
-  assert.match((await messages(713))[0].text, /User 711.*подписывается на вас/);
+  const added = (await messages(713))[0];
+  assert.match(added.text, /User 711.*добавляет вас в друзья/);
+  assert.equal(
+    added.reply_markup.inline_keyboard[0][0].callback_data,
+    "fb:711",
+  );
 });
 
 test("group gifts: invite friends, answer from the site or the bot, owner sees nothing", async () => {
@@ -1778,14 +1847,16 @@ test("bot webhook: secret required, menu, adding and editing one's own wishes", 
     )?.n,
     0,
   );
-  // Approving a follow request from the bot.
+  // Approving a friend request from the bot adds the person back.
   await call("/me", 732);
   await replied(731, () => call("/follows/731", 732, "POST"));
   await press("fa:732");
-  assert.equal(
-    (await call("/people", 731)).body.followers.some((f: any) => f.id === "732"),
-    true,
+  const people = (await call("/people", 731)).body;
+  assert.deepEqual(
+    people.friends.map((f: any) => [f.id, f.follows_you]),
+    [["732", true]],
   );
+  assert.equal(people.requests.length, 0);
 });
 
 test("notifications can be switched off and a blocked chat is not retried", async () => {
@@ -1817,7 +1888,7 @@ test("notifications can be switched off and a blocked chat is not retried", asyn
   );
 });
 
-test("birthday reminders reach followers with the bell on a week and a day before, once, with a wishlist link", async () => {
+test("birthday reminders reach friends with the bell on a week and a day before, once, with a wishlist link", async () => {
   await befriend(751, 752);
   await befriend(753, 752);
   await befriend(751, 755);
@@ -2363,10 +2434,10 @@ test("profile photo: own upload is checked and shown on the public card", async 
     up.body.user.photo_at,
   );
   assert.equal((await call("/users/7001/photo", 7001)).body.photo, WEBP);
-  // Part of the card of even a closed profile: followers, strangers and visitors see it.
+  // Part of the card of even a closed profile: friends, strangers and visitors see it.
   await befriend(7001, 7002);
   assert.equal((await call("/users/7001/photo", 7002)).body.photo, WEBP);
-  const friends = (await call("/people", 7002)).body.following;
+  const friends = (await call("/people", 7002)).body.friends;
   assert.equal(
     friends.find((u: any) => u.id === "7001").photo_at,
     up.body.user.photo_at,

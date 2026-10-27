@@ -5,7 +5,15 @@ import { MAX_HEARTS, legacyPriority } from "../shared/hearts";
 import { formatPrice, parsePriceText } from "../shared/price";
 import { isAccountId } from "../shared/account-id";
 import { isId } from "../shared/token";
-import { giftInfo, now, saveUser, stmt, type Env } from "./core";
+import {
+  addFriend,
+  follow,
+  giftInfo,
+  now,
+  saveUser,
+  stmt,
+  type Env,
+} from "./core";
 import {
   archiveGift,
   createGift,
@@ -211,8 +219,8 @@ class Chat {
       `Привет, ${esc(this.user.name.split(" ")[0])}! Это семейный вишлист.\n\n` +
         `<b>${ADD}</b> — пришлите ссылку на товар, скриншот карточки товара, название или фото.\n` +
         `<b>${LIST}</b> — посмотреть и изменить свои желания.\n` +
-        `<b>${OPEN}</b> — вишлисты друзей, брони и подписки.\n\n` +
-        "Сюда же приходят уведомления: заявки в друзья, новые желания друзей, на которых вы подписаны, и приглашения скинуться на подарок.",
+        `<b>${OPEN}</b> — вишлисты друзей и брони.\n\n` +
+        "Сюда же приходят уведомления: заявки в друзья, новые желания друзей, и приглашения скинуться на подарок.",
       "menu",
     );
   }
@@ -743,23 +751,27 @@ async function onButton(chat: Chat, data: string) {
     ]);
   }
   // ---- Answers to notifications ----
-  if ((kind === "fa" || kind === "fd") && isAccountId(a)) {
-    // A request from `a` to follow this user.
-    const r = await stmt(
-      chat.db,
-      kind === "fa"
-        ? "UPDATE follows SET status='approved',approved_at=unixepoch() WHERE follower_id=? AND target_id=? AND status='pending' RETURNING follower_id"
-        : "DELETE FROM follows WHERE follower_id=? AND target_id=? AND status='pending' RETURNING follower_id",
-      a,
-      uid,
-    ).first();
-    if (!r) return chat.say("Запрос уже неактуален.");
-    if (kind === "fd") return chat.say("Запрос отклонён.");
-    chat.out.followApproved(chat.user, a);
-    // One-way: the follower sees this user's list; following back is a separate step.
+  if ((kind === "fa" || kind === "fd" || kind === "fb") && isAccountId(a)) {
+    // fa / fd: a request from `a` to add this user. fb: `a` added this user, add back.
+    const theirs = await follow(chat.db, a, uid);
+    if (kind === "fb" ? !theirs : theirs !== "pending")
+      return chat.say("Запрос уже неактуален.");
+    if (kind === "fd") {
+      await stmt(
+        chat.db,
+        "DELETE FROM follows WHERE follower_id=? AND target_id=? AND status='pending'",
+        a,
+        uid,
+      ).run();
+      return chat.say("Запрос отклонён.");
+    }
+    // Approving a request adds the person back, as «Добавить в ответ» does in the app.
+    await addFriend(chat.db, chat.out, chat.user, a);
     return chat.say(
-      "✅ Подписка одобрена: теперь этот человек видит ваш вишлист.",
-      [[openButton(chat.env, "Открыть профиль", `l_${a}`)]],
+      kind === "fb"
+        ? "✅ Добавлено в друзья."
+        : "✅ Теперь вы друзья: видите вишлисты друг друга. Убрать из друзей можно в приложении.",
+      [[openButton(chat.env, "Открыть вишлист", `l_${a}`)]],
     );
   }
   if ((kind === "gj" || kind === "gd") && isId(a)) {

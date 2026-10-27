@@ -1,6 +1,7 @@
 // Database helpers shared by the HTTP API (index.ts) and the Telegram bot (bot.ts).
 import { fail, type Identity } from "./security";
 import type { AiBinding } from "./shops/naming";
+import type { Outbox } from "./notify";
 export interface Env {
   DB: D1Database;
   BOT_TOKEN: string;
@@ -29,6 +30,52 @@ export const CONNECTED = (other: string) =>
 // owner's own (links made by viewers stopped working with followers).
 export const LINK_ACTIVE = (link: string, at: string) =>
   `${link}.revoked_at IS NULL AND ${link}.expires_at>${at} AND ${link}.created_by=${link}.owner_id`;
+/**
+ * `me` adds `them` to friends. An open profile, or someone who has already added
+ * or asked to add `me`, lets me in at once; a closed one gets a request. Adding
+ * someone who asked to add me also approves their request: we want the same thing.
+ */
+export async function addFriend(
+  db: D1Database,
+  out: Outbox,
+  me: { id: string; name: string; username?: string | null },
+  them: string,
+) {
+  const t = await stmt(
+    db,
+    `SELECT u.is_private,(SELECT status FROM follows WHERE follower_id=u.id AND target_id=?2) AS theirs
+    FROM users u WHERE u.id=?1`,
+    them,
+    me.id,
+  ).first<{ is_private: number; theirs: "pending" | "approved" | null }>();
+  if (!t) return null;
+  const status = t.is_private && !t.theirs ? "pending" : "approved";
+  const created = await stmt(
+    db,
+    // A request left waiting becomes a follow too, once nothing is left to approve.
+    `INSERT INTO follows(follower_id,target_id,status,approved_at) VALUES(?,?,?,?)
+    ON CONFLICT DO UPDATE SET status='approved',approved_at=excluded.approved_at
+    WHERE excluded.status='approved' AND follows.status='pending' RETURNING status`,
+    me.id,
+    them,
+    status,
+    status === "approved" ? now() : null,
+  ).first();
+  const approvedTheirs =
+    t.theirs === "pending" &&
+    !!(await stmt(
+      db,
+      "UPDATE follows SET status='approved',approved_at=unixepoch() WHERE follower_id=? AND target_id=? AND status='pending' RETURNING status",
+      them,
+      me.id,
+    ).first());
+  if (approvedTheirs) out.followApproved(me, them, !!created);
+  else if (created) {
+    if (status === "pending") out.followRequest(me, them);
+    else out.newFollower(me, them, t.theirs === "approved");
+  }
+  return follow(db, me.id, them);
+}
 /** How `follower` follows `target`, if at all. */
 export async function follow(db: D1Database, follower: string, target: string) {
   return (

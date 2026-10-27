@@ -6,7 +6,7 @@ export type User = {
   username?: string | null;
   birthday?: string | null;
   allow_resharing?: number;
-  /** A closed profile shows its list only to approved followers. */
+  /** A closed profile shows its list only to friends it approved. */
   is_private?: boolean;
   wishlist_updated_at?: number | null;
   /** A few words under the wishlist title. */
@@ -25,17 +25,17 @@ export type Invitation = {
   mode: "hero" | "everyone";
   guests: { id: string; name: string; username: string | null }[];
 };
-/** Someone in «Подписки»: the public card and how I follow them. */
+/** Someone in «Друзья»: the public card and whether we added each other. */
 export type Person = User & {
   gift_count: number;
-  follower_count?: number;
-  /** How I follow them: waiting for approval, or approved. */
+  /** I added them: waiting for approval, or their list is open to me. */
   follow?: "pending" | "approved" | null;
+  /** They added me, and my list is open to them. */
   follows_you?: boolean;
   /** The bell: the bot tells me about their wishlist. */
   subscribed?: boolean;
 };
-/** My people (followers and those I follow): whom I can invite to an event or a shared gift. */
+/** My people (my friends and those who added me): whom I can invite to an event or a shared gift. */
 export type Friend = Person;
 export type Wish = {
   id: string;

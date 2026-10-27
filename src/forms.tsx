@@ -135,6 +135,7 @@ export function Confirm({
   text,
   action,
   danger,
+  option,
   onConfirm,
   onCancel,
 }: {
@@ -142,19 +143,32 @@ export function Confirm({
   text: string;
   action: string;
   danger?: boolean;
-  onConfirm: () => void;
+  /** A checkbox that goes with the action, ticked at first. */
+  option?: string;
+  onConfirm: (option: boolean) => void;
   onCancel: () => void;
 }) {
+  const [ticked, setTicked] = useState(true);
   return (
     <Modal title={title} onClose={onCancel}>
       <p className="muted">{text}</p>
+      {option && (
+        <label className="setting-toggle confirm-option">
+          <input
+            type="checkbox"
+            checked={ticked}
+            onChange={(e) => setTicked(e.target.checked)}
+          />
+          <span>{option}</span>
+        </label>
+      )}
       <div className="confirm-actions">
         <button className="button secondary" onClick={onCancel}>
           Отмена
         </button>
         <button
           className={`button primary ${danger ? "danger-fill" : ""}`}
-          onClick={onConfirm}
+          onClick={() => onConfirm(!!option && ticked)}
         >
           {action}
         </button>
@@ -1092,8 +1106,8 @@ export function Share({
         <h3>Ссылка на профиль</h3>
         <p>
           {own
-            ? "Отправьте её друзьям и родным. Если профиль закрытый, по ссылке видно только имя и фото, а вишлист — после того, как вы одобрите подписку."
-            : "По ссылке откроется профиль. Если он закрытый, вишлист увидят только одобренные подписчики."}
+            ? "Отправьте её друзьям и родным. Если профиль закрытый, по ссылке видно только имя и фото, а вишлист — после того, как вы одобрите запрос в друзья."
+            : "По ссылке откроется профиль. Если вишлист закрытый, его увидят только друзья, которых одобрил владелец."}
         </p>
         {profile && <CopyValue value={profile} />}
       </section>
@@ -1358,8 +1372,8 @@ export function ReserveDialog({
               </div>
             ) : (
               <p className="small-text">
-                Пока некого позвать: позвать можно ваших подписчиков и тех, на
-                кого вы подписаны.
+                Пока некого позвать: позвать можно ваших друзей и тех, кто
+                добавил вас в друзья.
               </p>
             )}
             <button

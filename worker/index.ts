@@ -26,6 +26,7 @@ import {
   CONNECTED,
   LINK_ACTIVE,
   SEES,
+  addFriend,
   bookers,
   follow,
   giftInfo,
@@ -362,14 +363,13 @@ async function profile(db: D1Database, id: string, self = false) {
 }
 /**
  * What anyone with the profile link sees, even of a closed profile: name, photo,
- * @nick, how many wishes and followers. Plus how the viewer follows this person.
+ * @nick, how many wishes. Plus whether the viewer and this person added each other.
  */
 async function card(db: D1Database, id: string, viewer: string | null) {
   const c = await stmt(
     db,
     `SELECT u.id,u.name,u.username,u.is_private,CASE WHEN u.photo='' THEN NULL ELSE u.photo_at END AS photo_at,
       (SELECT COUNT(*) FROM gifts g WHERE g.owner_id=u.id AND g.archived_at IS NULL) AS gift_count,
-      (SELECT COUNT(*) FROM follows f WHERE f.target_id=u.id AND (f.status='approved' OR u.is_private=0)) AS follower_count,
       (SELECT CASE WHEN u.is_private=0 THEN 'approved' ELSE f.status END FROM follows f WHERE f.follower_id=?2 AND f.target_id=u.id) AS follow,
       EXISTS(SELECT 1 FROM follows f WHERE f.follower_id=u.id AND f.target_id=?2 AND f.status='approved') AS follows_you,
       EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscriber_id=?2 AND s.target_id=u.id) AS subscribed
@@ -386,7 +386,6 @@ type PersonRow = {
   is_private: number;
   photo_at: number | null;
   gift_count: number;
-  follower_count?: number;
   follow?: "pending" | "approved" | null;
   follows_you?: number;
   subscribed?: number;
@@ -851,7 +850,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     ]);
     return { ok: true };
   }
-  // ---- Followers (docs/FOLLOWERS.md) ----
+  // ---- Friends (docs/FOLLOWERS.md) ----
   if (path === "/api/people" && method === "GET") {
     // An open profile has nothing to approve: a request to it is a follow.
     await stmt(
@@ -860,79 +859,81 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       AND target_id IN (SELECT id FROM users WHERE is_private=0)`,
       uid,
     ).run();
-    // Only the person sees their followers and whom they follow.
+    // Only the person sees their friends and who added them.
     const rows = (
       await stmt(
         db,
         `SELECT u.id,u.name,u.username,u.is_private,CASE WHEN u.photo='' THEN NULL ELSE u.photo_at END AS photo_at,
           (SELECT COUNT(*) FROM gifts g WHERE g.owner_id=u.id AND g.archived_at IS NULL) AS gift_count,
           EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscriber_id=?1 AND s.target_id=u.id) AS subscribed,
-          CASE WHEN f.follower_id=?1 THEN 'out' ELSE 'in' END AS side,f.status
-        FROM follows f JOIN users u ON u.id=CASE WHEN f.follower_id=?1 THEN f.target_id ELSE f.follower_id END
-        WHERE f.follower_id=?1 OR f.target_id=?1 ORDER BY u.name,u.id`,
+          (SELECT status FROM follows o WHERE o.follower_id=?1 AND o.target_id=u.id) AS follow,
+          EXISTS(SELECT 1 FROM follows i WHERE i.follower_id=u.id AND i.target_id=?1 AND i.status='approved') AS follows_you,
+          (SELECT status FROM follows i WHERE i.follower_id=u.id AND i.target_id=?1) AS theirs
+        FROM users u WHERE u.id IN (SELECT target_id FROM follows WHERE follower_id=?1 UNION SELECT follower_id FROM follows WHERE target_id=?1)
+        ORDER BY u.name,u.id`,
         uid,
-      ).all<PersonRow & { side: "in" | "out"; status: string }>()
+      ).all<PersonRow & { theirs: string | null }>()
     ).results;
-    const pick = (side: string, status: string) =>
-      rows
-        .filter((r) => r.side === side && r.status === status)
-        .map(({ side: _, status: __, ...r }) => person(r));
+    const pick = (keep: (r: (typeof rows)[number]) => boolean) =>
+      rows.filter(keep).map(({ theirs: _, ...r }) => person(r));
     return {
-      following: pick("out", "approved"),
-      followers: pick("in", "approved"),
-      requests: pick("in", "pending"),
-      outgoing: pick("out", "pending"),
+      // Whom I added: their lists are open to me.
+      friends: pick((r) => r.follow === "approved"),
+      // Asking to see my closed list.
+      requests: pick((r) => r.theirs === "pending"),
+      // My requests to closed lists.
+      outgoing: pick((r) => r.follow === "pending" && r.theirs !== "pending"),
+      // Added me, and I have not added them.
+      added_me: pick((r) => !r.follow && r.theirs === "approved"),
     };
   }
   const followMatch = path.match(
     new RegExp(`^/api/follows/(${ACCOUNT_ID_PART})$`),
   );
   if (followMatch && method === "POST") {
-    // Follow an open profile at once, a closed one after its owner approves.
+    // Add to friends: an open profile at once, a closed one after its owner approves.
     await rate(db, `follow:${uid}`, 20);
-    const target = followMatch[1];
-    if (target === uid)
-      fail(400, "SELF_FOLLOW", "Нельзя подписаться на самого себя.");
-    const t = await stmt(
-      db,
-      "SELECT is_private FROM users WHERE id=?",
-      target,
-    ).first<{ is_private: number }>();
-    if (!t) missing();
-    const status = t.is_private ? "pending" : "approved";
-    const created = await stmt(
-      db,
-      // A request left from when the profile was closed becomes a follow too.
-      `INSERT INTO follows(follower_id,target_id,status,approved_at) VALUES(?,?,?,?)
-      ON CONFLICT DO UPDATE SET status='approved',approved_at=excluded.approved_at
-      WHERE excluded.status='approved' AND follows.status='pending' RETURNING status`,
-      uid,
-      target,
-      status,
-      status === "approved" ? now() : null,
-    ).first();
-    if (created) {
-      if (status === "pending") out.followRequest(user, target);
-      else out.newFollower(user, target);
-    }
-    return { follow: await follow(db, uid, target) };
+    if (followMatch[1] === uid)
+      fail(400, "SELF_FOLLOW", "Нельзя добавить в друзья самого себя.");
+    const status = await addFriend(db, out, user, followMatch[1]);
+    if (status === null) missing();
+    return { follow: status };
   }
   if (followMatch && method === "DELETE") {
-    // Unfollow or cancel a request; the bell about this person goes too.
+    // Remove from friends or cancel a request; the bell about this person goes too.
     // Bookings stay: the person can still cancel them in «Мои брони».
+    // ?revoke=1 also takes my list away from them, silently.
+    const them = followMatch[1],
+      revoke = url.searchParams.get("revoke") === "1";
     await db.batch([
       stmt(
         db,
         "DELETE FROM follows WHERE follower_id=? AND target_id=?",
         uid,
-        followMatch[1],
+        them,
       ),
       stmt(
         db,
         "DELETE FROM subscriptions WHERE subscriber_id=? AND target_id=?",
         uid,
-        followMatch[1],
+        them,
       ),
+      ...(revoke
+        ? [
+            stmt(
+              db,
+              "DELETE FROM follows WHERE follower_id=? AND target_id=?",
+              them,
+              uid,
+            ),
+            stmt(
+              db,
+              "DELETE FROM subscriptions WHERE subscriber_id=? AND target_id=?",
+              them,
+              uid,
+            ),
+          ]
+        : []),
     ]);
     return { follow: null };
   }
@@ -940,6 +941,16 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     new RegExp(`^/api/followers/(${ACCOUNT_ID_PART})(/approve)?$`),
   );
   if (followerMatch?.[2] && method === "POST") {
+    // {add_back: true}: approve and add the person to my friends too.
+    if (
+      req.headers.get("content-type")?.startsWith("application/json") &&
+      (await body(req)).add_back === true
+    ) {
+      if ((await follow(db, followerMatch[1], uid)) !== "pending")
+        fail(404, "NOT_FOUND", "Запрос не найден.");
+      await addFriend(db, out, user, followerMatch[1]);
+      return { ok: true };
+    }
     const r = await stmt(
       db,
       "UPDATE follows SET status='approved',approved_at=unixepoch() WHERE follower_id=? AND target_id=? AND status='pending' RETURNING follower_id",
