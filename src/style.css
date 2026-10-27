@@ -2090,6 +2090,11 @@ button.event-chip:hover {
 .empty.compact {
   padding: 28px 16px;
 }
+.error-screen {
+  max-width: 520px;
+  margin: 15vh auto 0;
+  padding: 0 16px;
+}
 .loading {
   display: flex;
   align-items: center;
