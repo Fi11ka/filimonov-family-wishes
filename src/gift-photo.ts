@@ -1,9 +1,10 @@
 // Gift photos are large, so lists come without them and each card asks for its
 // own. A photo is fetched once per version of the gift (updated_at changes with
-// every edit, in the app and in the bot), and at most a few at a time.
+// every edit, in the app and in the bot), and at most eight at a time: about
+// as many cards as a laptop screen shows.
 import { api } from "./api";
 
-const MAX_AT_ONCE = 4;
+const MAX_AT_ONCE = 8;
 const photos = new Map<string, Promise<string>>();
 let running = 0;
 const waiting: (() => void)[] = [];
