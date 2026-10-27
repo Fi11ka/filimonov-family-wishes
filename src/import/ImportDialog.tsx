@@ -212,6 +212,9 @@ export function ImportDialog({
               archived: false,
               image: image ? { kind: "url", url: image } : null,
               warnings: [
+                ...(r?.blocked && r.helper_offline
+                  ? ["Домашний помощник не в сети: попробуйте позже"]
+                  : []),
                 ...(min === null && max === null
                   ? ["Магазин не отдал цену"]
                   : []),
@@ -285,7 +288,8 @@ export function ImportDialog({
       return;
     }
     setError("");
-    let found = 0;
+    let found = 0,
+      helperOff = false;
     for (let i = 0; i < targets.length; i++) {
       const r = targets[i];
       setBusy(`Смотрим ссылки: ${i + 1} из ${targets.length}…`);
@@ -302,6 +306,7 @@ export function ImportDialog({
           } else break;
         }
       if (!result) continue;
+      if (result.blocked && result.helper_offline) helperOff = true;
       const patch: Partial<ImportRow> = {};
       if (r.priceMode === "none" && result.price) {
         patch.priceMode = result.price.max_minor !== null ? "range" : "exact";
@@ -319,9 +324,12 @@ export function ImportDialog({
     }
     setBusy("");
     setError(
-      found
+      (found
         ? `Дополнили ${found} из ${targets.length}. Остальные магазины не отдали данные — поправьте вручную.`
-        : "Магазины не отдали данные автоматически. Цены и фото можно поправить вручную.",
+        : "Магазины не отдали данные автоматически. Цены и фото можно поправить вручную.") +
+        (helperOff
+          ? " Ozon, DNS, Яндекс Маркет и AliExpress читает домашний помощник, а он сейчас не в сети: для них попробуйте позже."
+          : ""),
     );
   }
   async function photoFor(r: ImportRow) {
