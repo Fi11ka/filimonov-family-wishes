@@ -3,7 +3,7 @@ import { eventDay, untilText, upcomingEvents } from "../shared/events";
 import { formatPrice, sharePrice } from "../shared/price";
 import { EventPage, EventsList, WishlistEvents } from "./events";
 import { ArchiveWish, ReserveDialog } from "./forms";
-import React, { useEffect, useRef, useState } from "react";
+import React, { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Gift,
@@ -85,7 +85,12 @@ import { Profile } from "./friends";
 import { Features, Welcome } from "./welcome";
 import { telegramAppLink } from "./telegram-links";
 import { Face } from "./avatar";
-import { ImportDialog } from "./import/ImportDialog";
+// «Добавить много» with its spreadsheet reader is needed rarely: it loads on
+// demand, and the button starts loading it as soon as it is pointed at.
+const loadImport = () => import("./import/ImportDialog");
+const ImportDialog = lazy(() =>
+  loadImport().then((m) => ({ default: m.ImportDialog })),
+);
 import { comparePrice } from "../shared/wish-price";
 import {
   WishFilters,
@@ -1082,6 +1087,8 @@ function App() {
                     </button>
                     <button
                       className="button tinted"
+                      onPointerEnter={() => void loadImport()}
+                      onFocus={() => void loadImport()}
                       onClick={() => setModal("import")}
                     >
                       <FileSpreadsheet size={18} />
@@ -1870,14 +1877,23 @@ function App() {
               onLogout={(everywhere) => void logout(everywhere)}
             />
           ) : (
-            <ImportDialog
-              activeCount={own ? gifts.length : 0}
-              onClose={() => setModal(null)}
-              onImported={async (message) => {
-                notice(message);
-                if (user) await loadList(user.id);
-              }}
-            />
+            <Suspense
+              fallback={
+                <div className="loading" role="status">
+                  <span />
+                  Загрузка…
+                </div>
+              }
+            >
+              <ImportDialog
+                activeCount={own ? gifts.length : 0}
+                onClose={() => setModal(null)}
+                onImported={async (message) => {
+                  notice(message);
+                  if (user) await loadList(user.id);
+                }}
+              />
+            </Suspense>
           )}
         </Modal>
       )}
