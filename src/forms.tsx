@@ -26,6 +26,7 @@ import {
   type ScreenshotLookup,
 } from "./api";
 import { type Friend, type Wish } from "./types";
+import { giftPhoto } from "./gift-photo";
 import { Hearts } from "./hearts";
 import { currencies, isCurrency } from "../shared/price";
 import { LookupState } from "./lookup-state";
@@ -278,9 +279,10 @@ export function GiftForm({
     }
     const photoId = photoRequest.current;
     if (gift?.has_photo)
-      void api(`/api/gifts/${gift.id}/photo`)
-        .then((d) => {
-          if (photoId === photoRequest.current) setPhoto(d.photo);
+      // Usually already loaded by the card; asked for at once otherwise.
+      void giftPhoto(gift.id, gift.updated_at, true)
+        .then((p) => {
+          if (photoId === photoRequest.current) setPhoto(p);
         })
         .catch((e) => {
           if (photoId !== photoRequest.current) return;
