@@ -13,30 +13,22 @@ try {
     id === "00000000-0000-0000-0000-000000000000"
   )
     throw new Error("Некорректный ID базы.");
-  const page =
-    (
-      await cli.question(
-        "GitHub Pages URL [https://anastasiacopodevinho.github.io/filimonov-family-wishes/]: ",
-      )
-    ).trim() ||
-    "https://anastasiacopodevinho.github.io/filimonov-family-wishes/";
-  const url = new URL(page);
-  if (url.protocol !== "https:") throw new Error("Нужен HTTPS URL.");
-  const api = (
+  const page = (
     await cli.question(
       "Worker URL (https://filimonov-family-wishes-api.<поддомен>.workers.dev): ",
     )
   ).trim();
-  if (!/^https:\/\/[^/]+\.workers\.dev\/?$/.test(api))
+  if (!/^https:\/\/[^/]+\.workers\.dev\/?$/.test(page))
     throw new Error("Нужен URL Worker на workers.dev.");
+  // The Worker serves both the site and the API, so it is the site's address.
+  const url = new URL(page);
   const config = JSON.parse(readFileSync("wrangler.jsonc", "utf8"));
   config.d1_databases[0].database_id = id;
   config.vars.APP_ORIGIN = url.origin;
   config.vars.APP_URL = url.href;
   writeFileSync("wrangler.jsonc", JSON.stringify(config, null, 2) + "\n");
-  writeFileSync(".env.local", `VITE_API_URL=${api.replace(/\/$/, "")}\n`);
   console.log(
-    "Готово: wrangler.jsonc и .env.local. В GitHub Variables задайте VITE_API_URL равным введённому адресу. BOT_TOKEN вводится только через Cloudflare Secret.",
+    "Готово: wrangler.jsonc. BOT_TOKEN вводится только через Cloudflare Secret.",
   );
 } finally {
   cli.close();

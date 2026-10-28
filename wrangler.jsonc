@@ -4,6 +4,9 @@
   "main": "worker/index.ts",
   "compatibility_date": "2026-07-01",
   "workers_dev": true,
+  "assets": {
+    "directory": "./dist"
+  },
   "observability": {
     "enabled": false
   },
@@ -13,8 +16,8 @@
     ]
   },
   "vars": {
-    "APP_ORIGIN": "https://anastasiacopodevinho.github.io",
-    "APP_URL": "https://anastasiacopodevinho.github.io/filimonov-family-wishes/"
+    "APP_ORIGIN": "https://filimonov-family-wishes-api.anastasia-filimonova-kokorina.workers.dev",
+    "APP_URL": "https://filimonov-family-wishes-api.anastasia-filimonova-kokorina.workers.dev/"
   },
   "ai": {
     "binding": "AI"
