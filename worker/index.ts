@@ -1069,11 +1069,14 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     if (!giftMatch[2] && (method === "PUT" || method === "DELETE")) {
       if (g.owner_id !== uid) missing();
       if (method === "PUT") {
-        const v = giftInput(await body(req));
+        const b = await body(req);
+        const v = giftInput(b);
+        // keep_photo: the form saved before the photo it had finished loading.
+        const keepPhoto = b.keep_photo === true ? 1 : 0;
         const before = await ownGift(db, uid, id);
         await stmt(
           db,
-          "UPDATE gifts SET title=?,price_minor=?,price_max_minor=?,price_range=?,currency=?,shop_url=?,description=?,hearts=?,priority=?,photo=?,updated_at=unixepoch() WHERE id=? AND owner_id=?",
+          "UPDATE gifts SET title=?1,price_minor=?2,price_max_minor=?3,price_range=?4,currency=?5,shop_url=?6,description=?7,hearts=?8,priority=?9,photo=CASE WHEN ?13 THEN photo ELSE ?10 END,updated_at=unixepoch() WHERE id=?11 AND owner_id=?12",
           v.title,
           v.price_minor,
           v.price_max_minor,
@@ -1086,6 +1089,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
           v.photo,
           id,
           uid,
+          keepPhoto,
         ).run();
         if (before)
           await giftChanged(db, out, user, before, await ownGift(db, uid, id));

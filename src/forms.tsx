@@ -140,6 +140,7 @@ export function Confirm({
   title = "Подтвердите действие",
   text,
   action,
+  cancel = "Отмена",
   danger,
   option,
   onConfirm,
@@ -148,6 +149,8 @@ export function Confirm({
   title?: string;
   text: string;
   action: string;
+  /** The button that keeps things as they are. */
+  cancel?: string;
   danger?: boolean;
   /** A checkbox that goes with the action, ticked at first. */
   option?: string;
@@ -170,7 +173,7 @@ export function Confirm({
       )}
       <div className="confirm-actions">
         <button className="button secondary" onClick={onCancel}>
-          Отмена
+          {cancel}
         </button>
         <button
           className={`button primary ${danger ? "danger-fill" : ""}`}
@@ -202,14 +205,34 @@ function isHttps(v: string) {
 /** Shops read through the home helper (see worker/helper.ts). */
 const SLOW_SHOPS =
   /^https:\/\/([^/]+\.)?(ozon\.(ru|by|kz)|dns-shop\.(ru|kz)|market\.yandex\.(ru|by|kz|uz)|aliexpress\.ru)\//i;
+/** The currency of the last saved wish: a new wish starts with it. */
+const CURRENCY_KEY = "fw:currency";
+function savedCurrency() {
+  try {
+    const c = localStorage.getItem(CURRENCY_KEY) || "";
+    return isCurrency(c) ? c : "";
+  } catch {
+    return "";
+  }
+}
+const ACTIVE_LIMIT = 100;
+/**
+ * The wish form (П26): link first to fill the rest, then title, price with its
+ * currency and a compact photo button; the hint and hearts fold away under
+ * «Дополнительно». The photo is prepared on a screen of its own. Nothing that
+ * loads (the link, the photo) holds back «Сохранить».
+ */
 export function GiftForm({
   gift,
+  activeCount = 0,
   onSaved,
   onDirty,
   onSavingChange,
 }: {
   gift: Wish | null;
-  onSaved: () => void;
+  /** Wishes already in the list, for «Осталось мест» and the limit. */
+  activeCount?: number;
+  onSaved: (id?: string) => void;
   onDirty: () => void;
   onSavingChange: (saving: boolean) => void;
 }) {
@@ -219,12 +242,23 @@ export function GiftForm({
     [editSrc, setEditSrc] = useState("");
   const [photo, setPhoto] = useState(""),
     [photoLoading, setPhotoLoading] = useState(!!gift?.has_photo),
-    [photoError, setPhotoError] = useState(false),
     [photoNote, setPhotoNote] = useState(""),
     [imageUrl, setImageUrl] = useState(""),
     [urlOpen, setUrlOpen] = useState(false),
     [saving, setSaving] = useState(false),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [fieldErrors, setFieldErrors] = useState<{ price?: string }>({}),
+    // The photo screen; what the photo was when it opened, for «Отмена».
+    [photoEditor, setPhotoEditor] = useState(false),
+    editorStart = useRef<{
+      photo: string;
+      framing: Framing;
+      touched: boolean;
+      changed: boolean;
+    } | null>(null),
+    // Set once the photo is replaced, removed or reframed: otherwise a stored
+    // photo that has not loaded yet is kept as it is.
+    photoChanged = useRef(false);
   useEffect(() => {
     onSavingChange(saving);
   }, [saving, onSavingChange]);
@@ -232,7 +266,9 @@ export function GiftForm({
     [shopUrl, setShopUrl] = useState(gift?.shop_url || ""),
     [description, setDescription] = useState(gift?.description || ""),
     [priority, setPriority] = useState(gift?.priority || 3),
-    [currency, setCurrency] = useState(gift?.currency || "EUR");
+    [currency, setCurrency] = useState(
+      gift?.currency || savedCurrency() || "EUR",
+    );
   const [priceMode, setPriceMode] = useState<"exact" | "range">(
       gift?.price_range ? "range" : "exact",
     ),
@@ -289,10 +325,12 @@ export function GiftForm({
         .then((p) => {
           if (photoId === photoRequest.current) setPhoto(p);
         })
-        .catch((e) => {
-          if (photoId !== photoRequest.current) return;
-          setError(e.message);
-          setPhotoError(true);
+        .catch(() => {
+          // Saving still works: the stored photo stays as it is.
+          if (photoId === photoRequest.current)
+            setPhotoNote(
+              "Фото не загрузилось. Остальное можно сохранить — фото останется прежним.",
+            );
         })
         .finally(() => {
           if (photoId === photoRequest.current) setPhotoLoading(false);
@@ -326,10 +364,10 @@ export function GiftForm({
       const value = await load();
       if (id !== photoRequest.current || (valid && !valid())) return false;
       onDirty();
+      photoChanged.current = true;
       setPhoto(value);
       setFraming(DEFAULT_FRAMING);
       framingTouched.current = false;
-      setPhotoError(false);
       setPhotoNote("");
       return true;
     } catch (err) {
@@ -557,9 +595,52 @@ export function GiftForm({
       setPhotoNote("Браузер не дал доступ к буферу. Нажмите Ctrl+V в форме.");
     }
   }
+  const left = ACTIVE_LIMIT - activeCount;
+  const full = !gift && left <= 0;
+  function openPhotoEditor() {
+    editorStart.current = {
+      photo,
+      framing,
+      touched: framingTouched.current,
+      changed: photoChanged.current,
+    };
+    setPhotoEditor(true);
+  }
+  function closePhotoEditor(apply: boolean) {
+    const start = editorStart.current;
+    if (!apply && start) {
+      // «Отмена»: the photo as it was before the screen opened.
+      ++photoRequest.current;
+      setPhotoLoading(false);
+      setPhoto(start.photo);
+      setFraming(start.framing);
+      framingTouched.current = start.touched;
+      photoChanged.current = start.changed;
+    }
+    editorStart.current = null;
+    setPhotoEditor(false);
+  }
+  const photoFile = (label: string, text: React.ReactNode) => (
+    <label className="text-link file-link">
+      <ImagePlus size={15} />
+      {text}
+      <input
+        type="file"
+        accept="image/*"
+        aria-label={label}
+        disabled={photoLoading || saving}
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (!file) return;
+          await applyPhoto(() => compressPhoto(file), "Не удалось открыть фото.");
+        }}
+      />
+    </label>
+  );
   return (
     <form
-      className="gift-form"
+      className={`gift-form${photoEditor ? " editing-photo" : ""}`}
       onChange={onDirty}
       onPaste={(e) => {
         if (e.clipboardData.files.length) {
@@ -579,27 +660,35 @@ export function GiftForm({
       }}
       onSubmit={async (e) => {
         e.preventDefault();
+        if (photoEditor) return;
         if (demo) {
           setError(
             "Это демо: форму можно попробовать, но желание не сохранится.",
           );
           return;
         }
-        setSaving(true);
         setError("");
+        setFieldErrors({});
+        let min: number | null, max: number | null;
         try {
-          const min = toMinor(
-              priceMin,
-              priceMode === "range" ? "Цена «от»" : "Цена",
-            ),
-            max = priceMode === "range" ? toMinor(priceMax, "Цена «до»") : null;
+          min = toMinor(priceMin, priceMode === "range" ? "Цена «от»" : "Цена");
+          max = priceMode === "range" ? toMinor(priceMax, "Цена «до»") : null;
           if (min !== null && max !== null && max < min)
             throw new Error("Цена «до» должна быть больше цены «от».");
+        } catch (err) {
+          setFieldErrors({ price: (err as Error).message });
+          return;
+        }
+        setSaving(true);
+        try {
+          // A stored photo that has not loaded (or failed to) stays as it is.
+          const keepPhoto =
+            !!gift?.has_photo && !photoChanged.current && !photo;
           const saved =
             framingTouched.current && editSrc
               ? await renderFramed(editSrc, framing)
               : photo;
-          await api(
+          const r = await api<{ id?: string }>(
             gift ? `/api/gifts/${gift.id}` : "/api/gifts",
             gift ? "PUT" : "POST",
             {
@@ -612,9 +701,15 @@ export function GiftForm({
               description,
               priority: Number(priority),
               photo: saved,
+              ...(keepPhoto ? { keep_photo: true } : {}),
             },
           );
-          onSaved();
+          try {
+            localStorage.setItem(CURRENCY_KEY, currency);
+          } catch {
+            // Without storage the next wish starts in euros.
+          }
+          onSaved(r.id);
         } catch (err) {
           setError((err as Error).message);
         } finally {
@@ -622,391 +717,450 @@ export function GiftForm({
         }
       }}
     >
-      <div className="gift-form-body">
-      <label>
-        <span>
-          Название <small className="required">обязательно</small>
-        </span>
-        <input
-          name="title"
-          required
-          maxLength={120}
-          value={title}
-          onChange={(e) => {
-            gate.current.edit("title");
-            autoTitle.current = false;
-            setTitle(e.target.value);
-          }}
-          placeholder="Например, беспроводные наушники"
-        />
-      </label>
-      <div className="form-section">
-        <label>
-          <span>
-            Ссылка на товар <small className="optional">необязательно</small>
-          </span>
-          <div className="input-with-action">
-            <input
-              name="shop_url"
-              type="url"
-              maxLength={2048}
-              value={shopUrl}
-              onChange={(e) => {
-                gate.current.invalidate();
-                setLookup("idle");
-                setLookupNote("");
-                if (photoIsLookup.current) {
-                  ++photoRequest.current;
-                  photoIsLookup.current = false;
-                  setPhotoLoading(false);
-                }
-                if (autoTitle.current) {
-                  setTitle("");
-                  autoTitle.current = false;
-                }
-                if (autoDescription.current) {
-                  setDescription("");
-                  autoDescription.current = false;
-                }
-                if (!draft.current.priceTouched) {
-                  setPriceMin("");
-                  setPriceMax("");
-                }
-                if (autoPhoto.current) {
-                  onDirty();
-                  setPhoto("");
-                  autoPhoto.current = false;
-                }
-                setShopUrl(e.target.value);
-              }}
-              placeholder="https://… — подставим название, цену и фото"
-            />
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="Подтянуть данные по ссылке"
-              title="Подтянуть данные по ссылке"
-              disabled={!isHttps(shopUrl.trim()) || lookup === "loading"}
-              onClick={() => void fillFromLink(shopUrl.trim())}
-            >
-              <RefreshCw
-                size={17}
-                className={lookup === "loading" ? "spin" : ""}
-              />
-            </button>
-          </div>
-        </label>
-        <div className="screenshot-row">
-          <span>Ссылка не открылась?</span>
-          <label
-            className={`text-link file-link${shot === "loading" ? " busy" : ""}`}
-          >
-            <ScanText size={16} className={shot === "loading" ? "spin" : ""} />
-            {shot === "loading" ? "Читаем скриншот…" : "Скриншот товара"}
-            <input
-              type="file"
-              accept="image/*"
-              aria-label="Выбрать скриншот товара"
-              disabled={shot === "loading" || saving}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                e.target.value = "";
-                if (file) void fillFromScreenshot(file);
-              }}
-            />
-          </label>
-          <button
-            type="button"
-            className="text-link"
-            disabled={shot === "loading" || saving}
-            onClick={() => void pasteScreenshot()}
-          >
-            <ClipboardPaste size={16} />
-            Скриншот из буфера
-          </button>
-        </div>
-        {(lookup === "loading" || shot === "loading" || lookupNote) && (
-          <p className="lookup-note" role="status">
-            <Sparkles size={14} />
-            {shot === "loading"
-              ? "Нейросеть читает скриншот, это занимает 5–15 секунд…"
-              : lookup === "loading"
-                ? SLOW_SHOPS.test(shopUrl)
-                  ? "Открываем страницу через домашний помощник, это может занять до 30 секунд…"
-                  : "Ищем цену и картинку…"
-                : lookupNote}
-          </p>
-        )}
-      </div>
-      <div className="form-section">
-        <div className="section-label">
-          Фото <small className="optional">необязательно</small>
-        </div>
-        {photo ? (
-          editSrc ? (
-            <PhotoFrame
-              src={editSrc}
-              framing={framing}
-              onChange={(f) => {
-                gate.current.edit("photo");
-                autoPhoto.current = false;
-                framingTouched.current = true;
-                setFraming(f);
-                onDirty();
-              }}
-            />
-          ) : (
-            <div className="photo-frame">
-              <img
-                className="photo-frame-canvas"
-                src={photo}
-                alt="Фото подарка"
-              />
-            </div>
-          )
-        ) : (
-          <label className="photo-upload">
-            {photoNote && !photoLoading ? (
-              <span className="photo-fallback">
-                <ImageOff size={27} />
-                <strong>Нет картинки</strong>
-                <span>Выберите файл или вставьте картинку</span>
-              </span>
+      {photoEditor ? (
+        <div className="gift-form-body photo-editor">
+          <div className="photo-editor-frame">
+            {photo ? (
+              editSrc ? (
+                <PhotoFrame
+                  src={editSrc}
+                  framing={framing}
+                  onChange={(f) => {
+                    gate.current.edit("photo");
+                    autoPhoto.current = false;
+                    framingTouched.current = true;
+                    photoChanged.current = true;
+                    setFraming(f);
+                    onDirty();
+                  }}
+                />
+              ) : (
+                <div className="photo-frame">
+                  <img
+                    className="photo-frame-canvas"
+                    src={photo}
+                    alt="Фото подарка"
+                  />
+                </div>
+              )
             ) : (
-              <>
-                <ImagePlus size={27} />
-                <strong>
-                  {photoLoading ? "Готовим фото…" : "Добавить фотографию"}
-                </strong>
-                <span>Выберите файл или вставьте картинку</span>
-              </>
+              <label className="photo-upload">
+                {photoNote && !photoLoading ? (
+                  <span className="photo-fallback">
+                    <ImageOff size={27} />
+                    <strong>Нет картинки</strong>
+                    <span>Выберите файл или вставьте картинку</span>
+                  </span>
+                ) : (
+                  <>
+                    <ImagePlus size={27} />
+                    <strong>
+                      {photoLoading ? "Готовим фото…" : "Выбрать фотографию"}
+                    </strong>
+                    <span>Файл, картинка из буфера или ссылка на неё</span>
+                  </>
+                )}
+                <input
+                  type="file"
+                  accept="image/*"
+                  aria-label="Выбрать фотографию"
+                  disabled={photoLoading || saving}
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = "";
+                    if (!file) return;
+                    await applyPhoto(
+                      () => compressPhoto(file),
+                      "Не удалось открыть фото.",
+                    );
+                  }}
+                />
+              </label>
             )}
+          </div>
+          <div className="photo-editor-tools">
+            {photoNote && (
+              <p className="photo-note" role="status">
+                {photoNote}
+              </p>
+            )}
+            <div className="photo-tools">
+              {photo && photoFile("Выбрать другую фотографию", "Заменить фото")}
+              <button
+                type="button"
+                className="text-link"
+                disabled={photoLoading}
+                onClick={() => void pasteFromClipboard()}
+              >
+                <ClipboardPaste size={15} />
+                Вставить из буфера
+              </button>
+              {!photo && (
+                <button
+                  type="button"
+                  className="text-link"
+                  aria-expanded={urlOpen}
+                  onClick={() => setUrlOpen(!urlOpen)}
+                >
+                  <LinkIcon size={15} />
+                  Ссылка на картинку
+                </button>
+              )}
+              {photo && (
+                <button
+                  type="button"
+                  className="text-link danger"
+                  onClick={() => {
+                    gate.current.edit("photo");
+                    ++photoRequest.current;
+                    autoPhoto.current = false;
+                    photoChanged.current = true;
+                    setPhotoLoading(false);
+                    onDirty();
+                    setPhoto("");
+                  }}
+                >
+                  Удалить фото
+                </button>
+              )}
+            </div>
+            {urlOpen && !photo && (
+              <div className="input-with-action">
+                <input
+                  aria-label="Ссылка на картинку"
+                  type="url"
+                  value={imageUrl}
+                  onChange={(e) => setImageUrl(e.target.value)}
+                  placeholder="https://…/photo.jpg"
+                />
+                <button
+                  type="button"
+                  className="button secondary"
+                  disabled={!isHttps(imageUrl.trim()) || photoLoading}
+                  onClick={() =>
+                    void applyPhoto(
+                      () => photoFromUrl(imageUrl.trim()),
+                      "Не удалось загрузить картинку.",
+                    )
+                  }
+                >
+                  Загрузить
+                </button>
+              </div>
+            )}
+            {photo && (
+              <p className="small-text">
+                «Настроить кадр» — подвинуть фото, приблизить, добавить поля и
+                выбрать цвет фона.
+              </p>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="gift-form-body">
+          {!gift && left <= 10 && (
+            <p className={full ? "error" : "limit-note"} role="status">
+              {full
+                ? `В списке может быть не больше ${ACTIVE_LIMIT} желаний. Уберите что-нибудь в архив, чтобы добавить новое.`
+                : `Осталось мест: ${left}`}
+            </p>
+          )}
+          <div className="form-section">
+            <label>
+              <span>
+                Ссылка на товар <small className="optional">необязательно</small>
+              </span>
+              <div className="input-with-action">
+                <input
+                  name="shop_url"
+                  type="url"
+                  maxLength={2048}
+                  value={shopUrl}
+                  onChange={(e) => {
+                    gate.current.invalidate();
+                    setLookup("idle");
+                    setLookupNote("");
+                    if (photoIsLookup.current) {
+                      ++photoRequest.current;
+                      photoIsLookup.current = false;
+                      setPhotoLoading(false);
+                    }
+                    if (autoTitle.current) {
+                      setTitle("");
+                      autoTitle.current = false;
+                    }
+                    if (autoDescription.current) {
+                      setDescription("");
+                      autoDescription.current = false;
+                    }
+                    if (!draft.current.priceTouched) {
+                      setPriceMin("");
+                      setPriceMax("");
+                    }
+                    if (autoPhoto.current) {
+                      onDirty();
+                      setPhoto("");
+                      autoPhoto.current = false;
+                    }
+                    setShopUrl(e.target.value);
+                  }}
+                  placeholder="https://… — подставим название, цену и фото"
+                />
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Подтянуть данные по ссылке"
+                  title="Подтянуть данные по ссылке"
+                  disabled={!isHttps(shopUrl.trim()) || lookup === "loading"}
+                  onClick={() => void fillFromLink(shopUrl.trim())}
+                >
+                  <RefreshCw
+                    size={17}
+                    className={lookup === "loading" ? "spin" : ""}
+                  />
+                </button>
+              </div>
+            </label>
+            {(lookup === "loading" || shot === "loading" || lookupNote) && (
+              <p className="lookup-note" role="status">
+                <Sparkles size={14} />
+                {shot === "loading"
+                  ? "Нейросеть читает скриншот, это занимает 5–15 секунд…"
+                  : lookup === "loading"
+                    ? SLOW_SHOPS.test(shopUrl)
+                      ? "Открываем страницу через домашний помощник, это может занять до 30 секунд. Сохранить можно и сейчас."
+                      : "Ищем цену и картинку… Сохранить можно и сейчас."
+                    : lookupNote}
+              </p>
+            )}
+            {(lookupNote || shot === "loading") && (
+              <div className="screenshot-row">
+                <span>Ссылка не открылась?</span>
+                <label
+                  className={`text-link file-link${shot === "loading" ? " busy" : ""}`}
+                >
+                  <ScanText
+                    size={16}
+                    className={shot === "loading" ? "spin" : ""}
+                  />
+                  {shot === "loading" ? "Читаем скриншот…" : "Скриншот товара"}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    aria-label="Выбрать скриншот товара"
+                    disabled={shot === "loading" || saving}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = "";
+                      if (file) void fillFromScreenshot(file);
+                    }}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="text-link"
+                  disabled={shot === "loading" || saving}
+                  onClick={() => void pasteScreenshot()}
+                >
+                  <ClipboardPaste size={16} />
+                  Из буфера
+                </button>
+              </div>
+            )}
+          </div>
+          <label>
+            <span>Название</span>
             <input
-              type="file"
-              accept="image/*"
-              aria-label="Выбрать фотографию"
-              disabled={photoLoading || saving}
-              onChange={async (e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                await applyPhoto(
-                  () => compressPhoto(file),
-                  "Не удалось открыть фото.",
-                );
+              name="title"
+              required
+              maxLength={120}
+              value={title}
+              onChange={(e) => {
+                gate.current.edit("title");
+                autoTitle.current = false;
+                setTitle(e.target.value);
               }}
+              placeholder="Например, беспроводные наушники"
             />
           </label>
-        )}
-        {photoNote && (
-          <p className="photo-note" role="status">
-            {photoNote}
-          </p>
-        )}
-        <div className="photo-tools">
-          <button
-            type="button"
-            className="text-link"
-            disabled={photoLoading}
-            onClick={() => void pasteFromClipboard()}
-          >
-            <ClipboardPaste size={15} />
-            Вставить из буфера
-          </button>
-          {!photo && (
-            <button
-              type="button"
-              className="text-link"
-              aria-expanded={urlOpen}
-              onClick={() => setUrlOpen(!urlOpen)}
-            >
-              <LinkIcon size={15} />
-              Ссылка на картинку
-            </button>
-          )}
-          {photo && (
-            <label className="text-link file-link">
-              <ImagePlus size={15} />
-              Заменить фото
+          <div className="price-field">
+            <div className="price-heading">
+              <span>
+                Цена <small className="optional">необязательно</small>
+              </span>
+              <div
+                className="segmented small"
+                role="group"
+                aria-label="Тип цены"
+              >
+                <button
+                  type="button"
+                  className={priceMode === "exact" ? "selected" : ""}
+                  aria-pressed={priceMode === "exact"}
+                  onClick={() => {
+                    gate.current.edit("price");
+                    setPriceTouched(true);
+                    onDirty();
+                    setPriceMode("exact");
+                  }}
+                >
+                  Точная
+                </button>
+                <button
+                  type="button"
+                  className={priceMode === "range" ? "selected" : ""}
+                  aria-pressed={priceMode === "range"}
+                  onClick={() => {
+                    gate.current.edit("price");
+                    setPriceTouched(true);
+                    onDirty();
+                    setPriceMode("range");
+                  }}
+                >
+                  От – до
+                </button>
+              </div>
+            </div>
+            <div className="form-row price-row">
               <input
-                type="file"
-                accept="image/*"
-                aria-label="Выбрать другую фотографию"
-                disabled={photoLoading || saving}
-                onChange={async (e) => {
-                  const file = e.target.files?.[0];
-                  if (!file) return;
-                  await applyPhoto(
-                    () => compressPhoto(file),
-                    "Не удалось открыть фото.",
-                  );
+                aria-label={priceMode === "range" ? "Цена от" : "Цена"}
+                aria-invalid={!!fieldErrors.price}
+                inputMode="decimal"
+                value={priceMin}
+                onChange={(e) => {
+                  gate.current.edit("price");
+                  setPriceMin(e.target.value);
+                  setPriceTouched(true);
+                  setFieldErrors({});
                 }}
+                placeholder={priceMode === "range" ? "от" : "Сколько стоит"}
               />
-            </label>
-          )}
-          {photo && (
-            <button
-              type="button"
-              className="text-link"
-              onClick={() => {
-                gate.current.edit("photo");
-                ++photoRequest.current;
-                autoPhoto.current = false;
-                setPhotoLoading(false);
-                onDirty();
-                setPhoto("");
-              }}
-            >
-              Убрать фото
-            </button>
-          )}
-        </div>
-        {urlOpen && !photo && (
-          <div className="input-with-action">
-            <input
-              aria-label="Ссылка на картинку"
-              type="url"
-              value={imageUrl}
-              onChange={(e) => setImageUrl(e.target.value)}
-              placeholder="Или ссылка на картинку: https://…/photo.jpg"
-            />
+              {priceMode === "range" && (
+                <input
+                  aria-label="Цена до"
+                  aria-invalid={!!fieldErrors.price}
+                  inputMode="decimal"
+                  value={priceMax}
+                  onChange={(e) => {
+                    gate.current.edit("price");
+                    setPriceMax(e.target.value);
+                    setPriceTouched(true);
+                    setFieldErrors({});
+                  }}
+                  placeholder="до"
+                />
+              )}
+              <select
+                aria-label="Валюта"
+                value={currency}
+                onChange={(e) => {
+                  gate.current.edit("price");
+                  setPriceTouched(true);
+                  setCurrency(e.target.value);
+                }}
+              >
+                {currencies.map((c) => (
+                  <option key={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+            {fieldErrors.price && (
+              <p className="field-error" role="alert">
+                {fieldErrors.price}
+              </p>
+            )}
+          </div>
+          <div className="photo-row">
+            {photo ? (
+              <img className="photo-thumb" src={photo} alt="" />
+            ) : (
+              <span className="photo-thumb no-photo">
+                {photoLoading ? (
+                  <RefreshCw size={18} className="spin" />
+                ) : (
+                  <ImagePlus size={20} />
+                )}
+              </span>
+            )}
             <button
               type="button"
               className="button secondary"
-              disabled={!isHttps(imageUrl.trim()) || photoLoading}
-              onClick={() =>
-                void applyPhoto(
-                  () => photoFromUrl(imageUrl.trim()),
-                  "Не удалось загрузить картинку.",
-                )
-              }
+              onClick={openPhotoEditor}
             >
-              Загрузить
+              {photo || (gift?.has_photo && !photoChanged.current)
+                ? "Изменить фото"
+                : "Добавить фото"}
             </button>
+            {photoLoading && <small className="muted">Готовим фото…</small>}
           </div>
-        )}
-      </div>
-      <div className="price-field">
-        <div className="price-heading">
-          <span>
-            Цена <small className="optional">необязательно</small>
-          </span>
-          <div className="segmented small" role="group" aria-label="Тип цены">
-            <button
-              type="button"
-              className={priceMode === "exact" ? "selected" : ""}
-              aria-pressed={priceMode === "exact"}
-              onClick={() => {
-                gate.current.edit("price");
-                setPriceTouched(true);
-                onDirty();
-                setPriceMode("exact");
-              }}
-            >
-              Точная
-            </button>
-            <button
-              type="button"
-              className={priceMode === "range" ? "selected" : ""}
-              aria-pressed={priceMode === "range"}
-              onClick={() => {
-                gate.current.edit("price");
-                setPriceTouched(true);
-                onDirty();
-                setPriceMode("range");
-              }}
-            >
-              От – до
-            </button>
-          </div>
-        </div>
-        <div className="form-row price-row">
-          <input
-            aria-label={priceMode === "range" ? "Цена от" : "Цена"}
-            inputMode="decimal"
-            value={priceMin}
-            onChange={(e) => {
-              gate.current.edit("price");
-              setPriceMin(e.target.value);
-              setPriceTouched(true);
-            }}
-            placeholder={priceMode === "range" ? "от" : "Сколько стоит"}
-          />
-          {priceMode === "range" && (
-            <input
-              aria-label="Цена до"
-              inputMode="decimal"
-              value={priceMax}
-              onChange={(e) => {
-                gate.current.edit("price");
-                setPriceMax(e.target.value);
-                setPriceTouched(true);
-              }}
-              placeholder="до"
-            />
+          {photoNote && !photoEditor && (
+            <p className="photo-note" role="status">
+              {photoNote}
+            </p>
           )}
-          <select
-            aria-label="Валюта"
-            value={currency}
-            onChange={(e) => {
-              gate.current.edit("price");
-              setPriceTouched(true);
-              setCurrency(e.target.value);
-            }}
-          >
-            {currencies.map((c) => (
-              <option key={c}>{c}</option>
-            ))}
-          </select>
-        </div>
-      </div>
-      <div className="field hearts-field">
-        <span>Насколько хочется</span>
-        <Hearts value={priority} onChange={setPriority} size={26} />
-      </div>
-      <label>
-        <span>
-          Комментарий <small className="optional">необязательно</small>
-        </span>
-        <textarea
-          name="description"
-          rows={3}
-          maxLength={2000}
-          value={description}
-          onChange={(e) => {
-            gate.current.edit("description");
-            autoDescription.current = false;
-            setDescription(e.target.value);
-          }}
-          placeholder="Цвет, размер или другие важные детали"
-        />
-      </label>
-      {error && (
-        <div className="error" role="alert">
-          {error}
+          <details className="more-fields">
+            <summary>Дополнительно: подсказка и сердечки</summary>
+            <div className="field hearts-field">
+              <span>Насколько хочется</span>
+              <Hearts value={priority} onChange={setPriority} size={26} />
+            </div>
+            <label>
+              <span>
+                Подсказка <small className="optional">необязательно</small>
+              </span>
+              <textarea
+                name="description"
+                rows={3}
+                maxLength={2000}
+                value={description}
+                onChange={(e) => {
+                  gate.current.edit("description");
+                  autoDescription.current = false;
+                  setDescription(e.target.value);
+                }}
+                placeholder="Цвет, размер или другие важные детали"
+              />
+            </label>
+          </details>
+          {error && (
+            <div className="error" role="alert">
+              {error}
+            </div>
+          )}
         </div>
       )}
-      </div>
-      {/* Always visible: no scrolling past the photo to save. */}
+      {/* Always visible: no scrolling past the fields to save. */}
       <div className="form-footer">
-        <button
-          className="button primary"
-          disabled={
-            saving ||
-            lookup === "loading" ||
-            shot === "loading" ||
-            photoLoading ||
-            photoError
-          }
-        >
-          {saving ? (
-            "Сохраняем…"
-          ) : (
-            <>
-              <Heart size={17} />
-              Сохранить желание
-            </>
-          )}
-        </button>
+        {photoEditor ? (
+          <>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => closePhotoEditor(false)}
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              className="button primary"
+              disabled={photoLoading}
+              onClick={() => closePhotoEditor(true)}
+            >
+              Применить
+            </button>
+          </>
+        ) : (
+          <button className="button primary" disabled={saving || full}>
+            {saving ? (
+              "Сохраняем…"
+            ) : (
+              <>
+                <Heart size={17} />
+                Сохранить желание
+              </>
+            )}
+          </button>
+        )}
       </div>
     </form>
   );

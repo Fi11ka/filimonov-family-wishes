@@ -3227,3 +3227,27 @@ test("«Подтвердить актуальность»: only the owner, a dat
   await settle();
   for (const id of [7901, 7902]) assert.equal((await messages(id, 0)).length, 0);
 });
+test("a wish saved before its photo loaded keeps the stored photo; a removed photo is removed", async () => {
+  const g = await gift(7951);
+  const photoOf = async () =>
+    (await db.prepare("SELECT photo FROM gifts WHERE id=?").bind(g).first())
+      ?.photo;
+  const stored = await photoOf();
+  assert.ok(stored);
+  // keep_photo: the form had no photo in hand yet, the photo stays.
+  assert.equal(
+    (
+      await call(`/gifts/${g}`, 7951, "PUT", {
+        ...input,
+        title: "Новое название",
+        photo: "",
+        keep_photo: true,
+      })
+    ).status,
+    200,
+  );
+  assert.equal(await photoOf(), stored);
+  // Without it an empty photo means «Удалить фото».
+  await call(`/gifts/${g}`, 7951, "PUT", { ...input, photo: "" });
+  assert.equal(await photoOf(), "");
+});
