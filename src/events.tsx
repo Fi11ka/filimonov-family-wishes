@@ -1,7 +1,7 @@
 // Events (flows 5, 6 and 10): as many as you like, each with its guests, two
 // dates and the wishes it shows. The standard occasions from the profile only
 // suggest what to create. Guests take part at once and may decline.
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -61,24 +61,19 @@ function Dates({ e, today }: { e: EventCard; today: Date }) {
 }
 
 /**
- * The wishlist header: the occasions (info only; the owner creates an event
- * from one) and the events the viewer takes part in, plus «Создать мероприятие».
+ * The wishlist header: only the occasions (info; the owner creates an event
+ * from one) and «Создать мероприятие». Events themselves live in «Мероприятия».
  */
 export function WishlistEvents({
   owner,
   own,
   today,
-  events,
-  onOpen,
   onCreate,
   onProfile,
 }: {
   owner: User;
   own: boolean;
   today: Date;
-  /** The owner's events this viewer may see: all for the owner, else where invited. */
-  events: EventCard[];
-  onOpen?: (id: string) => void;
   onCreate: (occasion?: UpcomingEvent) => void;
   onProfile: () => void;
 }) {
@@ -86,28 +81,6 @@ export function WishlistEvents({
   return (
     <div className="wishlist-events">
       <ul className="event-chips">
-        {events.map((e) => (
-          <li key={e.id} className="has-party">
-            <button className="event-chip" onClick={() => onOpen?.(e.id)}>
-              <span className="event-chip-icon" aria-hidden="true">
-                {icons[e.base]}
-              </span>
-              <span className="event-chip-text">
-                <strong>{e.title}</strong>
-                <small>
-                  {eventDay(e.celebrate_on)} · {untilText(e.days)}
-                </small>
-              </span>
-              {!!e.guests && (
-                <span className="event-chip-guests" aria-label={`Гостей: ${e.guests}`}>
-                  <Users size={13} />
-                  {e.guests}
-                </span>
-              )}
-              <ChevronRight size={14} className="event-chip-arrow" />
-            </button>
-          </li>
-        ))}
         {occasions.map((o) => {
           const label = (
             <>
@@ -450,7 +423,10 @@ type EventPageData = {
   is_owner: boolean;
   member: { declined: boolean } | null;
   guests: { id: string; name: string; username: string | null; declined: boolean }[];
+  /** Whose wishes `wishes` are: the organizer, or in «для всех» any participant. */
+  of: string;
   wishes: Wish[];
+  /** Which of my wishes this event shows (null: the whole list). */
   wish_ids: string[] | null;
 };
 
@@ -487,13 +463,26 @@ export function EventPage({
     [editing, setEditing] = useState(false),
     [cancelling, setCancelling] = useState(false),
     [busy, setBusy] = useState(false);
+  /** Whose wishes are shown: "" is the organizer's. */
+  const [whose, setWhose] = useState("");
+  /** «Выбрать желания» for this event, with my active wishes to pick from. */
+  const [picking, setPicking] = useState<Pick<Wish, "id" | "title">[] | null>(
+    null,
+  );
+  // An older answer arriving after a newer one must not bring back a stale booking.
+  const request = useRef(0);
   async function load() {
     if (demo) {
       setGone(true);
       return;
     }
+    const n = ++request.current;
     try {
-      setData(await api(`/api/events/${id}`));
+      const d = await api<EventPageData>(
+        `/api/events/${id}${whose ? `?of=${encodeURIComponent(whose)}` : ""}`,
+      );
+      if (n !== request.current) return;
+      setData(d);
       setError("");
     } catch (e) {
       if ((e as { status?: number }).status === 404) setGone(true);
@@ -502,7 +491,7 @@ export function EventPage({
   }
   useEffect(() => {
     void load();
-  }, [id]);
+  }, [id, whose]);
   if (gone)
     return (
       <section className="closed-profile">
@@ -554,6 +543,38 @@ export function EventPage({
   const free = data.wishes.filter(
     (w) => w.reservation === "available" || w.reservation === "invited",
   );
+  const everyone = event.mode === "everyone";
+  const shownId = data.of || data.owner.id;
+  const mineShown = shownId === me.id;
+  const shownName =
+    shownId === data.owner.id
+      ? data.owner.name
+      : data.guests.find((g) => g.id === shownId)?.name || "";
+  // The organizer, and in «для всех» every guest, chooses what of theirs it shows.
+  const canPick = own || (taking && everyone);
+  async function openPicker() {
+    try {
+      const d = await api<{ gifts: Wish[] }>(`/api/lists/${me.id}`);
+      setPicking(d.gifts);
+    } catch (e) {
+      notice((e as Error).message, "error");
+    }
+  }
+  async function saveWishes(ids: string[] | null) {
+    setPicking(null);
+    try {
+      await api(`/api/events/${id}/wishes`, "PUT", { wishes: ids });
+      notice(
+        ids === null
+          ? "Показываем весь ваш вишлист"
+          : `Показываем выбранные желания: ${ids.length}`,
+      );
+      if (mineShown) await load();
+      else setWhose(own ? "" : me.id);
+    } catch (e) {
+      notice((e as Error).message, "error");
+    }
+  }
   return (
     <section className="event-page">
       <button className="text-link" onClick={onBack}>
@@ -626,26 +647,64 @@ export function EventPage({
                     {p.host && <span className="person-role">организатор</span>}
                     {p.declined && <span className="person-role">отказался(-ась)</span>}
                   </span>
-                  {!p.declined && p.id !== me.id && (p.host || event.mode === "everyone") && (
+                  {!p.declined && everyone ? (
+                    // «Для всех»: everyone's wishes for this event, right here.
                     <button
-                      className="button secondary"
-                      onClick={() => onOpenList(p.id, event.title)}
+                      className={`button secondary${shownId === p.id ? " selected" : ""}`}
+                      aria-pressed={shownId === p.id}
+                      onClick={() => setWhose(p.id === data.owner.id ? "" : p.id)}
                     >
-                      Вишлист <ArrowUpRight size={14} />
+                      {p.id === me.id ? "Мои желания" : "Желания"}
                     </button>
+                  ) : (
+                    !p.declined &&
+                    p.id !== me.id &&
+                    p.host && (
+                      <button
+                        className="button secondary"
+                        onClick={() => onOpenList(p.id, event.title)}
+                      >
+                        Вишлист <ArrowUpRight size={14} />
+                      </button>
+                    )
                   )}
                 </li>
               ),
             )}
           </ul>
           <h3 className="event-subtitle">
-            Желания{event.picked ? " · выбраны организатором" : ""}
+            {!everyone
+              ? "Желания"
+              : mineShown
+                ? "Ваши желания"
+                : `Желания: ${shownName}`}
+            {!everyone && event.picked ? " · выбраны организатором" : ""}
           </h3>
+          {mineShown && canPick && (
+            <p className="event-my-wishes">
+              <span>
+                {data.wish_ids === null
+                  ? "Здесь виден весь ваш вишлист, новые желания тоже."
+                  : `Здесь видны выбранные вами желания: ${data.wish_ids.length}.`}
+              </span>
+              <button className="text-link" onClick={() => void openPicker()}>
+                Выбрать желания
+              </button>
+              {data.wish_ids !== null && (
+                <button
+                  className="text-link"
+                  onClick={() => void saveWishes(null)}
+                >
+                  Показать весь вишлист
+                </button>
+              )}
+            </p>
+          )}
           {!data.wishes.length ? (
             // «Пока нет желаний»: a gentle nudge to the organizer through the bot.
             <div className="empty">
               <h3>Пока нет желаний</h3>
-              {!own && (
+              {!own && shownId === data.owner.id && (
                 <button
                   className="text-link"
                   onClick={async () => {
@@ -679,6 +738,14 @@ export function EventPage({
         >
           Вишлист: {data.owner.name} <ArrowUpRight size={14} />
         </button>
+      )}
+      {picking && (
+        <WishPicker
+          wishes={picking}
+          initial={data.wish_ids}
+          onClose={() => setPicking(null)}
+          onDone={(ids) => void saveWishes(ids)}
+        />
       )}
       {editing && (
         <EventForm
@@ -730,8 +797,8 @@ type EventsData = {
 };
 
 /**
- * «Мероприятия»: my events to manage, the occasions to start one from (they are
- * not events yet: no guests, no invitations), and where I am invited.
+ * «Мероприятия»: my events to manage and where I am invited. The occasions are
+ * not events (no guests, no invitations): they stay in the wishlist header.
  */
 export function EventsList({
   today,
@@ -806,35 +873,6 @@ export function EventsList({
       ) : (
         <p className="muted">Пока нет своих мероприятий.</p>
       )}
-      <h3 className="event-subtitle">Поводы</h3>
-      <p className="small-text">
-        Из профиля: это ещё не мероприятия — гостей и приглашений у них нет.
-        Нажмите, чтобы создать.
-      </p>
-      <ul className="event-people">
-        {data.occasions.map((o) => (
-          <li key={o.key}>
-            <button className="event-row" onClick={() => onCreate(o)}>
-              <span className="event-icon small">{icons[o.key]}</span>
-              <span>
-                <strong>{o.title}</strong>
-                <small>{when(o.date, today)}</small>
-              </span>
-              <CalendarPlus size={16} />
-            </button>
-          </li>
-        ))}
-        <li>
-          <button className="event-row" onClick={() => onCreate()}>
-            <span className="event-icon small">🎉</span>
-            <span>
-              <strong>Другое</strong>
-              <small>Новоселье, выпускной — любой повод</small>
-            </span>
-            <CalendarPlus size={16} />
-          </button>
-        </li>
-      </ul>
       <h3 className="event-subtitle">Меня пригласили</h3>
       {data.invited.length ? (
         <ul className="event-people">

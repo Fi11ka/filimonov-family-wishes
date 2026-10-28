@@ -1116,7 +1116,19 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       ).first());
     if (giftMatch[2] === "/photo" && method === "GET") {
       if (g.owner_id !== uid && g.archived_at !== null) missing();
-      if (!(await seesGift())) missing();
+      // «Мои брони» shows a booked gift by the same rule as here plus a few more
+      // (asked to chip in, a party, a guest link): its photo goes with the card.
+      const booked = !!(await stmt(
+        db,
+        `SELECT 1 WHERE EXISTS(SELECT 1 FROM reservation_members WHERE gift_id=?2 AND user_id=?1)
+          OR (EXISTS(SELECT 1 FROM reservations WHERE gift_id=?2 AND user_id=?1)
+            AND (${PARTY_PEER("?1", "?3")} OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=?3 AND ${LINK_ACTIVE("l", "?4")})))`,
+        uid,
+        id,
+        g.owner_id,
+        now(),
+      ).first());
+      if (!booked && !(await seesGift())) missing();
       return {
         photo:
           (
@@ -1661,6 +1673,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     (owner) => canView(db, owner, user, guest),
     (owner, viewer, event) =>
       list(db, owner, viewer, false, { list: null, event: event || "" }),
+    url.searchParams,
   );
   if (events) return events;
   // ---- Fetching from other sites (user-initiated, authenticated, rate-limited) ----

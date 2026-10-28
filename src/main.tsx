@@ -110,7 +110,6 @@ import {
 } from "./filters";
 import {
   type Booking,
-  type EventCard,
   type GiverRecord,
   type ListRef,
   type ToastAction,
@@ -174,9 +173,10 @@ function App() {
   const [eventsVersion, setEventsVersion] = useState(0);
   /** After a booking made on an event page, that page reloads its wishes. */
   const eventReload = useRef<(() => Promise<void>) | null>(null);
+  /** The wishes the event page shows, for a wish opened from it. */
+  const eventWishes = useRef<Wish[]>([]);
   const [owner, setOwner] = useState<User | null>(demo ? demoUser : null),
     [gifts, setGifts] = useState<Wish[]>(demo ? demoGifts : []),
-    [invitations, setInvitations] = useState<EventCard[]>([]),
     [archive, setArchive] = useState<Wish[]>(demo ? demoArchive : []);
   const [tab, setTab] = useState<Tab>(
       guestToken || profileTarget || legacyLink ? "friends" : "mine",
@@ -271,6 +271,8 @@ function App() {
   const [reserving, setReserving] = useState<{
     gift: { id: string; title: string } & Partial<Wish>;
     ownerId: string;
+    /** For whom, named when sharing «скинуться» by link. */
+    ownerName?: string;
     exclude?: string[];
     invite?: boolean;
     /** A guest link without an account: booking by name. */
@@ -288,6 +290,11 @@ function App() {
   /** Whose profile a link opened: the welcome dialog names them. */
   const [sharedOwner, setSharedOwner] = useState("");
   const sharedOpened = useRef(false);
+  /** Someone's profile is still opening (a link, a name on an event page):
+   * «Друзья» must not flash before their name. */
+  const [linkOpening, setLinkOpening] = useState(
+    !!(guestToken || profileTarget || legacyLink),
+  );
   /** The first-visit tour, with the bot status for its «Открыть бота». */
   const [welcome, setWelcome] = useState<Notifications | null | false>(false);
   const welcomeShown = useRef(false);
@@ -320,21 +327,26 @@ function App() {
     );
   };
   const fullscreen = useFullscreen((message) => notice(message, "error"));
+  /** The latest list request: an older answer arriving later must not overwrite it. */
+  const listRequest = useRef(0);
   /** A person's list; `list` picks one they keep for someone (default: the one shown). */
   async function loadList(
     id: string,
     list: string | null = owner?.id === id ? (listMeta?.id ?? null) : null,
   ) {
-    setLoading(true);
+    const request = ++listRequest.current;
+    // The same list again (after an action): keep it on screen, and the scroll
+    // position with it, instead of a spinner that throws the page to the top.
+    if (owner?.id !== id || (listMeta?.id ?? null) !== list) setLoading(true);
     setError("");
     setLostAccess(false);
     try {
       const d = await api(
         `/api/lists/${id}${list ? `?list=${encodeURIComponent(list)}` : ""}`,
       );
+      if (request !== listRequest.current) return;
       setGifts(d.gifts);
       setOwner(d.owner);
-      setInvitations(d.invitations || []);
       setLists(d.lists || []);
       setListMeta(d.list || null);
       if (user && id === user.id) setMyList(d.list?.id ?? null);
@@ -373,6 +385,7 @@ function App() {
       return;
     }
     setLoading(true);
+    setLinkOpening(true);
     try {
       const p: Viewed = await api(`/api/profiles/${id}`);
       // The list was open a moment ago and is not now: access was taken away.
@@ -384,17 +397,18 @@ function App() {
       else {
         setOwner(p.card);
         setGifts([]);
-        setInvitations([]);
       }
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
+      setLinkOpening(false);
     }
   }
   async function loadArchive(list: string | null = myList) {
     if (demo) return;
-    setLoading(true);
+    // Reloading the archive on screen keeps the scroll position.
+    if (tab !== "archive" || (listMeta?.id ?? null) !== list) setLoading(true);
     try {
       const d = await api(
         `/api/archive${list ? `?list=${encodeURIComponent(list)}` : ""}`,
@@ -409,16 +423,16 @@ function App() {
       setLoading(false);
     }
   }
-  async function refresh() {
+  /** Everything from the start; `quiet` keeps what is on screen while it loads. */
+  async function refresh(quiet = false) {
     if (demo) return;
-    setLoading(true);
+    if (!quiet) setLoading(true);
     setError("");
     try {
       if (guestView()) {
         const d = await api("/api/guest");
         setOwner(d.owner);
         setGifts(d.gifts);
-        setInvitations([]);
         setLists([]);
         setListMeta(d.list || null);
       } else if (!signedIn()) {
@@ -485,7 +499,6 @@ function App() {
         );
         setOwner(d.owner);
         setGifts(d.gifts);
-        setInvitations(d.invitations || []);
         setLists(d.lists || []);
         setListMeta(d.list || null);
         await friendsLoaded();
@@ -496,6 +509,7 @@ function App() {
       if (!signedIn()) setUser(null);
     } finally {
       setLoading(false);
+      setLinkOpening(false);
     }
   }
   /** Whose profile an old «Поделиться» or friend invitation link leads to. */
@@ -541,7 +555,7 @@ function App() {
     const handoff = redeemHandoff().catch((e) =>
       notice((e as Error).message, "error"),
     );
-    void handoff.then(refresh).then(async () => {
+    void handoff.then(() => refresh()).then(async () => {
       // Buttons in bot messages open a profile or «Мои брони».
       if (demo || !signedIn() || guestToken || profileTarget || legacyLink)
         return;
@@ -597,7 +611,8 @@ function App() {
     if (next === "bookings") await loadBookings();
   }
   async function loadBookings() {
-    setLoading(true);
+    // Already on «Мои брони»: reload in place, the scroll position stays.
+    if (tab !== "bookings") setLoading(true);
     try {
       const r = await api("/api/reservations");
       setBookings(r.reservations);
@@ -644,9 +659,15 @@ function App() {
   /** The list behind a dialog, after a booking changed. */
   async function reloadAfterBooking() {
     if (tab === "event" && eventReload.current) await eventReload.current();
+    else if (tab === "archive") await loadArchive();
     else if (tab === "bookings") await loadBookings();
-    else if (guestView()) await refresh();
+    else if (guestView()) await refresh(true);
     else if (owner) await loadList(owner.id);
+  }
+  /** My wishes after an edit, archive or removal: the event page or my list. */
+  async function reloadMine() {
+    if (tab === "event" && eventReload.current) await eventReload.current();
+    else if (user) await loadList(user.id);
   }
   /**
    * «Вернуть» after a cancelled booking: books again only if the gift is still
@@ -695,7 +716,7 @@ function App() {
               } finally {
                 // Cancelled now or earlier by someone else: the code is no longer needed.
                 setGuestCode(g.id, null);
-                await refresh();
+                await refresh(true);
               }
             }, ""),
         });
@@ -705,7 +726,11 @@ function App() {
     if (g.reservation !== "mine") {
       // My people are needed to offer «Подарить вместе»; a link may come without them.
       if (!friends.length) await loadFriends().catch(() => undefined);
-      setReserving({ gift: g, ownerId: g.owner_id });
+      setReserving({
+        gift: g,
+        ownerId: g.owner_id,
+        ownerName: owner?.id === g.owner_id ? owner.name : undefined,
+      });
       return;
     }
     setConfirmation({
@@ -722,7 +747,7 @@ function App() {
             if (g.group_joined) notice("Бронь отменена");
             else notice("Бронь отменена", "ok", undoCancel(g.id));
           } finally {
-            if (owner) await loadList(owner.id);
+            await reloadAfterBooking();
           }
         }, "Бронирование доступно после подключения приложения."),
     });
@@ -737,8 +762,7 @@ function App() {
         telegram?.HapticFeedback?.notificationOccurred("success");
         notice(join ? "Вы участвуете в подарке" : "Приглашение отклонено");
       } finally {
-        if (tab === "bookings") await loadBookings();
-        else if (owner) await loadList(owner.id);
+        await reloadAfterBooking();
       }
     }, "В демо брони не меняются.");
   }
@@ -809,7 +833,7 @@ function App() {
     if (demo) return;
     if (tab === "archive") await loadArchive();
     else if (tab === "bookings") await loadBookings();
-    else if (guestView()) await refresh();
+    else if (guestView()) await refresh(true);
     else if (owner && (tab === "mine" || tab === "friends"))
       await loadList(owner.id);
   }
@@ -899,7 +923,7 @@ function App() {
         guarded(async () => {
           await api(`/api/gifts/${g.id}`, "DELETE");
           if (fromArchive) await loadArchive();
-          else if (user) await loadList(user.id);
+          else await reloadMine();
           notice("Желание удалено");
         }, "В демо удаление недоступно."),
     });
@@ -1261,7 +1285,12 @@ function App() {
                           ? "Мои брони"
                           : tab === "archive"
                             ? "Архив"
-                            : tab === "friends" && !guestView() && !viewingFriend
+                            : tab === "friends" &&
+                                !guestView() &&
+                                !viewingFriend &&
+                                linkOpening
+                              ? "Вишлист"
+                              : tab === "friends" && !guestView() && !viewingFriend
                               ? "Друзья"
                               : listMeta && !closedCard
                                 ? `Вишлист: ${listMeta.name}`
@@ -1312,9 +1341,7 @@ function App() {
                           owner={owner}
                           own={own}
                           today={today}
-                          events={invitations}
                           onProfile={() => setModal("profile")}
-                          onOpen={user ? (id) => openEvent(id) : undefined}
                           onCreate={(occasion) =>
                             setEventForm({ occasion })
                           }
@@ -1816,27 +1843,34 @@ function App() {
                   }
                   onEvents={() => void navigate("events")}
                   onOpenList={(id, named) => void openList(id, named)}
-                  renderWishes={(wishes, reload) => (
-                    <div className="gift-grid">
-                      {wishes.map((g) => (
-                        <GiftCard
-                          key={g.id}
-                          wish={g}
-                          mode={g.owner_id === user.id ? "own" : "friend"}
-                          busy={busy}
-                          onEdit={() => undefined}
-                          onBought={() => undefined}
-                          onRestore={() => undefined}
-                          onDelete={() => undefined}
-                          onReserve={() => {
-                            eventReload.current = reload;
-                            void reserve(g);
-                          }}
-                          onAnswer={(join) => void answerInvite(g.id, join)}
-                        />
-                      ))}
-                    </div>
-                  )}
+                  renderWishes={(wishes, reload) => {
+                    // Any change made here (a booking, an edit, the archive) reloads this page.
+                    eventReload.current = reload;
+                    eventWishes.current = wishes;
+                    return (
+                      <div className="gift-grid">
+                        {wishes.map((g) => (
+                          <GiftCard
+                            key={g.id}
+                            wish={g}
+                            mode={g.owner_id === user.id ? "own" : "friend"}
+                            busy={busy}
+                            onEdit={() => {
+                              setEditing(g);
+                              setGiftDirty(false);
+                              setModal("gift");
+                            }}
+                            onBought={() => void markBought(g)}
+                            onRestore={() => undefined}
+                            onDelete={() => remove(g, false)}
+                            onReserve={() => void reserve(g)}
+                            onAnswer={(join) => void answerInvite(g.id, join)}
+                            onOpen={() => setDetails(g)}
+                          />
+                        ))}
+                      </div>
+                    );
+                  }}
                 />
               )}
               {tab === "events" && user && (
@@ -1888,6 +1922,7 @@ function App() {
                                 <Recipient
                                   record={c}
                                   text={`${c.owner_name} · подарено${c.gifted_at ? ` ${shortDate(c.gifted_at)}` : ""}`}
+                                  onOpen={() => void openPerson(c.owner_id)}
                                 />
                               </div>
                             </article>
@@ -1927,6 +1962,7 @@ function App() {
                                   <Recipient
                                     record={b}
                                     text={`Для ${b.owner_name}`}
+                                    onOpen={() => void openPerson(b.owner_id)}
                                   />
                                   <p className="booking-sub">
                                     <span className={`status-badge ${b.role}`}>
@@ -2035,8 +2071,17 @@ function App() {
                                               gift: {
                                                 id: b.gift_id,
                                                 title: b.title,
+                                                price_minor: b.price_minor,
+                                                price_max_minor:
+                                                  b.price_max_minor ?? null,
+                                                price_range: b.price_range,
+                                                currency: b.currency,
+                                                shop_url: b.shop_url,
+                                                has_photo: b.has_photo || 0,
+                                                updated_at: b.updated_at,
                                               },
                                               ownerId: b.owner_id,
+                                              ownerName: b.owner_name,
                                               exclude: b.members.map(
                                                 (m) => m.id,
                                               ),
@@ -2094,6 +2139,7 @@ function App() {
                                     <Recipient
                                       record={c}
                                       text={`Для ${c.owner_name}`}
+                                      onOpen={() => void openPerson(c.owner_id)}
                                     />
                                     <p className="booking-note">
                                       <Info size={15} />
@@ -2189,6 +2235,7 @@ function App() {
             )
           }
           ownerId={reserving.ownerId}
+          ownerName={reserving.ownerName}
           exclude={reserving.exclude}
           invite={reserving.invite}
           guest={reserving.guest}
@@ -2245,8 +2292,9 @@ function App() {
           {(() => {
             // The same wish as in the list, so its state stays current.
             const g =
-              [...gifts, ...archive].find((x) => x.id === details.id) ||
-              details;
+              [...gifts, ...archive, ...eventWishes.current].find(
+                (x) => x.id === details.id,
+              ) || details;
             const close = (then: () => void) => () => {
               setDetails(null);
               then();
@@ -2258,7 +2306,11 @@ function App() {
                 mode={
                   tab === "archive"
                     ? "archive"
-                    : own
+                    : tab === "event"
+                      ? g.owner_id === user?.id
+                        ? "own"
+                        : "friend"
+                      : own
                       ? "own"
                       : user
                         ? "friend"
@@ -2274,7 +2326,10 @@ function App() {
                 onRestore={close(() => void restore(g))}
                 onDelete={close(() => remove(g, tab === "archive"))}
                 onReserve={close(() => void reserve(g))}
-                onAnswer={(join) => void answerInvite(g.id, join)}
+                onAnswer={(join) => {
+                  setDetails(null);
+                  void answerInvite(g.id, join);
+                }}
               />
             );
           })()}
@@ -2287,14 +2342,14 @@ function App() {
           onArchived={async () => {
             const g = archiveGift;
             setArchiveGift(null);
-            if (user) await loadList(user.id);
+            await reloadMine();
             // «Вернуть» for seven seconds; an old booking does not come back (flow 16).
             notice("Перенесено в архив", "ok", {
               label: "Вернуть",
               run: () =>
                 guarded(async () => {
                   await api(`/api/gifts/${g.id}/restore`, "POST");
-                  if (user) await loadList(user.id);
+                  await reloadMine();
                   notice("Желание снова в вишлисте");
                 }, ""),
             });
@@ -2358,7 +2413,7 @@ function App() {
                 const added = !editing;
                 setModal(null);
                 if (editing) forgetGiftPhoto(editing.id);
-                if (user) await loadList(user.id);
+                await reloadMine();
                 setGiftDirty(false);
                 if (added && id) {
                   setJustAdded(id);
@@ -2549,6 +2604,11 @@ function FollowButton({
     </button>
   );
 }
+/** The first few words of a hint, for a card in the list. */
+function glimpse(text: string, words = 4) {
+  const all = text.trim().split(/\s+/);
+  return all.length > words ? `${all.slice(0, words).join(" ")}…` : text.trim();
+}
 function GiftCard({
   wish: g,
   mode,
@@ -2654,7 +2714,15 @@ function GiftCard({
         >
           {g.title}
         </h3>
-        {g.description && <p>{g.description}</p>}
+        {g.description &&
+          (detailed ? (
+            <p>{g.description}</p>
+          ) : (
+            // The list shows a glimpse; the whole hint opens with the wish.
+            <p className="card-hint" onClick={open}>
+              {glimpse(g.description)}
+            </p>
+          ))}
         {g.reservation === "reserved" && !!g.booked_by?.length && (
           <p className="booked-by">
             <Users size={13} />
@@ -2943,12 +3011,19 @@ const shortDate = (seconds: number) =>
 function Recipient({
   record,
   text,
+  onOpen,
 }: {
   record: { owner_id: string; owner_name: string; owner_photo_at?: number | null };
   text: string;
+  /** Tap on the person: their profile. */
+  onOpen?: () => void;
 }) {
+  const Tag = onOpen ? "button" : "p";
   return (
-    <p className="booking-for">
+    <Tag
+      className={`booking-for${onOpen ? " clickable" : ""}`}
+      {...(onOpen ? { type: "button" as const, onClick: onOpen } : {})}
+    >
       <span className="avatar tiny">
         <Face
           user={{
@@ -2958,8 +3033,9 @@ function Recipient({
           }}
         />
       </span>
-      {text}
-    </p>
+      <span>{text}</span>
+      {onOpen && <ChevronRight size={14} />}
+    </Tag>
   );
 }
 function RecordPrice({ record: r }: { record: GiverRecord }) {
