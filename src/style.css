@@ -2914,6 +2914,82 @@ button.event-chip:hover {
 .modal .setting-toggle input {
   margin-top: 1px;
 }
+.archive-reason-choice {
+  display: grid;
+  gap: 2px;
+  min-height: 52px;
+  padding: 10px 14px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+  background: var(--surface);
+  text-align: left;
+}
+.archive-reason-choice:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+.archive-reason-choice small {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.archive-reasons:has(.archive-reason-choice) {
+  gap: 8px;
+}
+/* A card opens its wish: the photo and the title are the way in. */
+.gift-card .photo-wrap,
+.gift-card h3 {
+  cursor: pointer;
+}
+.gift-card.just-added {
+  animation: just-added 2s ease-out;
+}
+@keyframes just-added {
+  0%,
+  60% {
+    box-shadow: 0 0 0 3px var(--purple);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+.wish-details {
+  display: grid;
+  gap: 12px;
+}
+.wish-details-photo {
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border-radius: var(--r);
+  background: var(--surface-2);
+}
+.wish-details-photo img,
+.wish-details-photo .photo-placeholder {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.wish-details h3 {
+  font-size: 20px;
+}
+.wish-details .gift-price {
+  font-size: 18px;
+}
+.wish-details-text {
+  margin: 0;
+  white-space: pre-wrap;
+  color: var(--text-2);
+}
+.wish-details .card-actions {
+  border-top: 0;
+  padding-top: 0;
+}
+.pull-hint {
+  display: flex;
+  justify-content: center;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  overflow: hidden;
+  transition: height 0.15s;
+}
 .archive-reasons label:has(input:disabled) {
   opacity: 0.55;
 }
@@ -3785,4 +3861,12 @@ button.event-chip:hover {
 }
 .confirm-option {
   margin: 4px 0 16px;
+}
+.gift-card.detailed {
+  border: 0;
+  box-shadow: none;
+}
+.gift-card.detailed .photo-wrap,
+.gift-card.detailed h3 {
+  cursor: default;
 }

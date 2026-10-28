@@ -143,9 +143,12 @@ export function Confirm({
   cancel = "Отмена",
   danger,
   option,
+  alternative,
   onConfirm,
   onCancel,
 }: {
+  /** Another way out besides the action, e.g. «В архив» instead of deleting. */
+  alternative?: { label: string; run: () => void };
   title?: string;
   text: string;
   action: string;
@@ -172,6 +175,11 @@ export function Confirm({
         </label>
       )}
       <div className="confirm-actions">
+        {alternative && (
+          <button className="button primary" onClick={alternative.run}>
+            {alternative.label}
+          </button>
+        )}
         <button className="button secondary" onClick={onCancel}>
           {cancel}
         </button>
@@ -1422,6 +1430,11 @@ export function LinkSettings() {
     </section>
   );
 }
+/**
+ * «В архив»: the reason applies as soon as it is picked, with no «are you
+ * sure» (П27); «Вернуть» in the toast undoes it. The same answer whether or
+ * not someone chose the gift.
+ */
 export function ArchiveWish({
   gift,
   onClose,
@@ -1429,79 +1442,60 @@ export function ArchiveWish({
 }: {
   gift: Wish;
   onClose: () => void;
-  onArchived: () => Promise<void>;
+  onArchived: (reason: string) => Promise<void>;
 }) {
-  const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  async function archive(reason: string) {
+    if (demo) {
+      setError("В демо архив не меняется.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/gifts/${gift.id}/archive`, "POST", { reason });
+      await onArchived(reason);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <Modal
-      title="Отправить желание в архив"
-      closeOnBackdrop={false}
+      title="В архив"
       onClose={() => {
         if (!busy) onClose();
       }}
     >
-      <form
-        className="share-result"
-        onSubmit={async (e) => {
-          e.preventDefault();
-          if (demo) {
-            setError("В демо архив не меняется.");
-            return;
-          }
-          setBusy(true);
-          setError("");
-          try {
-            await api(`/api/gifts/${gift.id}/archive`, "POST", { reason });
-            await onArchived();
-          } catch (e) {
-            setError((e as Error).message);
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
+      <div className="share-result">
         <h3>{gift.title}</h3>
         <p>Почему убираете желание из списка?</p>
         <div className="archive-reasons">
           {[
-            ["changed_mind", "Передумал"],
-            ["gifted", "Подарили"],
-            ["bought_self", "Купил сам"],
-          ].map(([value, label]) => (
-            <label key={value}>
-              <input
-                type="radio"
-                name="archive-reason"
-                value={value}
-                checked={reason === value}
-                disabled={busy}
-                onChange={() => {
-                  setReason(value);
-                  setError("");
-                }}
-              />
-              {label}
-            </label>
+            ["bought_self", "Куплено", "Купил сам"],
+            ["gifted", "Подарено", "Подарок уже получен"],
+            ["changed_mind", "Передумал", "Больше не нужен"],
+          ].map(([value, label, hint]) => (
+            <button
+              key={value}
+              type="button"
+              className="archive-reason-choice"
+              disabled={busy}
+              onClick={() => void archive(value)}
+            >
+              <strong>{label}</strong>
+              <small>{hint}</small>
+            </button>
           ))}
         </div>
-        <p className="small-text">
-          Если кто-то из друзей выбрал этот подарок, бот сообщит ему. Кто это,
-          вы не узнаете.
-        </p>
         {error && (
           <p className="error" role="alert">
             {error}
           </p>
         )}
-        <button
-          className="button primary full-width"
-          disabled={busy || !reason}
-        >
-          {busy ? "Переносим…" : "Перенести в архив"}
-        </button>
-      </form>
+      </div>
     </Modal>
   );
 }

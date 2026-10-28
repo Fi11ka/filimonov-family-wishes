@@ -61,6 +61,8 @@ import {
   redeemHandoff,
   RequestError,
   savedGuestName,
+  shareOffered,
+  rememberShareOffered,
   setGuestCode,
   setSessionToken,
   signedIn,
@@ -121,6 +123,8 @@ import {
 } from "./types";
 import "./style.css";
 type Tab = "mine" | "friends" | "bookings" | "events" | "archive" | "event";
+/** From this many wishes on a list gets search, sorting and filters (Б3.18). */
+const MANY = 12;
 type ModalKind = "gift" | "share" | "profile" | "import";
 /** «Друзья»: whom I added, requests to me and mine, who added me without me adding back. */
 type People = {
@@ -133,6 +137,8 @@ type People = {
 type Viewed = { card: Person & { is_private?: boolean }; can_view: boolean };
 interface Confirmation {
   title?: string;
+  /** Another way out, e.g. «В архив» instead of deleting. */
+  alternative?: { label: string; run: () => void };
   /** The button that keeps things as they are, «Отмена» by default. */
   cancel?: string;
   text: string;
@@ -192,6 +198,10 @@ function App() {
     return () => clearInterval(timer);
   }, []);
   const [archiveGift, setArchiveGift] = useState<Wish | null>(null);
+  /** A wish opened from its card. */
+  const [details, setDetails] = useState<Wish | null>(null);
+  /** The wish just added: the list scrolls to it and it glows for two seconds. */
+  const [justAdded, setJustAdded] = useState("");
   /** A list opened from an event page where guests' bookings carry names. */
   const [namedList, setNamedList] = useState<{
     owner: string;
@@ -697,6 +707,57 @@ function App() {
         }, "Бронирование доступно после подключения приложения."),
     });
   }
+  // Coming back to the app, or pulling the list down at its top, reloads it.
+  const reloadLatest = useRef(reloadCurrent);
+  reloadLatest.current = reloadCurrent;
+  const idle = useRef(!!modal || !!details);
+  idle.current = !!modal || !!details;
+  const [pull, setPull] = useState(0);
+  useEffect(() => {
+    let hiddenAt = 0;
+    const onVisible = () => {
+      if (document.hidden) hiddenAt = Date.now();
+      else if (hiddenAt && Date.now() - hiddenAt > 30_000 && !idle.current)
+        void reloadLatest.current().catch(() => undefined);
+    };
+    let startY: number | null = null;
+    let distance = 0;
+    const onStart = (e: TouchEvent) => {
+      startY =
+        window.scrollY <= 0 && !idle.current ? e.touches[0].clientY : null;
+      distance = 0;
+    };
+    const onMove = (e: TouchEvent) => {
+      if (startY === null) return;
+      distance = Math.max(0, e.touches[0].clientY - startY);
+      setPull(Math.min(distance, 90));
+    };
+    const onEnd = () => {
+      if (startY !== null && distance > 70)
+        void reloadLatest.current().catch(() => undefined);
+      startY = null;
+      setPull(0);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("touchstart", onStart, { passive: true });
+    window.addEventListener("touchmove", onMove, { passive: true });
+    window.addEventListener("touchend", onEnd);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("touchstart", onStart);
+      window.removeEventListener("touchmove", onMove);
+      window.removeEventListener("touchend", onEnd);
+    };
+  }, []);
+  /** What is on screen again: the list, the archive or «Мои брони». */
+  async function reloadCurrent() {
+    if (demo) return;
+    if (tab === "archive") await loadArchive();
+    else if (tab === "bookings") await loadBookings();
+    else if (guestView()) await refresh();
+    else if (owner && (tab === "mine" || tab === "friends"))
+      await loadList(owner.id);
+  }
   /** «Подарено» / «Это подарил я»: only the giver moves a card to «Подаренные». */
   function markGiven(id: string, title: string, fromCard = false) {
     setConfirmation({
@@ -764,10 +825,20 @@ function App() {
       notice("Желание снова в вишлисте");
     }, "В демо архив не меняется.");
   }
+  /** «Удалить»: the same question whether or not someone chose the gift (П27). */
   function remove(g: Wish, fromArchive: boolean) {
     setConfirmation({
-      text: `Удалить «${g.title}» навсегда? Это действие нельзя отменить. Если подарок уже подарили, лучше нажмите «Отправить в архив» — он сохранится там.`,
-      action: "Удалить",
+      ...(fromArchive
+        ? {
+            text: `Удалить «${g.title}» навсегда? Это действие нельзя отменить.`,
+            action: "Удалить",
+          }
+        : {
+            title: "Удалить желание?",
+            text: "Если передумали или подарок уже подарили, можно перенести в архив.",
+            action: "Нет, хочу удалить",
+            alternative: { label: "В архив", run: () => setArchiveGift(g) },
+          }),
       danger: true,
       run: () =>
         guarded(async () => {
@@ -851,12 +922,16 @@ function App() {
   const list = tab === "archive" ? archive : gifts;
   const foreignList = !own && tab !== "archive";
   const scale = priceScale(list);
-  const activeFilters = activeCount(filters, foreignList) > 0;
+  // Search and filters show only for a long list; a short one is all on screen.
+  const many = list.length > MANY;
+  const activeFilters = many && activeCount(filters, foreignList) > 0;
+  const searching = many && !!search;
   const shown = list
     .filter(
       (g) =>
-        g.title.toLowerCase().includes(search.toLowerCase()) &&
-        passes(g, filters, scale.rate, foreignList),
+        !many ||
+        (g.title.toLowerCase().includes(search.toLowerCase()) &&
+          passes(g, filters, scale.rate, foreignList)),
     )
     .sort((a, b) =>
       sort === "price"
@@ -1020,6 +1095,11 @@ function App() {
           </div>
         </header>
         <main>
+          {pull > 0 && (
+            <div className="pull-hint" style={{ height: pull / 2 }}>
+              {pull > 70 ? "Отпустите, чтобы обновить" : "Потяните, чтобы обновить"}
+            </div>
+          )}
           {locked ? (
             <section className="welcome">
               {viewed ? (
@@ -1505,11 +1585,14 @@ function App() {
                   )}
                   <div className="list-toolbar">
                     <span className="list-count">
-                      {search || activeFilters
+                      {searching || activeFilters
                         ? `${shown.length} из ${list.length}`
                         : wishCount(list.length)}
                     </span>
                     <div className="list-controls">
+                      {/* For a short list search and sorting only get in the way. */}
+                      {list.length > MANY && (
+                      <>
                       <label className="search">
                         <Search size={16} />
                         <input
@@ -1552,21 +1635,21 @@ function App() {
                         <SlidersHorizontal size={17} />
                         {activeFilters && <span className="filter-dot" />}
                       </button>
+                      </>
+                      )}
                       <button
                         className="icon-button"
                         aria-label="Обновить список"
                         onClick={() => {
                           if (demo) notice("Демонстрационные данные", "info");
-                          else if (tab === "archive") void loadArchive();
-                          else if (guestView()) void refresh();
-                          else if (owner) void loadList(owner.id);
+                          else void reloadCurrent();
                         }}
                       >
                         <RefreshCw size={17} />
                       </button>
                     </div>
                   </div>
-                  {filtersOpen && (
+                  {filtersOpen && list.length > MANY && (
                     <WishFilters
                       list={list}
                       value={filters}
@@ -1605,6 +1688,8 @@ function App() {
                           onDelete={() => remove(g, tab === "archive")}
                           onReserve={() => void reserve(g)}
                           onAnswer={(join) => void answerInvite(g.id, join)}
+                          onOpen={() => setDetails(g)}
+                          justAdded={justAdded === g.id}
                         />
                       ))}
                     </div>
@@ -1616,7 +1701,7 @@ function App() {
                         <Gift size={34} />
                       )}
                       <h3>
-                        {search || activeFilters
+                        {searching || activeFilters
                           ? "Ничего не подошло"
                           : tab === "archive"
                             ? "Архив пока пуст"
@@ -1625,7 +1710,7 @@ function App() {
                               : "Желаний пока нет"}
                       </h3>
                       <p>
-                        {search || activeFilters
+                        {searching || activeFilters
                           ? "Измените поиск или сбросьте фильтры."
                           : tab === "archive"
                             ? "Здесь появятся желания, которые вы перенесёте в архив."
@@ -2031,14 +2116,64 @@ function App() {
           }
         />
       )}
+      {details && (
+        <Modal title="Желание" onClose={() => setDetails(null)}>
+          {(() => {
+            // The same wish as in the list, so its state stays current.
+            const g =
+              [...gifts, ...archive].find((x) => x.id === details.id) ||
+              details;
+            const close = (then: () => void) => () => {
+              setDetails(null);
+              then();
+            };
+            return (
+              <GiftCard
+                wish={g}
+                detailed
+                mode={
+                  tab === "archive"
+                    ? "archive"
+                    : own
+                      ? "own"
+                      : user
+                        ? "friend"
+                        : "guest"
+                }
+                busy={busy}
+                onEdit={close(() => {
+                  setEditing(g);
+                  setGiftDirty(false);
+                  setModal("gift");
+                })}
+                onBought={close(() => void markBought(g))}
+                onRestore={close(() => void restore(g))}
+                onDelete={close(() => remove(g, tab === "archive"))}
+                onReserve={close(() => void reserve(g))}
+                onAnswer={(join) => void answerInvite(g.id, join)}
+              />
+            );
+          })()}
+        </Modal>
+      )}
       {archiveGift && (
         <ArchiveWish
           gift={archiveGift}
           onClose={() => setArchiveGift(null)}
           onArchived={async () => {
+            const g = archiveGift;
             setArchiveGift(null);
             if (user) await loadList(user.id);
-            notice("Желание перенесено в архив");
+            // «Вернуть» for seven seconds; an old booking does not come back (flow 16).
+            notice("Перенесено в архив", "ok", {
+              label: "Вернуть",
+              run: () =>
+                guarded(async () => {
+                  await api(`/api/gifts/${g.id}/restore`, "POST");
+                  if (user) await loadList(user.id);
+                  notice("Желание снова в вишлисте");
+                }, ""),
+            });
           }}
         />
       )}
@@ -2094,12 +2229,27 @@ function App() {
               activeCount={own ? gifts.length : 0}
               onDirty={() => setGiftDirty(true)}
               onSavingChange={setGiftSaving}
-              onSaved={async () => {
+              onSaved={async (id) => {
+                const added = !editing;
                 setModal(null);
                 if (editing) forgetGiftPhoto(editing.id);
                 if (user) await loadList(user.id);
                 setGiftDirty(false);
-                notice("Желание сохранено");
+                if (added && id) {
+                  setJustAdded(id);
+                  setTimeout(
+                    () => setJustAdded((x) => (x === id ? "" : x)),
+                    2000,
+                  );
+                }
+                // Once: the first wish is a good moment to send the list.
+                if (added && !shareOffered()) {
+                  rememberShareOffered();
+                  notice("Желание добавлено", "ok", {
+                    label: "Отправить близким",
+                    run: () => setModal("share"),
+                  });
+                } else notice("Желание сохранено");
               }}
             />
           ) : modal === "share" ? (
@@ -2151,6 +2301,16 @@ function App() {
           text={confirmation.text}
           action={confirmation.action}
           cancel={confirmation.cancel}
+          alternative={
+            confirmation.alternative && {
+              label: confirmation.alternative.label,
+              run: () => {
+                const run = confirmation.alternative!.run;
+                setConfirmation(null);
+                run();
+              },
+            }
+          }
           danger={confirmation.danger}
           option={confirmation.option}
           onCancel={() => setConfirmation(null)}
@@ -2271,10 +2431,19 @@ function GiftCard({
   onDelete,
   onReserve,
   onAnswer,
+  onOpen,
+  justAdded = false,
+  detailed = false,
 }: {
   wish: Wish;
   mode: "own" | "friend" | "guest" | "archive";
   busy: boolean;
+  /** Tap on the photo or the title: the wish on a screen of its own. */
+  onOpen?: () => void;
+  /** Just added: scrolled into view and glowing for two seconds. */
+  justAdded?: boolean;
+  /** Shown on its own screen rather than in the list. */
+  detailed?: boolean;
   onEdit: () => void;
   onBought: () => void;
   onRestore: () => void;
@@ -2283,9 +2452,18 @@ function GiftCard({
   onAnswer: (join: boolean) => void;
 }) {
   const guestCode = mode === "guest" && !!guestCodes()[g.id];
+  const card = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (justAdded)
+      card.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [justAdded]);
+  const open = detailed ? undefined : onOpen;
   return (
-    <article className={`gift-card ${mode === "archive" ? "archived" : ""}`}>
-      <div className="photo-wrap">
+    <article
+      ref={card}
+      className={`gift-card ${mode === "archive" ? "archived" : ""}${justAdded ? " just-added" : ""}${detailed ? " detailed" : ""}`}
+    >
+      <div className="photo-wrap" onClick={open}>
         <Photo wish={g} own={mode === "own" || mode === "archive"} />
         <span className="priority">
           <Hearts value={g.priority} size={12} />
@@ -2294,7 +2472,11 @@ function GiftCard({
           <button
             className="card-edit"
             aria-label={`Редактировать ${g.title}`}
-            onClick={onEdit}
+            onClick={(e) => {
+              // The pencil sits on the photo, which opens the wish.
+              e.stopPropagation();
+              onEdit();
+            }}
           >
             <Pencil size={15} />
           </button>
@@ -2317,9 +2499,9 @@ function GiftCard({
               {g.archive_reason === "changed_mind"
                 ? "Передумал"
                 : g.archive_reason === "gifted"
-                  ? "Подарили"
+                  ? "Подарено"
                   : g.archive_reason === "bought_self"
-                    ? "Купил сам"
+                    ? "Куплено"
                     : "В архиве"}
             </span>
             {g.archived_at ? (
@@ -2330,7 +2512,20 @@ function GiftCard({
           </p>
         )}
         <div className="gift-price">{money(g)}</div>
-        <h3>{g.title}</h3>
+        <h3
+          onClick={open}
+          {...(open
+            ? {
+                role: "button",
+                tabIndex: 0,
+                onKeyDown: (e: React.KeyboardEvent) => {
+                  if (e.key === "Enter") open();
+                },
+              }
+            : {})}
+        >
+          {g.title}
+        </h3>
         {g.description && <p>{g.description}</p>}
         {g.reservation === "reserved" && !!g.booked_by?.length && (
           <p className="booked-by">
@@ -2360,10 +2555,10 @@ function GiftCard({
                 className="bought-button"
                 disabled={busy}
                 onClick={onBought}
-                title="Выбрать причину переноса в архив"
+                title="Куплено, подарено или передумали"
               >
                 <Archive size={14} />
-                Отправить в архив
+                В архив
               </button>
               <button
                 className="icon-button delete-button"
