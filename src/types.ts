@@ -95,3 +95,5 @@ export type Booking = {
 };
 /** How a toast reads: done, a hint that nothing changed, or a failure. */
 export type ToastTone = "ok" | "info" | "error";
+/** A button in a toast, e.g. «Вернуть» after cancelling a booking. */
+export type ToastAction = { label: string; run: () => Promise<void> | void };

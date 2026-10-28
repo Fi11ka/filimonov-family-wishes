@@ -14,6 +14,7 @@ import {
   ScanText,
   Users,
   Share2,
+  ArrowUpRight,
 } from "lucide-react";
 import {
   api,
@@ -22,13 +23,16 @@ import {
   cropPhoto,
   demo,
   photoFromUrl,
+  RequestError,
+  savedGuestName,
+  saveGuestName,
   type ProductLookup,
   type ScreenshotLookup,
 } from "./api";
 import { type Friend, type Wish } from "./types";
 import { giftPhoto } from "./gift-photo";
 import { Hearts } from "./hearts";
-import { currencies, isCurrency } from "../shared/price";
+import { currencies, formatPrice, isCurrency } from "../shared/price";
 import { LookupState } from "./lookup-state";
 import { currentSite, shareLink, siteProfileLink } from "./share-links";
 import {
@@ -1348,33 +1352,49 @@ export function ArchiveWish({
   );
 }
 /**
- * «Забронировать»: give alone or together with friends. With `invite` the
- * organizer adds more friends to a booking that already exists.
+ * «Подарю»: a confirmation with the photo, name and price, then a lasting
+ * «Готово!». «Вместе с друзьями» invites friends to share it. With `invite`
+ * the organizer adds more friends to a booking that already exists. A guest
+ * (no account) types a name, offered again from the last time.
  */
 export function ReserveDialog({
   gift,
+  photo,
   ownerId,
   friends,
   exclude = [],
   invite = false,
+  guest = false,
   onClose,
-  onDone,
+  onBooked,
+  onBookings,
 }: {
-  gift: { id: string; title: string };
+  gift: { id: string; title: string } & Partial<Wish>;
+  photo?: React.ReactNode;
   ownerId: string;
   friends: Friend[];
   exclude?: string[];
   invite?: boolean;
+  guest?: boolean;
   onClose: () => void;
-  onDone: (message: string) => Promise<void>;
+  /** Booked (with the guest's cancel code) or friends invited: refresh behind the dialog. */
+  onBooked: (message: string, code?: string) => Promise<void> | void;
+  /** «Мои брони», for people with an account. */
+  onBookings?: () => void;
 }) {
-  const [together, setTogether] = useState(invite);
+  const [step, setStep] = useState<"confirm" | "together" | "done" | "taken">(
+    invite ? "together" : "confirm",
+  );
   const [picked, setPicked] = useState<string[]>([]);
+  const [name, setName] = useState(guest ? savedGuestName() : "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [invited, setInvited] = useState(0);
   const candidates = friends.filter(
     (f) => f.id !== ownerId && !exclude.includes(f.id),
   );
+  const priced =
+    gift.price_minor != null || (gift.price_max_minor ?? null) !== null;
   async function submit(withFriends: string[]) {
     if (demo) {
       setError("Бронирование доступно после подключения приложения.");
@@ -1383,65 +1403,128 @@ export function ReserveDialog({
     setBusy(true);
     setError("");
     try {
-      if (invite)
+      if (invite) {
         await api(`/api/gifts/${gift.id}/reservation/invite`, "POST", {
           friends: withFriends,
         });
-      else
+        await onBooked("Приглашения отправлены в Telegram");
+        return;
+      }
+      if (guest) {
+        const r = await api(`/api/guest-reservations/${gift.id}`, "POST", {
+          name,
+        });
+        saveGuestName(name.trim());
+        void onBooked("Подарок выбран", r.code);
+      } else {
         await api(
           `/api/gifts/${gift.id}/reservation`,
           "POST",
           withFriends.length ? { friends: withFriends } : {},
         );
-      await onDone(
-        withFriends.length
-          ? invite
-            ? "Приглашения отправлены в Telegram"
-            : "Подарок забронирован, друзьям ушли приглашения"
-          : "Подарок забронирован",
-      );
+        void onBooked("Подарок выбран");
+      }
+      setInvited(withFriends.length);
+      setStep("done");
     } catch (e) {
-      setError((e as Error).message);
+      if (e instanceof RequestError && e.code === "TAKEN") {
+        setStep("taken");
+        void onBooked("");
+      } else setError((e as Error).message);
     } finally {
       setBusy(false);
     }
   }
+  const title =
+    step === "done"
+      ? "Готово!"
+      : step === "taken"
+        ? "Подарок уже выбрали"
+        : invite
+          ? "Пригласить друзей"
+          : step === "together"
+            ? "Подарить вместе"
+            : "Вы подарите это?";
   return (
     <Modal
-      title={invite ? "Пригласить друзей" : "Забронировать подарок"}
+      title={title}
       onClose={() => {
         if (!busy) onClose();
       }}
     >
-      <div className="share-result">
-        <h3>{gift.title}</h3>
-        {!together ? (
-          <div className="reserve-choice">
-            <button
-              className="button primary full-width"
-              disabled={busy}
-              onClick={() => void submit([])}
-            >
-              <Gift size={17} /> Подарю сам(а)
-            </button>
-            <button
-              className="button secondary full-width"
-              disabled={busy}
-              onClick={() => setTogether(true)}
-            >
-              <Users size={17} /> Подарить вместе с друзьями
-            </button>
-            <p className="small-text">
-              Владелец вишлиста не узнает, кто забронировал подарок.
-            </p>
+      <div className="share-result reserve-dialog">
+        {(step === "confirm" || step === "done") && (
+          <div className="reserve-gift">
+            {photo && <div className="reserve-photo">{photo}</div>}
+            <div>
+              <h3>{gift.title}</h3>
+              {priced && (
+                <p className="reserve-price">
+                  {formatPrice(gift as Parameters<typeof formatPrice>[0])}
+                </p>
+              )}
+            </div>
           </div>
-        ) : (
+        )}
+        {step === "confirm" && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void submit([]);
+            }}
+          >
+            {guest && (
+              <label>
+                Ваше имя
+                <input
+                  required
+                  maxLength={80}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Как вас зовут"
+                  autoComplete="name"
+                />
+              </label>
+            )}
+            <p className="small-text">
+              Владелец не узнает, кто выбрал подарок.
+            </p>
+            <div className="confirm-actions">
+              <button
+                type="button"
+                className="button secondary"
+                disabled={busy}
+                onClick={onClose}
+              >
+                Отмена
+              </button>
+              <button
+                className="button primary"
+                disabled={busy || (guest && !name.trim())}
+              >
+                {busy ? "Сохраняем…" : "Да, я подарю"}
+              </button>
+            </div>
+            {!guest && (
+              <button
+                type="button"
+                className="text-link"
+                disabled={busy}
+                onClick={() => setStep("together")}
+              >
+                <Users size={15} /> Подарить вместе с друзьями
+              </button>
+            )}
+          </form>
+        )}
+        {step === "together" && (
           <form
             onSubmit={(e) => {
               e.preventDefault();
               void submit(picked);
             }}
           >
+            {invite && <h3>{gift.title}</h3>}
             <p>
               Кого позвать скинуться? Бот пришлёт им приглашение, а они ответят
               «Участвую» или «Не могу».
@@ -1483,19 +1566,55 @@ export function ReserveDialog({
                 ? "Отправляем…"
                 : invite
                   ? "Пригласить"
-                  : "Забронировать и пригласить"}
+                  : "Подарить и пригласить"}
             </button>
             {!invite && (
               <button
                 type="button"
                 className="text-link"
                 disabled={busy}
-                onClick={() => setTogether(false)}
+                onClick={() => setStep("confirm")}
               >
                 Назад
               </button>
             )}
           </form>
+        )}
+        {step === "done" && (
+          <>
+            <p className="reserve-done">
+              <Check size={18} /> Имя дарителя скрыто от владельца.
+              {invited > 0 && " Друзьям ушли приглашения скинуться."}
+            </p>
+            <div className="confirm-actions">
+              {gift.shop_url && (
+                <a
+                  className="button secondary"
+                  href={gift.shop_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Где купить <ArrowUpRight size={15} />
+                </a>
+              )}
+              <button className="button primary" onClick={onClose}>
+                К списку
+              </button>
+            </div>
+            {onBookings && (
+              <button type="button" className="text-link" onClick={onBookings}>
+                Мои брони
+              </button>
+            )}
+          </>
+        )}
+        {step === "taken" && (
+          <>
+            <p>Пока вы смотрели, этот подарок выбрал кто-то другой.</p>
+            <button className="button primary full-width" onClick={onClose}>
+              Посмотреть другие
+            </button>
+          </>
         )}
         {error && (
           <p className="error" role="alert">

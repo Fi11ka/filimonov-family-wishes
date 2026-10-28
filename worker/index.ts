@@ -268,6 +268,8 @@ async function inviteFriends(
 }
 /** Profile photo of an account: Telegram (digits) or other sign-in (a_<uuid>) IDs. */
 const AVATAR_PATH = new RegExp(`^/api/users/(${ACCOUNT_ID_PART})/photo$`);
+/** Two people booked at once: the one who was second hears this, not a generic error. */
+const TAKEN = "Пока вы смотрели, этот подарок выбрал кто-то другой.";
 const LIST_PATH = new RegExp(`^/api/lists/(${ACCOUNT_ID_PART})$`);
 const PROFILE_PATH = new RegExp(`^/api/profiles/(${ACCOUNT_ID_PART})$`);
 const SESSION_DAYS = 30,
@@ -627,12 +629,19 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       await hash(guest),
       now(),
     ).first();
-    if (!result)
-      fail(
-        409,
-        "UNAVAILABLE",
-        "Подарок уже забронирован или ссылка недоступна.",
-      );
+    if (!result) {
+      // Someone was quicker: say so, but only to a holder of a working link.
+      const taken = await stmt(
+        db,
+        `SELECT 1 FROM gifts g JOIN guest_links l ON l.owner_id=g.owner_id JOIN reservations r ON r.gift_id=g.id
+        WHERE g.id=? AND g.archived_at IS NULL AND l.token_hash=? AND l.kind='guest' AND ${LINK_ACTIVE("l", "?")}`,
+        guestReservation[1],
+        await hash(guest),
+        now(),
+      ).first();
+      if (taken) fail(409, "TAKEN", TAKEN);
+      fail(409, "UNAVAILABLE", "Подарок недоступен или ссылка больше не работает.");
+    }
     return { ok: true, code };
   }
   if (!user && method === "GET" && path.endsWith("/photo")) {
@@ -1199,12 +1208,16 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         guestHash,
         now(),
       ).first();
-      if (!r)
-        fail(
-          409,
-          "UNAVAILABLE",
-          "Подарок уже забронирован или доступ изменился. Обновите список.",
-        );
+      if (!r) {
+        // Access was checked just above; a booking in the way means someone was quicker.
+        const taken = await stmt(
+          db,
+          "SELECT 1 FROM reservations WHERE gift_id=?",
+          id,
+        ).first();
+        if (taken) fail(409, "TAKEN", TAKEN);
+        fail(409, "UNAVAILABLE", "Подарок больше недоступен. Обновите список.");
+      }
       // «Подарить вместе»: invite friends right away.
       const invited = b.friends
         ? await inviteFriends(db, out, user, id, b.friends)

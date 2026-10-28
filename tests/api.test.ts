@@ -447,6 +447,10 @@ test("atomic concurrent reservations: exactly one succeeds", async () => {
     call(`/gifts/${g}/reservation`, 3, "POST"),
   ]);
   assert.deepEqual(r.map((x) => x.status).sort(), [200, 409]);
+  // The second one hears plainly that someone was quicker.
+  const lost = r.find((x) => x.status === 409)!;
+  assert.equal(lost.body.error.code, "TAKEN");
+  assert.match(lost.body.error.message, /выбрал кто-то другой/);
   assert.equal(
     (
       await db
@@ -1331,6 +1335,46 @@ test("guest and Telegram bookings racing for one gift have exactly one winner", 
     ),
   ]);
   assert.deepEqual(results.map((r) => r.status).sort(), [200, 409, 409]);
+  assert.deepEqual(
+    results.filter((r) => r.status === 409).map((r) => r.body.error.code),
+    ["TAKEN", "TAKEN"],
+  );
+  // A dead link is not told whether the gift is taken.
+  await call(`/guest-links/${(await call("/guest-links", 27)).body.id}`, 27, "DELETE");
+  const dead = await call(
+    `/guest-reservations/${g}`,
+    undefined,
+    "POST",
+    { name: "Тётя" },
+    link,
+  );
+  assert.equal(dead.body.error.code, "UNAVAILABLE");
+});
+test("a cancelled booking can be returned while the gift is free, never twice", async () => {
+  const g = await gift(29);
+  await call("/me", 30);
+  await db
+    .prepare(
+      "INSERT INTO follows(follower_id,target_id,status,approved_at) VALUES('30','29','approved',unixepoch())",
+    )
+    .run();
+  assert.equal((await call(`/gifts/${g}/reservation`, 30, "POST")).status, 200);
+  assert.equal((await call(`/gifts/${g}/reservation`, 30, "DELETE")).status, 200);
+  // «Вернуть» is a new booking: two quick taps still leave one.
+  const back = await Promise.all([
+    call(`/gifts/${g}/reservation`, 30, "POST", {}),
+    call(`/gifts/${g}/reservation`, 30, "POST", {}),
+  ]);
+  assert.deepEqual(back.map((x) => x.status).sort(), [200, 409]);
+  assert.equal(
+    (
+      await db
+        .prepare("SELECT COUNT(*) AS n FROM reservations WHERE gift_id=?")
+        .bind(g)
+        .first()
+    )?.n,
+    1,
+  );
 });
 
 test("PUT changes are allowed by browser CORS preflight", async () => {
