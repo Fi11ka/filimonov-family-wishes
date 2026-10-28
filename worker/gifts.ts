@@ -26,12 +26,12 @@ export function ownGift(db: D1Database, uid: string, id: string) {
     uid,
   ).first<StoredGift>();
 }
+/** Adding a wish, by hand, from the bot or by import, tells nobody. */
 export async function createGift(
   db: D1Database,
-  out: Outbox,
   owner: Identity,
   g: GiftValues,
-  options: { archived?: boolean; quiet?: boolean } = {},
+  options: { archived?: boolean } = {},
 ) {
   const archived = !!options.archived;
   await checkLimit(db, owner.id, archived);
@@ -53,8 +53,6 @@ export async function createGift(
     g.photo,
     archived ? now() : null,
   ).run();
-  // Imports pass quiet and announce the whole batch at the end.
-  if (!archived && !options.quiet) await out.wishesAdded(owner, [{ id, ...g }]);
   return id;
 }
 export async function deleteGift(
@@ -72,9 +70,8 @@ export async function deleteGift(
     id,
     owner.id,
   ).run();
-  // Archived wishes were announced when they left the list.
-  if (g.archived_at === null)
-    await out.wishRemoved(owner, g, booked, "deleted");
+  // Bookers of an archived wish were told when it left the list.
+  if (g.archived_at === null) out.wishRemoved(owner, g, booked, "deleted");
 }
 export const archiveReasons = [
   "changed_mind",
@@ -100,14 +97,10 @@ export async function archiveGift(
     id,
     owner.id,
   ).first();
-  if (r) await out.wishRemoved(owner, g, await bookers(db, id), reason);
+  if (r) out.wishRemoved(owner, g, await bookers(db, id), reason);
 }
-export async function restoreGift(
-  db: D1Database,
-  out: Outbox,
-  owner: Identity,
-  id: string,
-) {
+/** A wish back from the archive is not news either. */
+export async function restoreGift(db: D1Database, owner: Identity, id: string) {
   const g = await ownGift(db, owner.id, id);
   if (!g || g.archived_at === null) return;
   await checkLimit(db, owner.id, false);
@@ -117,5 +110,4 @@ export async function restoreGift(
     id,
     owner.id,
   ).run();
-  await out.wishesAdded(owner, [g]);
 }

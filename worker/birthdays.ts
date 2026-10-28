@@ -36,8 +36,8 @@ export async function birthdayReminders(
       next.days,
     ).first();
     if (!fresh) continue;
-    // Only people with the bell on about this person who still see the list.
-    const friends = await out.subscribers(p.id);
+    // Everyone who has this person in their «Друзья»; no bell needed.
+    const friends = await out.friendsOf(p.id);
     const date = new Intl.DateTimeFormat("ru-RU", {
       day: "numeric",
       month: "long",

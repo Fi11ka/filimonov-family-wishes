@@ -37,8 +37,6 @@ import {
   UserMinus,
   Maximize2,
   Minimize2,
-  Bell,
-  BellRing,
   Globe,
   Send,
   Bot,
@@ -614,34 +612,6 @@ function App() {
           notice("Теперь это ваш подарок, участникам ушло сообщение");
         }, "В демо брони не меняются."),
     });
-  }
-  async function toggleSubscription(f: Person) {
-    await guarded(async () => {
-      const r = await api(
-        `/api/subscriptions/${f.id}`,
-        f.subscribed ? "DELETE" : "PUT",
-      );
-      setViewed((v) =>
-        v && v.card.id === f.id
-          ? { ...v, card: { ...v.card, subscribed: r.subscribed } }
-          : v,
-      );
-      void loadFriends().catch(() => undefined);
-      if (r.subscribed && !r.notifications.bot_connected) {
-        notice("Уведомления включены. Откройте бота и нажмите «Запустить»");
-        openBot(r.notifications.bot_url);
-      } else if (r.subscribed && !r.notifications.enabled)
-        notice(
-          "Уведомления включены, но в профиле выключены сообщения бота",
-          "info",
-        );
-      else
-        notice(
-          r.subscribed
-            ? `Бот напишет, когда ${f.name.split(" ")[0]} изменит вишлист`
-            : "Уведомления о вишлисте выключены",
-        );
-    }, "В демо уведомления не включаются.");
   }
   async function markBought(g: Wish) {
     setArchiveGift(g);
@@ -1295,12 +1265,11 @@ function App() {
               {!error && showList && (
                 <>
                   {(() => {
-                    // Following, notifications and sharing the profile in one row.
+                    // Following and sharing the profile in one row.
                     if (!owner || own || tab === "archive" || !user) return null;
                     const card =
                       viewed && viewed.card.id === owner.id ? viewed.card : null;
                     if (!card) return null;
-                    const sees = card.follow === "approved" || !card.is_private;
                     return (
                       <div className="wishlist-actions">
                         <FollowButton
@@ -1309,32 +1278,6 @@ function App() {
                           onFollow={() => void followPerson(card)}
                           onUnfollow={() => unfollow(card)}
                         />
-                        {sees && (
-                          // A switch for bot messages, not removing the person from friends.
-                          <button
-                            className={`button secondary notify-toggle ${card.subscribed ? "on" : ""}`}
-                            disabled={busy}
-                            aria-pressed={!!card.subscribed}
-                            onClick={() => void toggleSubscription(card)}
-                            title={
-                              card.subscribed
-                                ? "Бот пишет в Telegram, когда вишлист меняется, и напоминает о дне рождения. Нажмите, чтобы выключить"
-                                : "Бот напишет в Telegram о новых желаниях и напомнит о дне рождения"
-                            }
-                          >
-                            {card.subscribed ? (
-                              <>
-                                <BellRing size={16} />
-                                Уведомления включены
-                              </>
-                            ) : (
-                              <>
-                                <Bell size={16} />
-                                Уведомлять
-                              </>
-                            )}
-                          </button>
-                        )}
                         <button
                           className="button secondary"
                           onClick={() => {
@@ -1956,9 +1899,6 @@ function MemberTile({
         </span>
         <strong>
           {m.name.split(" ")[0]}
-          {m.subscribed && (
-            <BellRing size={13} aria-label="Уведомления включены" />
-          )}
         </strong>
         {m.username && <small>@{m.username}</small>}
         {!pending && <span>{wishCount(m.gift_count)}</span>}

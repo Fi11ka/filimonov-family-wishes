@@ -184,9 +184,7 @@ export function Profile({
           <>Нет ника Telegram</>
         )}
       </p>
-      <p className="small-text">
-        Друзей: {friends}
-      </p>
+      <p className="small-text">Друзей: {friends}</p>
       <form
         className="profile-settings"
         onChange={() => setSaved(false)}
@@ -247,10 +245,9 @@ export function Profile({
               Уведомления в Telegram
             </label>
             <p className="small-text">
-              Бот напишет о запросах в друзья, а ещё о днях рождения, новых
-              желаниях и мероприятиях тех, у кого вы включили колокольчик, о
-              приглашениях на мероприятия и скинуться, об удалённых подарках из
-              ваших броней.
+              Бот напишет о запросах в друзья, о днях рождения и новых
+              мероприятиях ваших друзей, о приглашениях на мероприятия и
+              скинуться, об удалённых подарках из ваших броней.
             </p>
             {notify && !notifications.bot_connected && (
               <p className="small-text">

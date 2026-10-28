@@ -360,8 +360,7 @@ async function card(db: D1Database, id: string, viewer: string | null) {
     `SELECT u.id,u.name,u.username,u.is_private,CASE WHEN u.photo='' THEN NULL ELSE u.photo_at END AS photo_at,
       (SELECT COUNT(*) FROM gifts g WHERE g.owner_id=u.id AND g.archived_at IS NULL) AS gift_count,
       (SELECT CASE WHEN u.is_private=0 THEN 'approved' ELSE f.status END FROM follows f WHERE f.follower_id=?2 AND f.target_id=u.id) AS follow,
-      EXISTS(SELECT 1 FROM follows f WHERE f.follower_id=u.id AND f.target_id=?2 AND f.status='approved') AS follows_you,
-      EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscriber_id=?2 AND s.target_id=u.id) AS subscribed
+      EXISTS(SELECT 1 FROM follows f WHERE f.follower_id=u.id AND f.target_id=?2 AND f.status='approved') AS follows_you
     FROM users u WHERE u.id=?1`,
     id,
     viewer || "",
@@ -377,14 +376,12 @@ type PersonRow = {
   gift_count: number;
   follow?: "pending" | "approved" | null;
   follows_you?: number;
-  subscribed?: number;
 };
 const person = (r: PersonRow) => ({
   ...r,
   is_private: !!r.is_private,
   follow: r.follow ?? null,
   follows_you: !!r.follows_you,
-  subscribed: !!r.subscribed,
 });
 /** Binary passthrough for images and spreadsheets. Never rendered by the API origin. */
 function binary(bytes: Uint8Array, type: string) {
@@ -863,7 +860,6 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         db,
         `SELECT u.id,u.name,u.username,u.is_private,CASE WHEN u.photo='' THEN NULL ELSE u.photo_at END AS photo_at,
           (SELECT COUNT(*) FROM gifts g WHERE g.owner_id=u.id AND g.archived_at IS NULL) AS gift_count,
-          EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscriber_id=?1 AND s.target_id=u.id) AS subscribed,
           (SELECT status FROM follows o WHERE o.follower_id=?1 AND o.target_id=u.id) AS follow,
           EXISTS(SELECT 1 FROM follows i WHERE i.follower_id=u.id AND i.target_id=?1 AND i.status='approved') AS follows_you,
           (SELECT status FROM follows i WHERE i.follower_id=u.id AND i.target_id=?1) AS theirs
@@ -898,7 +894,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     return { follow: status };
   }
   if (followMatch && method === "DELETE") {
-    // Remove from friends or cancel a request; the bell about this person goes too.
+    // Remove from friends or cancel a request; news about this person stops with it.
     // Bookings stay: the person can still cancel them in «Мои брони».
     // ?revoke=1 also takes my list away from them, silently.
     const them = followMatch[1],
@@ -910,23 +906,11 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         uid,
         them,
       ),
-      stmt(
-        db,
-        "DELETE FROM subscriptions WHERE subscriber_id=? AND target_id=?",
-        uid,
-        them,
-      ),
       ...(revoke
         ? [
             stmt(
               db,
               "DELETE FROM follows WHERE follower_id=? AND target_id=?",
-              them,
-              uid,
-            ),
-            stmt(
-              db,
-              "DELETE FROM subscriptions WHERE subscriber_id=? AND target_id=?",
               them,
               uid,
             ),
@@ -960,51 +944,14 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     return { ok: true };
   }
   if (followerMatch && !followerMatch[2] && method === "DELETE") {
-    // Decline a request or remove a follower, silently. Their bell on me goes too.
-    await db.batch([
-      stmt(
-        db,
-        "DELETE FROM follows WHERE follower_id=? AND target_id=?",
-        followerMatch[1],
-        uid,
-      ),
-      stmt(
-        db,
-        "DELETE FROM subscriptions WHERE subscriber_id=? AND target_id=?",
-        followerMatch[1],
-        uid,
-      ),
-    ]);
-    return { ok: true };
-  }
-  // Subscriptions: news about a friend's wishlist in the bot.
-  const subscriptionMatch = path.match(
-    new RegExp(`^/api/subscriptions/(${ACCOUNT_ID_PART})$`),
-  );
-  if (subscriptionMatch && (method === "PUT" || method === "DELETE")) {
-    const target = subscriptionMatch[1];
-    if (method === "DELETE") {
-      await stmt(
-        db,
-        "DELETE FROM subscriptions WHERE subscriber_id=? AND target_id=?",
-        uid,
-        target,
-      ).run();
-      return { subscribed: false, notifications: await notifications(db, uid) };
-    }
-    if (!(await canView(db, target, user, null)))
-      fail(
-        403,
-        "NO_ACCESS",
-        "Уведомления доступны, когда вам виден вишлист.",
-      );
+    // Decline a request or remove a follower, silently.
     await stmt(
       db,
-      "INSERT OR IGNORE INTO subscriptions(subscriber_id,target_id) VALUES(?,?)",
+      "DELETE FROM follows WHERE follower_id=? AND target_id=?",
+      followerMatch[1],
       uid,
-      target,
     ).run();
-    return { subscribed: true, notifications: await notifications(db, uid) };
+    return { ok: true };
   }
   // ---- Lists and gifts ----
   if (path === "/api/archive" && method === "GET")
@@ -1021,36 +968,10 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   if (path === "/api/gifts" && method === "POST") {
     const b = await body(req);
     return {
-      id: await createGift(db, out, user, giftInput(b), {
+      id: await createGift(db, user, giftInput(b), {
         archived: b.archived === true,
-        quiet: b.quiet === true,
       }),
     };
-  }
-  if (path === "/api/gifts/announce" && method === "POST") {
-    // After an import: one message to subscribers about all wishes added quietly.
-    const b = await body(req);
-    const ids = Array.isArray(b.ids) ? b.ids.filter(isId).slice(0, 100) : [];
-    if (!ids.length) return { ok: true };
-    await rate(db, `announce:${uid}`, 5);
-    const rows = (
-      await stmt(
-        db,
-        `SELECT id,title,price_minor,price_max_minor,price_range,currency FROM gifts WHERE owner_id=? AND archived_at IS NULL AND created_at>? AND id IN (${ids.map(() => "?").join(",")}) ORDER BY hearts DESC,created_at`,
-        uid,
-        now() - 3600,
-        ...ids,
-      ).all<{
-        id: string;
-        title: string;
-        price_minor: number | null;
-        price_max_minor: number | null;
-        price_range: number;
-        currency: string;
-      }>()
-    ).results;
-    await out.wishesAdded(user, rows);
-    return { ok: true };
   }
   const giftMatch = path.match(
     /^\/api\/gifts\/([a-f0-9-]{36})(\/reservation(?:\/invite|\/join|\/decline|\/members)?|\/photo|\/archive|\/restore)?$/,
@@ -1111,7 +1032,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     }
     if (giftMatch[2] === "/restore" && method === "POST") {
       if (g.owner_id !== uid) missing();
-      await restoreGift(db, out, user, id);
+      await restoreGift(db, user, id);
       return { ok: true };
     }
     if (giftMatch[2] === "/archive" && method === "POST") {
