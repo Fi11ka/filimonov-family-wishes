@@ -80,8 +80,14 @@ export type Booking = {
   currency: string;
   owner_id: string;
   owner_name: string;
+  owner_photo_at?: number | null;
   organizer_name: string | null;
   archived: number;
+  shop_url?: string;
+  has_photo?: number;
+  updated_at?: number;
+  /** The owner changed these since I chose it: "title", "price", "link". */
+  changed_fields?: string | null;
   /** The owner's events, to know by when to buy. */
   owner_events: EventSpec[];
   /** The owner's parties the user is invited to. */
@@ -92,6 +98,26 @@ export type Booking = {
     username: string | null;
     status: "invited" | "joined";
   }[];
+};
+/**
+ * What I keep of my own choice once the owner closed it («Требует внимания»), or
+ * what I confirmed I gave («Подаренные»): the gift as it was then.
+ */
+export type GiverRecord = {
+  gift_id: string;
+  owner_id: string;
+  owner_name: string;
+  owner_photo_at: number | null;
+  title: string;
+  price_minor: number | null;
+  price_max_minor: number | null;
+  price_range: number;
+  currency: string;
+  shop_url: string;
+  has_photo: number;
+  reason: "deleted" | "changed_mind" | "bought_self" | "gifted" | null;
+  changed_at: number | null;
+  gifted_at: number | null;
 };
 /** How a toast reads: done, a hint that nothing changed, or a failure. */
 export type ToastTone = "ok" | "info" | "error";

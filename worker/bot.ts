@@ -18,6 +18,7 @@ import {
   archiveGift,
   createGift,
   deleteGift,
+  giftChanged,
   ownGift,
   type ArchiveReason,
   type StoredGift,
@@ -479,6 +480,7 @@ class Chat {
       ).meta?.changes ?? 0) > 0;
     await this.state(null);
     const fresh = await ownGift(this.db, this.user.id, g.id);
+    await giftChanged(this.db, this.out, this.user, g, fresh);
     const notes = [
       "Прочитала скриншот нейросетью — проверьте название и цену.",
       seen.price ? "" : "Цену не нашла — укажите её кнопкой «Цена».",
@@ -536,6 +538,7 @@ class Chat {
     } else return;
     await this.state(null);
     const fresh = await ownGift(this.db, this.user.id, g.id);
+    await giftChanged(this.db, this.out, this.user, g, fresh);
     if (fresh) await this.card(fresh, "✅ Сохранено\n");
   }
   private async set(g: StoredGift, column: string, value: string) {

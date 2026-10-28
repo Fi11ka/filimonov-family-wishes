@@ -135,23 +135,34 @@ export class Outbox {
     return rows.map((r) => r.id).filter((id) => !exclude.includes(id));
   }
   /**
-   * The owner deleted or archived a wish. `booked` must be read before the
-   * delete (reservations cascade). Only the bookers hear about it: nobody gets
-   * news about other changes to a wishlist.
+   * The owner deleted or archived a wish someone chose. Only its givers hear about
+   * it, each with the reason; their card stays in «Мои брони» (flow 16).
    */
   wishRemoved(
     owner: Named,
     gift: GiftLike,
-    booked: string[],
+    givers: string[],
     how: "deleted" | "changed_mind" | "bought_self" | "gifted",
   ) {
-    const text =
-      how === "deleted"
-        ? `⚠️ ${who(owner)} удалил(а) из вишлиста «${esc(gift.title)}» — подарок, который вы забронировали. Бронь снята.`
-        : how === "gifted"
-          ? `🎉 ${who(owner)} отметил(а) «${esc(gift.title)}» как подаренный и убрал(а) его в архив. Бронь в «Моих бронях» можно удалить.`
-          : `⚠️ ${who(owner)} убрал(а) в архив «${esc(gift.title)}» — подарок, который вы забронировали${how === "bought_self" ? " (купил(а) сам(а))" : ""}. Если вы его ещё не купили, отмените бронь.`;
-    this.send(booked, text, [[openButton(this.env, "Мои брони", "b")]]);
+    const g = `«${esc(gift.title)}»`;
+    const text = {
+      deleted: `⚠️ ${who(owner)} удалил(а) из вишлиста ${g} — подарок, который вы выбрали. Бронь закрыта, карточка осталась в «Моих бронях».`,
+      changed_mind: `⚠️ ${who(owner)} передумал(а): ${g} больше не нужен. Бронь закрыта. Если вы ещё не купили подарок, покупать не нужно.`,
+      bought_self: `⚠️ ${who(owner)} купил(а) ${g} сам(а). Бронь закрыта. Если вы ещё не купили подарок, покупать не нужно.`,
+      gifted: `🎁 ${who(owner)} отметил(а), что получил(а) ${g}. Если это ваш подарок, нажмите «Это подарил я» в «Моих бронях».`,
+    }[how];
+    this.send(givers, text, [[openButton(this.env, "Мои брони", "b")]]);
+  }
+  /** The owner changed a gift someone chose: the booking stays, they decide. */
+  giftChanged(owner: Named, gift: GiftLike, givers: string[], fields: string[]) {
+    const what = fields
+      .map((f) => ({ title: "название", price: "цену", link: "ссылку" })[f])
+      .join(", ");
+    this.send(
+      givers,
+      `✏️ ${who(owner)} изменил(а) ${what} у подарка «${esc(gift.title)}», который вы выбрали${fields.includes("price") ? (priced(gift) ? `: теперь${priced(gift).slice(2)}` : ": теперь без цены") : ""}. Бронь осталась за вами.`,
+      [[openButton(this.env, "Мои брони", "b")]],
+    );
   }
   /** The owner added their own event: their friends learn how many days are left. */
   async eventAdded(owner: Named, event: EventLike) {
