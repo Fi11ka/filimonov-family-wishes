@@ -3050,6 +3050,25 @@ button.event-chip:hover {
       var(--tg-content-safe-area-inset-top, 0px)
   );
 }
+/* Signed out: no sidebar or tab bar; the brand stays in the top bar. */
+.signed-out {
+  --tabbar: 0px;
+}
+.signed-out .sidebar {
+  display: none;
+}
+.signed-out .workspace {
+  margin-left: 0;
+}
+.signed-out .mobile-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  flex-shrink: 0;
+}
 .tg-fullscreen .app-shell {
   padding-top: var(--tg-top-inset);
 }

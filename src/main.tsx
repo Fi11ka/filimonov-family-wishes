@@ -756,9 +756,14 @@ function App() {
   const ownerFirst = owner?.name.split(" ")[0] || "друга";
   // «Поделиться» on someone's profile shares theirs; anywhere else my own.
   const sharingOwn = !(tab === "friends" && owner && !own);
+  // Signed out (a guest link too) there is nowhere to go: no menu, just the page.
+  const signedOut = locked || guestView();
   return (
-    <div className="app-shell">
-      <aside className={`sidebar ${menu ? "is-open" : ""}`}>
+    <div className={`app-shell ${signedOut ? "signed-out" : ""}`}>
+      <aside
+        className={`sidebar ${menu ? "is-open" : ""}`}
+        hidden={signedOut}
+      >
         <a className="brand" href="./">
           <span className="brand-icon">
             <Gift size={25} />
