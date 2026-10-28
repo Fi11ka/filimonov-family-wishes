@@ -29,12 +29,13 @@ import {
   type ProductLookup,
   type ScreenshotLookup,
 } from "./api";
-import { type Friend, type Wish } from "./types";
+import { type Friend, type ListRef, type Wish } from "./types";
 import { giftPhoto } from "./gift-photo";
 import { Hearts } from "./hearts";
 import { currencies, formatPrice, isCurrency } from "../shared/price";
 import { LookupState } from "./lookup-state";
 import { currentSite, shareLink, siteProfileLink } from "./share-links";
+import { WishPicker } from "./wish-picker";
 import {
   DEFAULT_FRAMING,
   PhotoFrame,
@@ -232,12 +233,15 @@ const ACTIVE_LIMIT = 100;
  */
 export function GiftForm({
   gift,
+  list = null,
   activeCount = 0,
   onSaved,
   onDirty,
   onSavingChange,
 }: {
   gift: Wish | null;
+  /** A new wish for a list kept for someone close, fixed when the form opens. */
+  list?: ListRef | null;
   /** Wishes already in the list, for «Осталось мест» and the limit. */
   activeCount?: number;
   onSaved: (id?: string) => void;
@@ -710,6 +714,7 @@ export function GiftForm({
               priority: Number(priority),
               photo: saved,
               ...(keepPhoto ? { keep_photo: true } : {}),
+              ...(!gift && list ? { list_id: list.id } : {}),
             },
           );
           try {
@@ -866,6 +871,11 @@ export function GiftForm({
         </div>
       ) : (
         <div className="gift-form-body">
+          {!gift && list && (
+            <p className="list-for">
+              Для: <strong>{list.name}</strong>
+            </p>
+          )}
           {!gift && left <= 10 && (
             <p className={full ? "error" : "limit-note"} role="status">
               {full
@@ -1173,10 +1183,20 @@ export function GiftForm({
     </form>
   );
 }
+type GuestLink = {
+  id: string;
+  kind: string;
+  web_url: string;
+  list_id: string | null;
+  list_name: string | null;
+  picked: boolean;
+  count: number | null;
+};
 type GuestLinks = {
   profile_url: string;
-  links: { id: string; kind: string; web_url: string }[];
+  links: GuestLink[];
   legacy_links?: { id: string }[];
+  web_url?: string;
 };
 /**
  * The fallback when the system menu is missing: a button, never the address
@@ -1216,35 +1236,48 @@ function CopyLink({ url }: { url: string }) {
 }
 /**
  * «Поделиться»: «Поделиться» sends the profile link (wishes after signing in),
- * «Поделиться без входа» the guest link to a simplified list. Both go to the
- * site through the system menu. Opening this window creates nothing: the guest
- * link is made only when it is shared. Revoking and replacing live in the profile.
+ * «Поделиться без входа» a guest link to a simplified list: the whole list by
+ * default, or a picked set of its wishes, each set a link of its own (П30).
+ * Both go to the site through the system menu. Opening this window creates
+ * nothing; revoking and replacing live in the profile. For a list kept for
+ * someone close, both links are about that list only.
  */
 export function Share({
   ownerId,
   ownerName,
   own = true,
+  list = null,
+  wishes = [],
 }: {
   ownerId?: string;
   ownerName?: string;
   own?: boolean;
+  /** A list kept for someone close; null is the owner's own. */
+  list?: ListRef | null;
+  /** The list's active wishes, to pick from for a guest link. */
+  wishes?: Pick<Wish, "id" | "title">[];
 }) {
   const [guestUrl, setGuestUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // «Поделиться без входа»: the whole list (null) or the wishes picked with «Готово».
+  const [guestStep, setGuestStep] = useState(false);
+  const [picked, setPicked] = useState<string[] | null>(null);
+  const [picking, setPicking] = useState(false);
   // Where the system menu was not available: the link to copy instead.
   const [fallback, setFallback] = useState<{
     kind: "profile" | "guest";
     url: string;
   } | null>(null);
+  const listQuery = list ? `?list=${encodeURIComponent(list.id)}` : "";
   useEffect(() => {
     if (!own || demo) return;
-    // Only reads: an existing guest link is ready for the click, so the system
-    // menu still opens within the person's gesture.
-    api<GuestLinks>("/api/guest-links")
-      .then((d) => setGuestUrl(d.links[0]?.web_url || ""))
+    // Only reads: the whole list's guest link, if there is one, is ready for the
+    // click, so the system menu still opens within the person's gesture.
+    api<GuestLinks>(`/api/guest-links${listQuery}`)
+      .then((d) => setGuestUrl(d.web_url || ""))
       .catch(() => undefined);
-  }, [own]);
+  }, [own, listQuery]);
   async function send(kind: "profile" | "guest") {
     setError("");
     setFallback(null);
@@ -1255,14 +1288,18 @@ export function Share({
     let url = "";
     if (kind === "profile") {
       if (!ownerId) return;
-      url = siteProfileLink(currentSite(), ownerId);
-    } else if (guestUrl) url = guestUrl;
+      url = siteProfileLink(currentSite(), ownerId, list?.id);
+    } else if (picked === null && guestUrl) url = guestUrl;
     else {
+      // Made only now, by this press: a picked set always gets a new link.
       setBusy(true);
       try {
-        url = (await api<GuestLinks>("/api/guest-links", "POST")).links[0]
-          ?.web_url;
-        setGuestUrl(url || "");
+        const r = await api<GuestLinks>("/api/guest-links", "POST", {
+          ...(list ? { list_id: list.id } : {}),
+          ...(picked !== null ? { gift_ids: picked } : {}),
+        });
+        url = r.web_url || "";
+        if (picked === null) setGuestUrl(url);
       } catch (e) {
         setError((e as Error).message);
         return;
@@ -1271,17 +1308,23 @@ export function Share({
       }
       if (!url) return;
     }
+    const whose = list ? list.name : own ? "" : ownerName || "";
     const text =
       kind === "guest"
-        ? "Мой вишлист: выберите подарок, вход не нужен"
-        : own
-          ? "Мой вишлист: выберите подарок"
-          : `Вишлист ${ownerName || ""}`.trim();
-    const result = await shareLink(url, text);
+        ? `${whose ? `Вишлист: ${whose}` : "Мой вишлист"} — выберите подарок, вход не нужен`
+        : whose
+          ? `Вишлист: ${whose}`
+          : "Мой вишлист: выберите подарок";
+    const result = await shareLink(url, text.trim());
     if (result === "unavailable") setFallback({ kind, url });
   }
   return (
     <div className="share-result share-choices">
+      {list && (
+        <p className="list-for">
+          Список: <strong>{list.name}</strong>
+        </p>
+      )}
       <button
         type="button"
         className="share-choice"
@@ -1303,9 +1346,10 @@ export function Share({
         <>
           <button
             type="button"
-            className="share-choice"
+            className={`share-choice${guestStep ? " open" : ""}`}
             disabled={busy}
-            onClick={() => void send("guest")}
+            aria-expanded={guestStep}
+            onClick={() => setGuestStep(!guestStep)}
           >
             <LinkIcon size={20} />
             <span>
@@ -1316,8 +1360,67 @@ export function Share({
               </small>
             </span>
           </button>
-          {fallback?.kind === "guest" && <CopyLink url={fallback.url} />}
+          {guestStep && (
+            <div className="guest-set">
+              <label className="setting-toggle">
+                <input
+                  type="radio"
+                  name="guest-set"
+                  checked={picked === null}
+                  onChange={() => setPicked(null)}
+                />
+                <span>
+                  Весь вишлист
+                  <small className="muted"> · новые желания появятся сами</small>
+                </span>
+              </label>
+              <label className="setting-toggle">
+                <input
+                  type="radio"
+                  name="guest-set"
+                  checked={picked !== null}
+                  onChange={() => setPicking(true)}
+                />
+                <span>
+                  {picked === null
+                    ? "Выбрать желания"
+                    : `Выбрано желаний: ${picked.length}`}
+                  {picked !== null && (
+                    <button
+                      type="button"
+                      className="text-link"
+                      onClick={() => setPicking(true)}
+                    >
+                      Изменить
+                    </button>
+                  )}
+                </span>
+              </label>
+              <button
+                type="button"
+                className="button primary full-width"
+                disabled={busy}
+                onClick={() => void send("guest")}
+              >
+                <Share2 size={17} />
+                {busy ? "Готовим ссылку…" : "Отправить ссылку"}
+              </button>
+              {fallback?.kind === "guest" && <CopyLink url={fallback.url} />}
+            </div>
+          )}
         </>
+      )}
+      {picking && (
+        <WishPicker
+          wishes={wishes}
+          initial={picked}
+          onClose={() => setPicking(false)}
+          onDone={(ids) => {
+            setPicked(ids);
+            setPicking(false);
+            setFallback(null);
+          }}
+        />
       )}
       {error && (
         <p className="error" role="alert">
@@ -1327,14 +1430,16 @@ export function Share({
     </div>
   );
 }
-/** Profile: the guest link is revoked or replaced here, apart from sending it. */
+/**
+ * Profile: guest links are revoked or replaced here, apart from sending them,
+ * each with its own confirmation. One line per list or picked set.
+ */
 export function LinkSettings() {
   const [data, setData] = useState<GuestLinks | null>(null);
-  const [ask, setAsk] = useState<
-    | { kind: "revoke" | "replace"; id: string }
-    | { kind: "legacy"; id: string }
-    | null
-  >(null);
+  const [ask, setAsk] = useState<{
+    kind: "revoke" | "replace" | "legacy";
+    link: { id: string; list_id?: string | null };
+  } | null>(null);
   const [done, setDone] = useState("");
   const [error, setError] = useState("");
   const load = () =>
@@ -1349,8 +1454,13 @@ export function LinkSettings() {
     setError("");
     setDone("");
     try {
-      await api(`/api/guest-links/${a.id}`, "DELETE");
-      if (a.kind === "replace") await api("/api/guest-links", "POST");
+      await api(`/api/guest-links/${a.link.id}`, "DELETE");
+      if (a.kind === "replace")
+        await api(
+          "/api/guest-links",
+          "POST",
+          a.link.list_id ? { list_id: a.link.list_id } : {},
+        );
       await load();
       setDone(
         a.kind === "replace"
@@ -1362,35 +1472,39 @@ export function LinkSettings() {
     }
   }
   if (demo || !data) return null;
-  const link = data.links[0];
   return (
     <section className="link-settings">
-      <h3>Ссылка без входа</h3>
-      {link ? (
-        <>
-          <p className="small-text">
-            Действует: по ней ваш список открывается без входа.
-          </p>
-          <div className="link-settings-actions">
-            <button
-              type="button"
-              className="text-link"
-              onClick={() => setAsk({ kind: "replace", id: link.id })}
-            >
-              Заменить
-            </button>
-            <button
-              type="button"
-              className="text-link danger"
-              onClick={() => setAsk({ kind: "revoke", id: link.id })}
-            >
-              Отозвать
-            </button>
+      <h3>Ссылки без входа</h3>
+      {data.links.length ? (
+        data.links.map((l) => (
+          <div className="active-link" key={l.id}>
+            <span>
+              {l.list_name || "Мой вишлист"} ·{" "}
+              {l.picked ? `выбрано желаний: ${l.count ?? 0}` : "весь список"}
+            </span>
+            <span className="link-settings-actions">
+              {!l.picked && (
+                <button
+                  type="button"
+                  className="text-link"
+                  onClick={() => setAsk({ kind: "replace", link: l })}
+                >
+                  Заменить
+                </button>
+              )}
+              <button
+                type="button"
+                className="text-link danger"
+                onClick={() => setAsk({ kind: "revoke", link: l })}
+              >
+                Отозвать
+              </button>
+            </span>
           </div>
-        </>
+        ))
       ) : (
         <p className="small-text">
-          Нет. Она появится, когда вы нажмёте «Поделиться без входа».
+          Нет. Ссылка появится, когда вы нажмёте «Поделиться без входа».
         </p>
       )}
       {(data.legacy_links || []).map((l) => (
@@ -1399,7 +1513,7 @@ export function LinkSettings() {
           <button
             type="button"
             className="text-link danger"
-            onClick={() => setAsk({ kind: "legacy", id: l.id })}
+            onClick={() => setAsk({ kind: "legacy", link: l })}
           >
             Отозвать
           </button>
@@ -1413,13 +1527,11 @@ export function LinkSettings() {
       )}
       {ask && (
         <Confirm
-          title={
-            ask.kind === "replace" ? "Заменить ссылку?" : "Отозвать ссылку?"
-          }
+          title={ask.kind === "replace" ? "Заменить ссылку?" : "Отозвать ссылку?"}
           text={
             ask.kind === "replace"
               ? "Старая ссылка перестанет работать. Новую нужно будет отправить заново."
-              : "Ссылка перестанет работать. Брони, сделанные по ней, сохранятся."
+              : "Ссылка перестанет работать. Брони, сделанные по ней, сохранятся. Другие ссылки продолжат работать."
           }
           action={ask.kind === "replace" ? "Заменить" : "Отозвать"}
           danger={ask.kind !== "replace"}

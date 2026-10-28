@@ -17,11 +17,13 @@ export interface StoredGift {
   description: string;
   priority: number;
   archived_at: number | null;
+  /** A list kept for someone close; null for the owner's own. */
+  list_id: string | null;
 }
 export function ownGift(db: D1Database, uid: string, id: string) {
   return stmt(
     db,
-    "SELECT id,owner_id,title,price_minor,price_max_minor,price_range,currency,shop_url,description,hearts AS priority,archived_at FROM gifts WHERE id=? AND owner_id=?",
+    "SELECT id,owner_id,title,price_minor,price_max_minor,price_range,currency,shop_url,description,hearts AS priority,archived_at,list_id FROM gifts WHERE id=? AND owner_id=?",
     id,
     uid,
   ).first<StoredGift>();
@@ -31,14 +33,16 @@ export async function createGift(
   db: D1Database,
   owner: Identity,
   g: GiftValues,
-  options: { archived?: boolean } = {},
+  /** list: a list kept for someone close, already checked to be the owner's. */
+  options: { archived?: boolean; list?: string | null } = {},
 ) {
   const archived = !!options.archived;
-  await checkLimit(db, owner.id, archived);
+  const list = options.list ?? null;
+  await checkLimit(db, owner.id, archived, list);
   const id = crypto.randomUUID();
   await stmt(
     db,
-    "INSERT INTO gifts(id,owner_id,title,price_minor,price_max_minor,price_range,currency,shop_url,description,hearts,priority,photo,archived_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    "INSERT INTO gifts(id,owner_id,title,price_minor,price_max_minor,price_range,currency,shop_url,description,hearts,priority,photo,archived_at,list_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     id,
     owner.id,
     g.title,
@@ -52,6 +56,7 @@ export async function createGift(
     legacyPriority(g.priority),
     g.photo,
     archived ? now() : null,
+    list,
   ).run();
   return id;
 }
@@ -89,8 +94,9 @@ async function keepForGivers(db: D1Database, giftId: string, action: OwnerAction
   await db.batch([
     stmt(
       db,
-      `INSERT INTO giver_records(user_id,gift_id,owner_id,title,price_minor,price_max_minor,price_range,currency,shop_url,photo,reason,changed_at)
-      SELECT b.user_id,g.id,g.owner_id,g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.shop_url,g.photo,?2,?3
+      `INSERT INTO giver_records(user_id,gift_id,owner_id,title,price_minor,price_max_minor,price_range,currency,shop_url,photo,reason,changed_at,list_name)
+      SELECT b.user_id,g.id,g.owner_id,g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.shop_url,g.photo,?2,?3,
+        (SELECT name FROM wishlists WHERE id=g.list_id)
       FROM gifts g JOIN (
         SELECT gift_id,user_id FROM reservations WHERE user_id IS NOT NULL
         UNION SELECT gift_id,user_id FROM reservation_members WHERE status='joined'
@@ -152,7 +158,7 @@ export async function archiveGift(
 ) {
   const g = await ownGift(db, owner.id, id);
   if (!g || g.archived_at !== null) return;
-  await checkLimit(db, owner.id, true);
+  await checkLimit(db, owner.id, true, g.list_id);
   const r = await stmt(
     db,
     "UPDATE gifts SET archived_at=unixepoch(),archive_reason=?,updated_at=unixepoch() WHERE id=? AND owner_id=? AND archived_at IS NULL RETURNING id",
@@ -210,7 +216,7 @@ export async function giftChanged(
 export async function restoreGift(db: D1Database, owner: Identity, id: string) {
   const g = await ownGift(db, owner.id, id);
   if (!g || g.archived_at === null) return;
-  await checkLimit(db, owner.id, false);
+  await checkLimit(db, owner.id, false, g.list_id);
   await stmt(
     db,
     "UPDATE gifts SET archived_at=NULL,archive_reason=NULL,gifted_by_name=NULL,gifted_by_username=NULL,updated_at=unixepoch() WHERE id=? AND owner_id=?",

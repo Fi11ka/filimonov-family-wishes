@@ -58,6 +58,7 @@ import {
   openTarget,
   photoFromUrl,
   profileTarget,
+  listTarget,
   redeemHandoff,
   RequestError,
   savedGuestName,
@@ -86,6 +87,7 @@ import {
   demoUser,
 } from "./demo";
 import { GiftForm, Share, Modal, Confirm } from "./forms";
+import { AddList, ListSwitcher } from "./lists";
 import { Profile } from "./friends";
 import { Features, Welcome } from "./welcome";
 import { Freshness } from "./freshness";
@@ -110,6 +112,7 @@ import {
   type Booking,
   type Invitation,
   type GiverRecord,
+  type ListRef,
   type ToastAction,
   type ToastTone,
   type User,
@@ -263,6 +266,13 @@ function App() {
     /** A guest link without an account: booking by name. */
     guest?: boolean;
   } | null>(null);
+  /** The lists the shown owner keeps for people close to them (П35). */
+  const [lists, setLists] = useState<ListRef[]>([]);
+  /** The list on screen: null is the owner's own, else one kept for someone. */
+  const [listMeta, setListMeta] = useState<ListRef | null>(null);
+  /** Which of my lists I last chose, to come back to it. */
+  const [myList, setMyList] = useState<string | null>(null);
+  const [addingList, setAddingList] = useState(false);
   /** A friend's list I was looking at is no longer open to me. */
   const [lostAccess, setLostAccess] = useState(false);
   /** Whose profile a link opened: the welcome dialog names them. */
@@ -278,7 +288,10 @@ function App() {
   const returning = signedInBefore();
   /** A guest link opened without an account: only that list, with bookings by name.
    * Signed in, the link just opens the list and the rest of the app works as usual. */
-  const guestView = () => !!guestToken && !signedIn();
+  // Signed in, a guest link whose wishes I cannot see otherwise (a picked set, a
+  // list kept for someone) still opens as the guest list.
+  const [guestOnly, setGuestOnly] = useState(false);
+  const guestView = () => !!guestToken && (!signedIn() || guestOnly);
   const own = !!user && owner?.id === user.id;
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   /** A toast; with `action` (e.g. «Вернуть») it stays for seven seconds. */
@@ -297,15 +310,24 @@ function App() {
     );
   };
   const fullscreen = useFullscreen((message) => notice(message, "error"));
-  async function loadList(id: string) {
+  /** A person's list; `list` picks one they keep for someone (default: the one shown). */
+  async function loadList(
+    id: string,
+    list: string | null = owner?.id === id ? (listMeta?.id ?? null) : null,
+  ) {
     setLoading(true);
     setError("");
     setLostAccess(false);
     try {
-      const d = await api(`/api/lists/${id}`);
+      const d = await api(
+        `/api/lists/${id}${list ? `?list=${encodeURIComponent(list)}` : ""}`,
+      );
       setGifts(d.gifts);
       setOwner(d.owner);
       setInvitations(d.invitations || []);
+      setLists(d.lists || []);
+      setListMeta(d.list || null);
+      if (user && id === user.id) setMyList(d.list?.id ?? null);
     } catch (e) {
       // Someone else's list closed while I was looking: say so plainly, with a way out.
       if (
@@ -329,7 +351,7 @@ function App() {
    * Someone's profile in «Друзья»: their list when it is open to me, or the
    * card with «Добавить в друзья».
    */
-  async function openPerson(id: string) {
+  async function openPerson(id: string, list: string | null = null) {
     setTab("friends");
     setNamedList(null);
     setFilters(noFilters);
@@ -348,7 +370,7 @@ function App() {
         !p.can_view && viewed?.card.id === id && !!viewed.can_view,
       );
       setViewed(p);
-      if (p.can_view) await loadList(id);
+      if (p.can_view) await loadList(id, list);
       else {
         setOwner(p.card);
         setGifts([]);
@@ -360,13 +382,17 @@ function App() {
       setLoading(false);
     }
   }
-  async function loadArchive() {
+  async function loadArchive(list: string | null = myList) {
     if (demo) return;
     setLoading(true);
     try {
-      const d = await api("/api/archive");
+      const d = await api(
+        `/api/archive${list ? `?list=${encodeURIComponent(list)}` : ""}`,
+      );
       setArchive(d.gifts);
       setOwner(d.owner);
+      setListMeta(d.list || null);
+      setMyList(d.list?.id ?? null);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -382,11 +408,13 @@ function App() {
         const d = await api("/api/guest");
         setOwner(d.owner);
         setGifts(d.gifts);
-        setInvitations(d.invitations || []);
+        setInvitations([]);
+        setLists([]);
+        setListMeta(d.list || null);
       } else if (!signedIn()) {
         // A profile link opened without signing in: an open list, or the card.
         const id = profileTarget || (await linkedProfile());
-        if (id) await openPerson(id);
+        if (id) await openPerson(id, listTarget || null);
       } else if (signedIn()) {
         // Friends depend on nothing below: ask for them together with «me».
         // Their error, if any, is raised where they used to be awaited.
@@ -416,7 +444,21 @@ function App() {
           if (!shared) notice("Ссылка не найдена или отозвана", "error");
           else if (shared !== me.user.id) {
             setSharedOwner(shared);
-            await openPerson(shared);
+            // A guest link to wishes I do not see as a friend opens as a guest list.
+            if (
+              guestToken &&
+              !(await api(`/api/profiles/${shared}`).catch(() => null))
+                ?.can_view
+            ) {
+              setGuestOnly(true);
+              const d = await api("/api/guest");
+              setOwner(d.owner);
+              setGifts(d.gifts);
+              setListMeta(d.list || null);
+              await friendsLoaded();
+              return;
+            }
+            await openPerson(shared, listTarget || null);
             await friendsLoaded();
             return;
           } else setTab("mine");
@@ -427,10 +469,15 @@ function App() {
           await friendsLoaded();
           return;
         }
-        const d = await api(`/api/lists/${id}`);
+        const list = id === me.user.id ? myList : (listMeta?.id ?? null);
+        const d = await api(
+          `/api/lists/${id}${list ? `?list=${encodeURIComponent(list)}` : ""}`,
+        );
         setOwner(d.owner);
         setGifts(d.gifts);
         setInvitations(d.invitations || []);
+        setLists(d.lists || []);
+        setListMeta(d.list || null);
         await friendsLoaded();
       }
     } catch (e) {
@@ -527,7 +574,7 @@ function App() {
       }
       return;
     }
-    if (next === "mine" && user) await loadList(user.id);
+    if (next === "mine" && user) await loadList(user.id, myList);
     if (next === "friends" && guestView()) await refresh();
     if (next === "friends" && !guestView()) {
       setOwner(null);
@@ -964,7 +1011,9 @@ function App() {
   // Signed out (a guest link too) there is nowhere to go: no menu, just the page.
   const signedOut = locked || guestView();
   return (
-    <div className={`app-shell ${signedOut ? "signed-out" : ""}`}>
+    <div
+      className={`app-shell ${signedOut ? "signed-out" : ""}${guestView() ? " guest-mode" : ""}`}
+    >
       <aside
         className={`sidebar ${menu ? "is-open" : ""}`}
         hidden={signedOut}
@@ -1070,28 +1119,33 @@ function App() {
                     <span>В Telegram</span>
                   </a>
                 )}
-            {/* The bot chat: notifications, reminders and answers to requests. */}
-            <button
-              className="switch-app"
-              onClick={() => openBot(`https://t.me/${BOT}`)}
-              aria-label="Открыть бота"
-              title="Открыть чат с ботом в Telegram"
-            >
-              <Bot size={16} />
-              <span>Открыть бота</span>
-            </button>
-            <span className="profile-name">
-              {user ? handle(user) || user.name.split(" ")[0] : "Гость"}
-            </span>
-            <button
-              className="avatar small profile-button"
-              onClick={() => setModal("profile")}
-              disabled={!user}
-              aria-label="Мой профиль"
-              title="Мой профиль"
-            >
-              <Face user={user} />
-            </button>
+            {/* A guest list has no account parts: no bot, no profile (П30). */}
+            {!guestView() && (
+              <>
+                {/* The bot chat: notifications, reminders and answers to requests. */}
+                <button
+                  className="switch-app"
+                  onClick={() => openBot(`https://t.me/${BOT}`)}
+                  aria-label="Открыть бота"
+                  title="Открыть чат с ботом в Telegram"
+                >
+                  <Bot size={16} />
+                  <span>Открыть бота</span>
+                </button>
+                <span className="profile-name">
+                  {user ? handle(user) || user.name.split(" ")[0] : "Гость"}
+                </span>
+                <button
+                  className="avatar small profile-button"
+                  onClick={() => setModal("profile")}
+                  disabled={!user}
+                  aria-label="Мой профиль"
+                  title="Мой профиль"
+                >
+                  <Face user={user} />
+                </button>
+              </>
+            )}
           </div>
         </header>
         <main>
@@ -1160,23 +1214,21 @@ function App() {
             </section>
           ) : (
             <>
-              {guestView() && (
-                <div className="guest-banner">
-                  <LinkIcon size={18} />
-                  <span>Вишлист для близких · без регистрации</span>
-                </div>
-              )}
-              {guestView() && (
-                <div className="guest-promo">
-                  <p>
-                    <strong>Хотите такой же?</strong> Заведите свой вишлист:
-                    друзья увидят, что вам подарить, а бот напомнит об их днях
-                    рождения.
+              {guestView() && error && (
+                // Without the owner's name: a dead link must not tell whose it was.
+                <section className="closed-profile guest-dead">
+                  <LinkIcon size={22} />
+                  <h3>Эта ссылка больше не работает</h3>
+                  <p className="muted">
+                    Попросите того, кто её прислал, отправить новую.
                   </p>
-                  <a className="button secondary" href={telegramAppLink()}>
-                    <Gift size={16} /> Создать свой вишлист
-                  </a>
-                </div>
+                </section>
+              )}
+              {guestView() && !error && (
+                <p className="guest-hint">
+                  Выберите подарок и нажмите «Подарю». Имя дарителя не
+                  показывается владельцу.
+                </p>
               )}
               {viewingFriend && user && (
                 <button
@@ -1186,6 +1238,7 @@ function App() {
                   <ArrowLeft size={15} /> Все друзья
                 </button>
               )}
+              {!(guestView() && error) && (
               <div
                 className={`page-title ${owner && showList && tab !== "bookings" ? "page-head" : ""}`}
               >
@@ -1202,11 +1255,13 @@ function App() {
                             ? "Архив"
                             : tab === "friends" && !guestView() && !viewingFriend
                               ? "Друзья"
-                              : own
-                                ? "Мой вишлист"
-                                : closedCard
-                                  ? owner?.name || ownerFirst
-                                  : `Вишлист: ${owner?.name || ownerFirst}`}
+                              : listMeta && !closedCard
+                                ? `Вишлист: ${listMeta.name}`
+                                : own
+                                  ? "Мой вишлист"
+                                  : closedCard
+                                    ? owner?.name || ownerFirst
+                                    : `Вишлист: ${owner?.name || ownerFirst}`}
                   </h1>
                   {tab === "mine" && user && (
                     <button
@@ -1224,9 +1279,27 @@ function App() {
                     </button>
                   )}
                   </div>
+                  {owner &&
+                    showList &&
+                    !guestView() &&
+                    (tab === "mine" || tab === "archive" || viewingFriend) &&
+                    (lists.length > 0 || (own && tab === "mine")) && (
+                      <ListSwitcher
+                        ownerFirst={own ? "Мой" : ownerFirst}
+                        lists={lists}
+                        current={listMeta?.id ?? null}
+                        canAdd={own && tab === "mine"}
+                        onPick={(id) =>
+                          void (tab === "archive"
+                            ? loadArchive(id)
+                            : loadList(owner.id, id))
+                        }
+                        onAdd={() => setAddingList(true)}
+                      />
+                    )}
                   {owner && showList && tab !== "bookings" && !closedCard && (
                     <div className="wishlist-meta">
-                      {tab !== "archive" && (
+                      {tab !== "archive" && !listMeta && !guestView() && (
                         <WishlistEvents
                           owner={owner}
                           own={own}
@@ -1253,22 +1326,31 @@ function App() {
                       )}
                       {tab !== "archive" && (
                         <Freshness
-                          checkedAt={owner.checked_at}
+                          checkedAt={
+                            listMeta ? listMeta.checked_at : owner.checked_at
+                          }
                           own={own}
+                          listId={listMeta?.id ?? null}
                           now={today}
-                          onConfirmed={(at) => {
-                            // Only my own list: the one this button belonged to.
-                            setOwner((o) =>
-                              o && user && o.id === user.id
-                                ? { ...o, checked_at: at }
-                                : o,
-                            );
-                            setUser((u) => (u ? { ...u, checked_at: at } : u));
+                          onConfirmed={(at, listId) => {
+                            // The list this button belonged to, even if another is open now.
+                            if (listId)
+                              setListMeta((l) =>
+                                l?.id === listId ? { ...l, checked_at: at } : l,
+                              );
+                            else {
+                              setOwner((o) =>
+                                o && user && o.id === user.id
+                                  ? { ...o, checked_at: at }
+                                  : o,
+                              );
+                              setUser((u) => (u ? { ...u, checked_at: at } : u));
+                            }
                             notice("Актуальность подтверждена");
                           }}
                         />
                       )}
-                      {owner.wishlist_updated_at ? (
+                      {owner.wishlist_updated_at && !listMeta ? (
                         <time
                           dateTime={new Date(
                             owner.wishlist_updated_at * 1000,
@@ -1314,7 +1396,8 @@ function App() {
                   </div>
                 )}
               </div>
-              {error && (
+              )}
+              {error && !guestView() && (
                 <div className="error" role="alert">
                   <span>{error}</span>
                   <button
@@ -2116,6 +2199,16 @@ function App() {
           }
         />
       )}
+      {addingList && (
+        <AddList
+          onClose={() => setAddingList(false)}
+          onAdded={async (l) => {
+            setAddingList(false);
+            if (user) await loadList(user.id, l.id);
+            notice(`Вишлист «${l.name}» создан`);
+          }}
+        />
+      )}
       {details && (
         <Modal title="Желание" onClose={() => setDetails(null)}>
           {(() => {
@@ -2226,6 +2319,7 @@ function App() {
           {modal === "gift" ? (
             <GiftForm
               gift={editing}
+              list={!editing && own ? listMeta : null}
               activeCount={own ? gifts.length : 0}
               onDirty={() => setGiftDirty(true)}
               onSavingChange={setGiftSaving}
@@ -2254,6 +2348,8 @@ function App() {
             />
           ) : modal === "share" ? (
             <Share
+              list={listMeta}
+              wishes={sharingOwn && own ? gifts : []}
               ownerId={sharingOwn ? user?.id : owner?.id}
               ownerName={sharingOwn ? undefined : owner?.name.split(" ")[0]}
               own={sharingOwn}
@@ -2285,6 +2381,7 @@ function App() {
             >
               <ImportDialog
                 activeCount={own ? gifts.length : 0}
+                list={own ? listMeta : null}
                 onClose={() => setModal(null)}
                 onImported={async (message) => {
                   notice(message);

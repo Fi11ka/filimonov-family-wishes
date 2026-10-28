@@ -145,32 +145,44 @@ async function canView(
   // One query: an open profile or an approved follower of a closed one, a fellow
   // guest of an upcoming party, or the guest link (the Telegram «Поделиться»
   // links now lead to the profile only). Without signing in only the guest link
-  // shows wishes, even of an open profile.
+  // shows wishes, even of an open profile. A guest link counts here only when it
+  // opens the whole personal list; other links work through the guest routes,
+  // which keep to their list and set.
   return !!(await stmt(
     db,
     `SELECT 1 AS ok WHERE (?1<>'' AND ${SEES("?2")})
     OR (?1<>'' AND ${PARTY_PEER("?1", "?2")})
-    OR (?3<>'' AND EXISTS(SELECT 1 FROM guest_links WHERE owner_id=?2 AND token_hash=?3 AND ${LINK_ACTIVE("guest_links", "?4")} AND kind='guest'))`,
+    OR (?3<>'' AND EXISTS(SELECT 1 FROM guest_links WHERE owner_id=?2 AND token_hash=?3 AND ${LINK_ACTIVE("guest_links", "?4")} AND kind='guest' AND list_id IS NULL AND picked=0))`,
     user?.id || "",
     owner,
     isToken(guest) ? await hash(guest) : "",
     now(),
   ).first());
 }
+/**
+ * Which wishes of an owner a view shows: one list (null: the personal one) and,
+ * for a guest link with picked wishes, only those.
+ */
+type Scope = { list: string | null; link?: string };
 async function list(
   db: D1Database,
   owner: string,
   user: Identity | null,
   guestView = false,
+  scope: Scope = { list: null },
 ) {
+  const where = `g.list_id IS ?3 AND (?4='' OR EXISTS(SELECT 1 FROM guest_link_gifts lg WHERE lg.link_id=?4 AND lg.gift_id=g.id))`;
   // The owner's list never reads reservations; others (a guest link without
   // signing in too) see only whether a gift is free.
   if (!guestView && user?.id === owner)
     return (
       await stmt(
         db,
-        `SELECT ${giftColumns} FROM gifts g WHERE g.owner_id=? AND g.archived_at IS NULL ORDER BY g.hearts DESC,g.created_at DESC,g.id`,
+        `SELECT ${giftColumns} FROM gifts g WHERE g.owner_id=?2 AND g.archived_at IS NULL AND ${where} ORDER BY g.hearts DESC,g.created_at DESC,g.id`,
+        "",
         owner,
+        scope.list,
+        scope.link || "",
       ).all<Gift>()
     ).results;
   // Guests of an event see who booked; the owner returned above and never does.
@@ -183,9 +195,11 @@ async function list(
       WHEN EXISTS(SELECT 1 FROM reservation_members m WHERE m.gift_id=g.id AND m.user_id=?1) THEN 'invited'
       ELSE 'reserved' END AS reservation,
       CASE WHEN r.user_id=?1 OR EXISTS(SELECT 1 FROM reservation_members m WHERE m.gift_id=g.id AND m.user_id=?1) THEN (SELECT COUNT(*) FROM reservation_members m WHERE m.gift_id=g.id AND m.status='joined') END AS group_joined
-      FROM gifts g LEFT JOIN reservations r ON r.gift_id=g.id WHERE g.owner_id=?2 AND g.archived_at IS NULL ORDER BY g.hearts DESC,g.created_at DESC,g.id`,
+      FROM gifts g LEFT JOIN reservations r ON r.gift_id=g.id WHERE g.owner_id=?2 AND g.archived_at IS NULL AND ${where} ORDER BY g.hearts DESC,g.created_at DESC,g.id`,
       guestView ? "" : user?.id || "",
       owner,
+      scope.list,
+      scope.link || "",
     ).all(),
     guestView || !user ? null : bookerNames(db, owner, user.id),
   ]);
@@ -197,6 +211,37 @@ async function list(
       )
     : r.results;
 }
+/** The lists someone keeps for people close to them, oldest first. */
+async function managedLists(db: D1Database, manager: string) {
+  return (
+    await stmt(
+      db,
+      "SELECT id,name,checked_at FROM wishlists WHERE manager_id=? ORDER BY created_at,id",
+      manager,
+    ).all<{ id: string; name: string; checked_at: number | null }>()
+  ).results;
+}
+/** ?list=<id>: one of the owner's lists kept for someone, or null for the personal one. */
+async function pickList(db: D1Database, owner: string, raw: unknown) {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const l = isId(raw)
+    ? await stmt(
+        db,
+        "SELECT id,name,checked_at FROM wishlists WHERE id=? AND manager_id=?",
+        raw,
+        owner,
+      ).first<{ id: string; name: string; checked_at: number | null }>()
+    : null;
+  if (!l) missing();
+  return l;
+}
+/**
+ * A wish a guest link opens: the link works, the wish is in its list and, for a
+ * picked set, in the set. Checked again whenever a guest books or loads a photo.
+ */
+const GUEST_SEES = `SELECT 1 FROM gifts g JOIN guest_links l ON l.owner_id=g.owner_id
+  WHERE g.id=?1 AND g.archived_at IS NULL AND l.token_hash=?2 AND l.kind='guest' AND ${LINK_ACTIVE("l", "?3")}
+  AND g.list_id IS l.list_id AND (l.picked=0 OR EXISTS(SELECT 1 FROM guest_link_gifts lg WHERE lg.link_id=l.id AND lg.gift_id=g.id))`;
 /** Whether the bot can write to the user: they pressed Start and did not block it. */
 async function notifications(db: D1Database, uid: string) {
   const r = await stmt(
@@ -272,6 +317,8 @@ async function inviteFriends(
 const AVATAR_PATH = new RegExp(`^/api/users/(${ACCOUNT_ID_PART})/photo$`);
 /** Two people booked at once: the one who was second hears this, not a generic error. */
 const TAKEN = "Пока вы смотрели, этот подарок выбрал кто-то другой.";
+/** Lists one can keep for people close to them. */
+const LIST_LIMIT = 10;
 const LIST_PATH = new RegExp(`^/api/lists/(${ACCOUNT_ID_PART})$`);
 const PROFILE_PATH = new RegExp(`^/api/profiles/(${ACCOUNT_ID_PART})$`);
 const SESSION_DAYS = 30,
@@ -533,17 +580,37 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     if (!isToken(guest)) missing();
     const link = await stmt(
       db,
-      `SELECT owner_id FROM guest_links WHERE token_hash=? AND ${LINK_ACTIVE("guest_links", "?")} AND kind='guest'`,
+      `SELECT l.id,l.owner_id,l.list_id,l.picked,w.name AS list_name,w.checked_at AS list_checked_at
+      FROM guest_links l LEFT JOIN wishlists w ON w.id=l.list_id
+      WHERE l.token_hash=? AND ${LINK_ACTIVE("l", "?")} AND l.kind='guest'`,
       await hash(guest),
       now(),
-    ).first<{ owner_id: string }>();
+    ).first<{
+      id: string;
+      owner_id: string;
+      list_id: string | null;
+      picked: number;
+      list_name: string | null;
+      list_checked_at: number | null;
+    }>();
     if (!link) missing();
+    // Only this list, and for a picked set only those wishes; never the others.
     const [owner, gifts] = await Promise.all([
       profile(db, link.owner_id, user?.id === link.owner_id),
-      list(db, link.owner_id, user, true),
+      list(db, link.owner_id, user, true, {
+        list: link.list_id,
+        link: link.picked ? link.id : "",
+      }),
     ]);
     return {
       owner,
+      list: link.list_id
+        ? {
+            id: link.list_id,
+            name: link.list_name,
+            checked_at: link.list_checked_at,
+          }
+        : null,
       gifts,
       invitations: [],
       can_reserve: true,
@@ -581,15 +648,20 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   if (listMatch && method === "GET") {
     const owner = listMatch[1];
     if (!(await canView(db, owner, user, guest))) missing();
-    // Access is settled; the three reads do not depend on each other.
-    const [p, gifts, invited] = await Promise.all([
+    // Whoever sees the owner's list sees every list they keep for someone (П35).
+    const chosen = await pickList(db, owner, url.searchParams.get("list"));
+    // Access is settled; the reads do not depend on each other.
+    const [p, gifts, invited, lists] = await Promise.all([
       profile(db, owner, owner === user?.id),
-      list(db, owner, user),
-      invitations(db, owner, user?.id || null),
+      list(db, owner, user, false, { list: chosen?.id ?? null }),
+      chosen ? [] : invitations(db, owner, user?.id || null),
+      managedLists(db, owner),
     ]);
     if (!p) missing();
     return {
       owner: p,
+      lists: lists.map(({ id, name }) => ({ id, name })),
+      list: chosen,
       gifts,
       invitations: invited,
       is_owner: owner === user?.id,
@@ -620,24 +692,22 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       fail(400, "VALIDATION", "Введите имя того, кто покупает подарок.");
     if (!isToken(guest)) missing();
     const code = token();
+    // The link, its list and its set are checked inside the write itself.
     const result = await stmt(
       db,
       `INSERT INTO reservations(gift_id,guest_name,guest_code_hash)
-      SELECT g.id,?,? FROM gifts g JOIN guest_links l ON l.owner_id=g.owner_id
-      WHERE g.id=? AND g.archived_at IS NULL AND l.token_hash=? AND l.kind='guest'
-      AND ${LINK_ACTIVE("l", "?")} ON CONFLICT(gift_id) DO NOTHING RETURNING gift_id`,
-      name,
-      await hash(code),
+      SELECT ?1,?4,?5 WHERE EXISTS(${GUEST_SEES}) ON CONFLICT(gift_id) DO NOTHING RETURNING gift_id`,
       guestReservation[1],
       await hash(guest),
       now(),
+      name,
+      await hash(code),
     ).first();
     if (!result) {
       // Someone was quicker: say so, but only to a holder of a working link.
       const taken = await stmt(
         db,
-        `SELECT 1 FROM gifts g JOIN guest_links l ON l.owner_id=g.owner_id JOIN reservations r ON r.gift_id=g.id
-        WHERE g.id=? AND g.archived_at IS NULL AND l.token_hash=? AND l.kind='guest' AND ${LINK_ACTIVE("l", "?")}`,
+        `SELECT 1 FROM reservations WHERE gift_id=?1 AND EXISTS(${GUEST_SEES})`,
         guestReservation[1],
         await hash(guest),
         now(),
@@ -649,14 +719,17 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   }
   if (!user && method === "GET" && path.endsWith("/photo")) {
     const match = path.match(/^\/api\/gifts\/([a-f0-9-]{36})\/photo$/);
-    const g = match
-      ? await stmt(
-          db,
-          "SELECT owner_id,photo FROM gifts WHERE id=? AND archived_at IS NULL",
-          match[1],
-        ).first<{ owner_id: string; photo: string }>()
-      : null;
-    if (!g || !(await canView(db, g.owner_id, null, guest))) missing();
+    const g =
+      match && isToken(guest)
+        ? await stmt(
+            db,
+            `SELECT photo FROM gifts WHERE id=?1 AND EXISTS(${GUEST_SEES})`,
+            match[1],
+            await hash(guest),
+            now(),
+          ).first<{ photo: string }>()
+        : null;
+    if (!g) missing();
     return { photo: g.photo };
   }
   if (!user) fail(401, "AUTH_REQUIRED", "Откройте приложение через Telegram.");
@@ -733,9 +806,21 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     return { user: await profile(db, uid, true) };
   }
   if (path === "/api/me/checked" && method === "POST") {
-    // «Подтвердить актуальность»: only one's own list, and it tells nobody.
+    // «Подтвердить актуальность»: only a list of one's own, and it tells nobody.
+    // The list is the one the button belonged to, sent with the request.
+    const b = req.headers.get("content-type")?.startsWith("application/json")
+      ? await body(req)
+      : {};
+    const chosen = await pickList(db, uid, b.list_id);
     const at = now();
-    await stmt(db, "UPDATE users SET checked_at=? WHERE id=?", at, uid).run();
+    if (chosen)
+      await stmt(
+        db,
+        "UPDATE wishlists SET checked_at=? WHERE id=?",
+        at,
+        chosen.id,
+      ).run();
+    else await stmt(db, "UPDATE users SET checked_at=? WHERE id=?", at, uid).run();
     return { checked_at: at };
   }
   if (path === "/api/me" && method === "PATCH") {
@@ -973,22 +1058,46 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     return { ok: true };
   }
   // ---- Lists and gifts ----
-  if (path === "/api/archive" && method === "GET")
+  if (path === "/api/archive" && method === "GET") {
+    const chosen = await pickList(db, uid, url.searchParams.get("list"));
     return {
       owner: await profile(db, uid, true),
+      list: chosen,
       gifts: (
         await stmt(
           db,
-          `SELECT ${giftColumns},g.archived_at,g.archive_reason FROM gifts g WHERE g.owner_id=? AND g.archived_at IS NOT NULL ORDER BY g.archived_at DESC,g.id`,
+          `SELECT ${giftColumns},g.archived_at,g.archive_reason FROM gifts g WHERE g.owner_id=? AND g.list_id IS ? AND g.archived_at IS NOT NULL ORDER BY g.archived_at DESC,g.id`,
           uid,
+          chosen?.id ?? null,
         ).all()
       ).results,
     };
+  }
+  if (path === "/api/wishlists" && method === "POST") {
+    // «Добавить вишлист близкого»: a name is all it takes; access is the same as mine.
+    await rate(db, `wishlists:${uid}`, 10);
+    const name = text((await body(req)).name, 60).trim();
+    if (!name) fail(400, "VALIDATION", "Введите имя.");
+    if ((await managedLists(db, uid)).length >= LIST_LIMIT)
+      fail(409, "LIST_LIMIT", `Можно вести до ${LIST_LIMIT} вишлистов близких.`);
+    const id = crypto.randomUUID();
+    await stmt(
+      db,
+      "INSERT INTO wishlists(id,manager_id,name) VALUES(?,?,?)",
+      id,
+      uid,
+      name,
+    ).run();
+    return { list: { id, name, checked_at: null } };
+  }
   if (path === "/api/gifts" && method === "POST") {
     const b = await body(req);
+    // A wish goes to the list chosen when the form opened, mine or one I keep.
+    const chosen = await pickList(db, uid, b.list_id);
     return {
       id: await createGift(db, user, giftInput(b), {
         archived: b.archived === true,
+        list: chosen?.id ?? null,
       }),
     };
   }
@@ -1325,12 +1434,14 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         `SELECT r.gift_id,
         CASE WHEN r.user_id=?1 THEN 'organizer' ELSE m.status END AS role,
         CASE WHEN m.user_id IS NOT NULL OR ${SEES("g.owner_id")} OR ${PARTY_PEER("?1", "g.owner_id")} OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=g.owner_id AND ${LINK_ACTIVE("l", "?2")}) THEN 1 ELSE 0 END AS visible,
-        g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.shop_url,g.owner_id,ou.name AS owner_name,org.name AS organizer_name,
-        CASE WHEN ou.photo='' THEN NULL ELSE ou.photo_at END AS owner_photo_at,
+        g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.shop_url,g.owner_id,org.name AS organizer_name,
+        COALESCE(wl.name,ou.name) AS owner_name,
+        CASE WHEN ou.photo='' OR wl.id IS NOT NULL THEN NULL ELSE ou.photo_at END AS owner_photo_at,
         CASE WHEN g.photo='' THEN 0 ELSE 1 END AS has_photo,g.updated_at,r.changed_fields,
         ou.birthday,ou.gender,ou.event_title,ou.event_date,
         CASE WHEN g.archived_at IS NULL THEN 0 ELSE 1 END AS archived
       FROM reservations r JOIN gifts g ON g.id=r.gift_id JOIN users ou ON ou.id=g.owner_id
+      LEFT JOIN wishlists wl ON wl.id=g.list_id
       LEFT JOIN users org ON org.id=r.user_id
       LEFT JOIN reservation_members m ON m.gift_id=r.gift_id AND m.user_id=?1
       WHERE (r.user_id=?1 OR m.user_id IS NOT NULL) AND g.owner_id<>?1
@@ -1362,7 +1473,8 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     const records = (
       await stmt(
         db,
-        `SELECT gr.gift_id,gr.owner_id,u.name AS owner_name,CASE WHEN u.photo='' THEN NULL ELSE u.photo_at END AS owner_photo_at,
+        `SELECT gr.gift_id,gr.owner_id,COALESCE(gr.list_name,u.name) AS owner_name,
+          CASE WHEN u.photo='' OR gr.list_name IS NOT NULL THEN NULL ELSE u.photo_at END AS owner_photo_at,
           gr.title,gr.price_minor,gr.price_max_minor,gr.price_range,gr.currency,gr.shop_url,
           CASE WHEN gr.photo='' THEN 0 ELSE 1 END AS has_photo,gr.reason,gr.changed_at,gr.gifted_at
         FROM giver_records gr JOIN users u ON u.id=gr.owner_id
@@ -1414,42 +1526,105 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   }
   if (path === "/api/guest-links" && (method === "GET" || method === "POST")) {
     // «Поделиться»: the profile link (gives no access by itself) and the owner's
-    // secret guest link for booking by name without an account. GET only reads;
-    // the guest link is made by POST, when the owner shares it.
-    if (method === "POST") await rate(db, `links:${uid}`, 5);
-    const find = () =>
+    // guest links, one per list or picked set (П30). GET only reads; a guest link
+    // is made by POST, when the owner shares it.
+    const b =
+      method === "POST" &&
+      req.headers.get("content-type")?.startsWith("application/json")
+        ? await body(req)
+        : {};
+    const chosen = await pickList(
+      db,
+      uid,
+      method === "POST" ? b.list_id : url.searchParams.get("list"),
+    );
+    const listId = chosen?.id ?? null;
+    let made: { id: string; token_value: string } | null = null;
+    const whole = () =>
       stmt(
         db,
-        "SELECT id,token_value FROM guest_links WHERE owner_id=?1 AND created_by=?1 AND kind='guest' AND revoked_at IS NULL AND token_value IS NOT NULL LIMIT 1",
+        "SELECT id,token_value FROM guest_links WHERE owner_id=?1 AND created_by=?1 AND kind='guest' AND list_id IS ?2 AND picked=0 AND revoked_at IS NULL AND token_value IS NOT NULL LIMIT 1",
         uid,
+        listId,
       ).first<{ id: string; token_value: string }>();
-    let link = await find();
-    if (!link && method === "POST") {
+    if (method === "POST") {
+      await rate(db, `links:${uid}`, 5);
       const raw = token();
+      const id = crypto.randomUUID();
+      if (Array.isArray(b.gift_ids)) {
+        // A picked set: its own link. Only active wishes of this list count; an
+        // empty set opens nothing rather than the whole list.
+        const ids = b.gift_ids.filter(isId).slice(0, 100);
+        await db.batch([
+          stmt(
+            db,
+            `INSERT INTO guest_links(id,owner_id,created_by,token_hash,expires_at,kind,token_value,list_id,picked)
+            VALUES(?1,?2,?2,?3,253402300799,'guest',?4,?5,1)`,
+            id,
+            uid,
+            await hash(raw),
+            raw,
+            listId,
+          ),
+          ...ids.map((g: string) =>
+            stmt(
+              db,
+              `INSERT OR IGNORE INTO guest_link_gifts(link_id,gift_id)
+              SELECT ?1,id FROM gifts WHERE id=?2 AND owner_id=?3 AND list_id IS ?4 AND archived_at IS NULL`,
+              id,
+              g,
+              uid,
+              listId,
+            ),
+          ),
+        ]);
+        made = { id, token_value: raw };
+      } else {
+        await stmt(
+          db,
+          `INSERT OR IGNORE INTO guest_links(id,owner_id,created_by,token_hash,expires_at,kind,token_value,list_id)
+          VALUES(?1,?2,?2,?3,253402300799,'guest',?4,?5)`,
+          id,
+          uid,
+          await hash(raw),
+          raw,
+          listId,
+        ).run();
+        made = await whole();
+      }
+    }
+    const site = https(env.APP_URL);
+    const all = (
       await stmt(
         db,
-        `INSERT OR IGNORE INTO guest_links(id,owner_id,created_by,token_hash,expires_at,kind,token_value)
-        VALUES(?1,?2,?2,?3,253402300799,'guest',?4)`,
-        crypto.randomUUID(),
+        `SELECT l.id,l.token_value,l.list_id,l.picked,w.name AS list_name,
+          (SELECT COUNT(*) FROM guest_link_gifts lg JOIN gifts g ON g.id=lg.gift_id WHERE lg.link_id=l.id AND g.archived_at IS NULL) AS count
+        FROM guest_links l LEFT JOIN wishlists w ON w.id=l.list_id
+        WHERE l.owner_id=?1 AND l.created_by=?1 AND l.kind='guest' AND l.revoked_at IS NULL AND l.token_value IS NOT NULL
+        ORDER BY l.list_id IS NOT NULL,w.created_at,l.picked,l.created_at`,
         uid,
-        await hash(raw),
-        raw,
-      ).run();
-      link = await find();
-    }
-    const links = link
-      ? [
-          {
-            id: link.id,
-            kind: "guest",
-            web_url: `${https(env.APP_URL)}#guest=${link.token_value}`,
-          },
-        ]
-      : [];
+      ).all<{
+        id: string;
+        token_value: string;
+        list_id: string | null;
+        picked: number;
+        list_name: string | null;
+        count: number;
+      }>()
+    ).results.map((l) => ({
+      id: l.id,
+      kind: "guest",
+      list_id: l.list_id,
+      list_name: l.list_name,
+      picked: !!l.picked,
+      count: l.picked ? l.count : null,
+      web_url: `${site}#guest=${l.token_value}`,
+    }));
+    const current = made || (await whole());
     return {
       // A link to the site; without signing in it shows only the card.
-      profile_url: siteProfileLink(https(env.APP_URL), uid),
-      links,
+      profile_url: siteProfileLink(site, uid, listId),
+      links: all,
       legacy_links: (
         await stmt(
           db,
@@ -1458,8 +1633,10 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
           now(),
         ).all()
       ).results,
-      id: link?.id,
-      token: link?.token_value,
+      // The link this answer is about: just made, or the whole list's one.
+      id: current?.id,
+      token: current?.token_value,
+      web_url: current ? `${site}#guest=${current.token_value}` : undefined,
     };
   }
   const linkMatch = path.match(/^\/api\/guest-links\/([a-f0-9-]{36})$/);

@@ -312,6 +312,7 @@ before(async () => {
   await migrate("migrations/0020_drop_subscriptions.sql");
   await migrate("migrations/0021_giver_records.sql");
   await migrate("migrations/0022_wishlist_checked.sql");
+  await migrate("migrations/0023_managed_lists_guest_sets.sql");
   assert.deepEqual(
     {
       ...(await db
@@ -3250,4 +3251,127 @@ test("a wish saved before its photo loaded keeps the stored photo; a removed pho
   // Without it an empty photo means «Удалить фото».
   await call(`/gifts/${g}`, 7951, "PUT", { ...input, photo: "" });
   assert.equal(await photoOf(), "");
+});
+test("lists kept for someone close: a name is enough, access is the manager's, wishes stay in their list", async () => {
+  await befriend(8101, 8102);
+  await call("/me", 8103);
+  // A name only; an empty one creates nothing.
+  assert.equal((await call("/wishlists", 8101, "POST", { name: " " })).status, 400);
+  const masha = (await call("/wishlists", 8101, "POST", { name: "Маша" })).body
+    .list;
+  assert.equal(masha.name, "Маша");
+  // A wish for Masha stays in her list; the personal list is untouched.
+  const own = await gift(8101, { title: "Моё" });
+  const hers = await gift(8101, { title: "Кукла", list_id: masha.id });
+  let mine = (await call("/lists/8101", 8101)).body;
+  assert.deepEqual(mine.gifts.map((g: any) => g.id), [own]);
+  assert.deepEqual(mine.lists, [{ id: masha.id, name: "Маша" }]);
+  const list = (await call(`/lists/8101?list=${masha.id}`, 8101)).body;
+  assert.deepEqual(list.gifts.map((g: any) => g.id), [hers]);
+  assert.equal(list.list.name, "Маша");
+  // Nobody adds to a list they do not keep.
+  assert.equal(
+    (await call("/gifts", 8102, "POST", { ...input, list_id: masha.id })).status,
+    404,
+  );
+  // A friend who sees my list sees Masha's too, including a list made later; and books there.
+  const granny = (await call("/wishlists", 8101, "POST", { name: "Бабушка" }))
+    .body.list;
+  const friend = (await call(`/lists/8101?list=${granny.id}`, 8102)).body;
+  assert.equal(friend.list.name, "Бабушка");
+  assert.equal(
+    (await call(`/gifts/${hers}/reservation`, 8102, "POST")).status,
+    200,
+  );
+  // The giver's booking names Masha, not the manager.
+  assert.equal(
+    (await call("/reservations", 8102)).body.reservations[0].owner_name,
+    "Маша",
+  );
+  // A stranger sees none of them, and closing access closes them all.
+  assert.equal((await call(`/lists/8101?list=${masha.id}`, 8103)).status, 404);
+  await call("/followers/8102", 8101, "DELETE");
+  await call("/follows/8101", 8102, "DELETE");
+  assert.equal((await call(`/lists/8101?list=${masha.id}`, 8102)).status, 404);
+  // Archive and «актуальность» are per list.
+  await call(`/gifts/${hers}/archive`, 8101, "POST", { reason: "changed_mind" });
+  assert.deepEqual(
+    (await call(`/archive?list=${masha.id}`, 8101)).body.gifts.map((g: any) => g.id),
+    [hers],
+  );
+  assert.equal((await call("/archive", 8101)).body.gifts.length, 0);
+  await call("/me/checked", 8101, "POST", { list_id: masha.id });
+  mine = (await call("/lists/8101", 8101)).body;
+  assert.equal(mine.owner.checked_at, null);
+  assert.ok((await call(`/lists/8101?list=${masha.id}`, 8101)).body.list.checked_at);
+  // Someone else's list id is not mine to confirm.
+  assert.equal(
+    (await call("/me/checked", 8102, "POST", { list_id: masha.id })).status,
+    404,
+  );
+});
+test("guest links open one list, whole or a picked set, and nothing else", async () => {
+  const masha = (await call("/wishlists", 8201, "POST", { name: "Маша" })).body
+    .list;
+  const a = await gift(8201, { title: "Моё А" });
+  const b = await gift(8201, { title: "Моё Б" });
+  const m = await gift(8201, { title: "Машино", list_id: masha.id });
+  // Opening «Поделиться» creates nothing.
+  assert.equal((await call("/guest-links", 8201)).body.id, undefined);
+  const whole = (await call("/guest-links", 8201, "POST", {})).body.token;
+  const picked = (
+    await call("/guest-links", 8201, "POST", { gift_ids: [a, m] })
+  ).body.token;
+  const empty = (await call("/guest-links", 8201, "POST", { gift_ids: [] }))
+    .body.token;
+  const hers = (
+    await call("/guest-links", 8201, "POST", { list_id: masha.id })
+  ).body.token;
+  const seen = async (t: string) =>
+    (await call("/guest", undefined, "GET", undefined, t)).body.gifts
+      .map((g: any) => g.id)
+      .sort();
+  assert.deepEqual(await seen(whole), [a, b].sort());
+  // A picked set keeps to itself: Masha's wish was not in this list, b was not picked.
+  assert.deepEqual(await seen(picked), [a]);
+  assert.deepEqual(await seen(empty), []);
+  assert.deepEqual(await seen(hers), [m]);
+  // A new wish shows on the whole link only.
+  const c = await gift(8201, { title: "Новое" });
+  assert.ok((await seen(whole)).includes(c));
+  assert.ok(!(await seen(picked)).includes(c));
+  // Booking and photos outside the set are refused, inside it work.
+  assert.equal(
+    (
+      await call(`/guest-reservations/${b}`, undefined, "POST", { name: "Тётя" }, picked)
+    ).status,
+    409,
+  );
+  assert.equal(
+    (await call(`/gifts/${b}/photo`, undefined, "GET", undefined, picked)).status,
+    404,
+  );
+  assert.equal(
+    (await call(`/gifts/${a}/photo`, undefined, "GET", undefined, picked)).status,
+    200,
+  );
+  assert.equal(
+    (
+      await call(`/guest-reservations/${a}`, undefined, "POST", { name: "Тётя" }, picked)
+    ).status,
+    200,
+  );
+  // Each set is its own link; revoking one leaves the others.
+  const links = (await call("/guest-links", 8201)).body.links;
+  assert.equal(links.length, 4);
+  // Masha's wish never joined the personal set: one wish in it.
+  const pickedLink = links.find((l: any) => l.picked && l.count === 1);
+  await call(`/guest-links/${pickedLink.id}`, 8201, "DELETE");
+  assert.equal(
+    (await call("/guest", undefined, "GET", undefined, picked)).status,
+    404,
+  );
+  assert.deepEqual(await seen(hers), [m]);
+  // The whole personal list's link is the same one again.
+  assert.equal((await call("/guest-links", 8201, "POST", {})).body.token, whole);
 });

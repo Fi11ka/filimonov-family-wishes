@@ -16,28 +16,37 @@ const day = (seconds: number) =>
 export function Freshness({
   checkedAt,
   own,
+  listId = null,
   now,
   onConfirmed,
 }: {
   checkedAt: number | null | undefined;
   /** The owner sees the button; others only the status. */
   own: boolean;
+  /** A list kept for someone close; null is the owner's own. */
+  listId?: string | null;
   now: Date;
-  onConfirmed: (at: number) => void;
+  /** With the list the press was for, even if another is open by now. */
+  onConfirmed: (at: number, listId: string | null) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const state = freshness(checkedAt, now.getTime());
   async function confirm() {
+    const target = listId;
     if (demo) {
-      onConfirmed(Math.floor(Date.now() / 1000));
+      onConfirmed(Math.floor(Date.now() / 1000), target);
       return;
     }
     setBusy(true);
     setFailed(false);
     try {
-      const r = await api<{ checked_at: number }>("/api/me/checked", "POST");
-      onConfirmed(r.checked_at);
+      const r = await api<{ checked_at: number }>(
+        "/api/me/checked",
+        "POST",
+        target ? { list_id: target } : {},
+      );
+      onConfirmed(r.checked_at, target);
     } catch {
       // The old date and status stay as they were.
       setFailed(true);

@@ -49,6 +49,10 @@ export const profileTarget =
     start.startsWith("p_") ? start.slice(2) : "",
     new URLSearchParams(location.search).get("p") || "",
   ].find((id) => isAccountId(id)) || "";
+/** ?l=<id>: which list kept for someone close a profile link opens first. */
+export const listTarget =
+  new URLSearchParams(location.search).get("l")?.match(/^[a-f0-9-]{36}$/)?.[0] ||
+  "";
 /** Old «Поделиться» (s_) and friend invitation (f_) links: the server names whose profile they lead to. */
 export const legacyLink =
   start.startsWith("s_") || start.startsWith("f_") ? start.slice(2) : "";
