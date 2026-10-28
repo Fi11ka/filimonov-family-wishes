@@ -1,10 +1,10 @@
-# Бесплатная публикация: GitHub Pages + Cloudflare Workers + D1
+# Бесплатная публикация: Cloudflare Workers + D1
 
 Подготовлено для `anastasiacopodevinho/filimonov-family-wishes` и уже существующего бота `@FilimonovFamilyWishes_bot`. Если выберете другой репозиторий или аккаунт, измените URL в шаге 3. Секрет бота не передавайте в чат, GitHub, исходники или Vite-переменные.
 
 ## 0. Текущее состояние
 
-Исходники опубликованы в [репозитории](https://github.com/anastasiacopodevinho/filimonov-family-wishes), автоматические проверки проходят. GitHub Pages настроен на GitHub Actions, переменная `VITE_API_URL` задана. Создана D1 `family-wishes`, её настоящий ID записан в `wrangler.jsonc`.
+Исходники лежат в [репозитории](https://github.com/anastasiacopodevinho/filimonov-family-wishes), автоматические проверки проходят. Сайт и API публикует один Worker через Cloudflare Workers Builds, GitHub Pages больше не используется, поэтому репозиторий может быть приватным. Создана D1 `family-wishes`, её настоящий ID записан в `wrangler.jsonc`.
 
 Публикация Worker ещё не завершена: форма Cloudflare подготовлена, ожидается подтверждение прав служебного токена сборки. Миграция удалённой базы ещё не применена. `BOT_TOKEN` ещё не добавлен. `PUBLISH_READY` пока не включён, поэтому неподключённый интерфейс не публикуется. Telegram-приёмка ещё не выполнена.
 
@@ -12,7 +12,7 @@
 
 Все действия для публикации выполняются в браузере. GitHub и Cloudflare запускают инструменты сборки у себя; приложение работает на Workers без постоянно запущенного Node.js-сервера. Команды в полях Cloudflare — настройки облачной сборки, их не нужно запускать на своём компьютере.
 
-Используйте бесплатные планы GitHub и Cloudflare. Не включайте Workers Paid и платные дополнения. Домен покупать не нужно: используются `github.io` и `workers.dev`.
+Используйте бесплатные планы GitHub и Cloudflare. Не включайте Workers Paid и платные дополнения. Домен покупать не нужно: используется `workers.dev`.
 
 ## 2. Постоянная D1
 
@@ -27,12 +27,14 @@
 
 ## 3. Адреса приложения
 
-- Интерфейс: `https://anastasiacopodevinho.github.io/filimonov-family-wishes/`.
-- API: `https://filimonov-family-wishes-api.anastasia-filimonova-kokorina.workers.dev`.
-- `APP_ORIGIN`: `https://anastasiacopodevinho.github.io` без пути.
-- `APP_URL`: полный адрес интерфейса с завершающим `/`.
+- Сайт: `https://filimonov-family-wishes-api.anastasia-filimonova-kokorina.workers.dev/`.
+- API: тот же адрес, все запросы начинаются с `/api/`.
+- `APP_ORIGIN`: `https://filimonov-family-wishes-api.anastasia-filimonova-kokorina.workers.dev` без пути.
+- `APP_URL`: полный адрес сайта с завершающим `/`.
 
-Первые два адреса считаются рабочими только после успешного развёртывания и проверки. Конфигурация Worker уже заполнена. Не добавляйте `BOT_TOKEN` в конфигурацию репозитория или `VITE_*`.
+Worker раздаёт собранный сайт из `dist` (раздел `assets` в `wrangler.jsonc`), а запросы, которым не соответствует ни один файл, обрабатывает `worker/index.ts`. Сайт обращается к API по своему же адресу, поэтому `VITE_API_URL` в публикации не нужен, а браузер не делает лишних CORS-запросов.
+
+Адрес считается рабочим только после успешного развёртывания и проверки. Конфигурация Worker уже заполнена. Не добавляйте `BOT_TOKEN` в конфигурацию репозитория или `VITE_*`.
 
 ## 4. Публикация API через Cloudflare
 
@@ -50,7 +52,7 @@ Cloudflare → Workers & Pages → Create application → Continue with GitHub �
 | Build variable | `NODE_VERSION` = `24` |
 | Enable Preview builds | Выключено |
 
-Зависимости Cloudflare устанавливает автоматически. `pnpm run deploy` проверяет конфигурацию, применяет новые миграции D1 и публикует Worker. `WORKERS_CI` задаётся Cloudflare автоматически. В preview-сборках нельзя применять миграции к production-базе.
+Зависимости Cloudflare устанавливает автоматически. `pnpm build` собирает сайт в `dist`, `pnpm run deploy` проверяет конфигурацию, применяет новые миграции D1 и публикует Worker вместе с сайтом. `WORKERS_CI` задаётся Cloudflare автоматически. В preview-сборках нельзя применять миграции к production-базе.
 
 ### Токен сборки
 
@@ -73,20 +75,17 @@ Cloudflare → Workers & Pages → Create application → Continue with GitHub �
 
 ## 6. Автоматические обновления
 
-Cloudflare Workers Builds подключён только к репозиторию приложения после завершения шага 4. Push в `main` запускает тесты, сборку, миграции и публикацию API. GitHub Actions отдельно проверяет и публикует интерфейс.
+Cloudflare Workers Builds подключён только к репозиторию приложения после завершения шага 4. Push в `main` запускает тесты, сборку, миграции и публикацию сайта вместе с API одним развёртыванием. GitHub Actions только проверяет код (`ci.yml`) и ничего не публикует.
 
-При несовместимых изменениях API сначала сохраняйте обратную совместимость, затем меняйте клиент: развёртывания двух провайдеров не атомарны. При исчерпании бесплатных минут сборки дождитесь сброса лимита. Платный план не требуется.
+При исчерпании бесплатных минут сборки дождитесь сброса лимита. Платный план не требуется.
 
-## 7. GitHub Pages и автопубликация интерфейса
+## 7. Переезд с GitHub Pages
 
-1. Репозиторий → Settings → Pages → Build and deployment → Source: **GitHub Actions**.
-2. Settings → Secrets and variables → Actions → вкладка **Variables**, не Secrets.
-3. Добавьте `VITE_API_URL` = ваш полный Worker URL, без `/api`, например `https://filimonov-family-wishes-api.family.workers.dev`.
-4. Добавьте `PUBLISH_READY` = `true` **после** настройки D1, Worker и `BOT_TOKEN`.
-5. Actions → **GitHub Pages** → Run workflow → `main`.
-6. Проверьте, что тесты, preflight и deploy прошли. Откройте URL из deploy job, ожидаемый адрес: `https://anastasiacopodevinho.github.io/filimonov-family-wishes/`.
+Раньше интерфейс публиковался на GitHub Pages. Если в репозитории остались настройки от той схемы:
 
-`PUBLISH_READY` предотвращает случайную публикацию неподключённого интерфейса. `preflight` проверяет настоящий ID базы и health API. Это не заменяет ручную проверку Telegram-входа. Следующий push в main автоматически проверит код и обновит Pages; Cloudflare Builds независимо обновит API. Для несовместимых изменений API сначала сохраняйте обратную совместимость, затем меняйте клиент: деплои двух провайдеров не атомарны.
+1. Репозиторий → Settings → Pages → отключите публикацию (Unpublish site), если кнопка есть.
+2. Settings → Secrets and variables → Actions → Variables: `VITE_API_URL` и `PUBLISH_READY` больше не нужны, их можно удалить.
+3. После этого репозиторий можно сделать приватным: Settings → General → Danger Zone → Change visibility. Cloudflare продолжит собирать его, доступ выдан приложению Cloudflare на GitHub.
 
 Не задавайте переменные `VITE_BOT_TOKEN`, `VITE_SECRET` и подобные: любые `VITE_*` попадают в публичный JavaScript.
 
@@ -94,17 +93,17 @@ Cloudflare Workers Builds подключён только к репозитор�
 
 1. Откройте проверенного [@BotFather](https://t.me/BotFather) в Telegram.
 2. Отправьте `/mybots`, выберите `@FilimonovFamilyWishes_bot`.
-3. Bot Settings → **Configure Mini App** / **Main Mini App** (названия пунктов могут отличаться в клиенте) → Enable / Edit URL. Укажите полный GitHub Pages URL из шага 7.
+3. Bot Settings → **Configure Mini App** / **Main Mini App** (названия пунктов могут отличаться в клиенте) → Enable / Edit URL. Укажите адрес сайта из шага 3: `https://filimonov-family-wishes-api.anastasia-filimonova-kokorina.workers.dev/`.
 4. Включите Main Mini App. Именно эта настройка обеспечивает ссылки вида `https://t.me/FilimonovFamilyWishes_bot?startapp` и гостевые `?startapp=g_...`. Если в меню нет пункта, используйте `/newapp` для named Mini App только после адаптации генерируемых ссылок в `src/api.ts` и `worker/index.ts` к `/appname?startapp=...`; предпочтителен Main Mini App без appname.
-5. Настройте меню: `/setmenubutton` → выберите того же бота → укажите URL Pages → текст кнопки `Наши желания`. В некоторых версиях BotFather это Bot Settings → Menu Button → Configure menu button.
+5. Настройте меню: `/setmenubutton` → выберите того же бота → укажите адрес сайта из шага 3 → текст кнопки `Наши желания`. В некоторых версиях BotFather это Bot Settings → Menu Button → Configure menu button.
 6. При желании задайте название `Filimonov Family Wishes`, описание и аватар бота. Новый бот не нужен. `/setdomain` не нужен ни мини-приложению, ни входу на сайте.
 7. Откройте профиль бота и нажмите **Open App / Открыть приложение** или кнопку меню **Наши желания**.
 7a. **Кнопки и уведомления бота.** После деплоя с миграцией `0009` один раз откройте в браузере https://filimonov-family-wishes-api.anastasia-filimonova-kokorina.workers.dev/api/telegram/setup. Ответ `{"ok":true,…}` значит, что Telegram отправляет сообщения боту в Worker, команды `/start`, `/add`, `/list` и `/cancel` появились в меню, а в пустом чате с ботом до нажатия «Запустить» видно приветствие (описание бота). Ссылку можно открывать повторно, это безопасно. Затем напишите боту `/start`: появятся кнопки «➕ Добавить в вишлист», «📋 Мои желания», «🎁 Открыть вишлист».
 8. Вход на сайте в обычном браузере (Telegram Login, OpenID Connect): новый вход нужно включить в BotFather — он не включается сам и не равен старой настройке домена.
    1. Откройте [@BotFather](https://t.me/BotFather) **как мини-приложение** (кнопка «Открыть»), выберите `@FilimonovFamilyWishes_bot` → **Bot Settings → Web Login** (в некоторых версиях **Login Widget**).
    2. Если на экране только одно поле с адресом и нет Client ID и Client Secret — это старый виджет. Удалите адрес, закройте экран и откройте его снова: появится **Switch to OpenID Connect Login** (или **OpenID Connect Login**). Нажмите и пройдите настройку. Переключение необратимо; мини-приложение на него не влияет, перестаёт работать только старый виджет, который сайт уже не использует.
-   3. **Redirect URIs** → **Add a Redirect URI**: `https://anastasiacopodevinho.github.io/filimonov-family-wishes/` — точно так, со слешем в конце: это адрес страницы, который сайт передаёт как `redirect_uri`, Telegram требует точного совпадения.
-      **Trusted Origins** → **Add a Trusted Origin**: `https://anastasiacopodevinho.github.io` — без пути и слеша.
+   3. **Redirect URIs** → **Add a Redirect URI**: `https://filimonov-family-wishes-api.anastasia-filimonova-kokorina.workers.dev/` — точно так, со слешем в конце: это адрес страницы, который сайт передаёт как `redirect_uri`, Telegram требует точного совпадения.
+      **Trusted Origins** → **Add a Trusted Origin**: `https://filimonov-family-wishes-api.anastasia-filimonova-kokorina.workers.dev` — без пути и слеша.
       **Native Login** не нужен. В старых версиях экрана вместо этих разделов был один список **Allowed URLs** — туда добавьте оба адреса.
    4. На экране появятся Client ID и Client Secret. Client ID должен совпадать с ID бота (`8687118994`, число до двоеточия в токене): сервер проверяет, что вход выдан именно для него. Client Secret никуда вносить не нужно и никому не показывайте.
    5. Если в настройках есть выбор алгоритма подписи, оставьте RS256 (или ES256): с EdDSA Telegram не передаёт данные профиля, и вход не сработает.
@@ -156,13 +155,13 @@ API и интерфейс публикуются разными сервисам
 
 | Сервис | Free |
 | --- | --- |
-| GitHub Pages | Публичный репозиторий на GitHub Free |
+| Workers Builds | 3000 минут сборки в месяц, одна сборка за раз |
 | Workers | 100 000 запросов в день, 10 мс CPU/запрос |
 | D1 | 5 млн прочитанных строк и 100 тыс. записанных строк в день |
 | D1 размер | 500 МБ на одну БД, до 5 ГБ на аккаунт |
 | D1 Time Travel | 7 дней |
 
-Источники: [GitHub Pages](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages), [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/), [D1 limits](https://developers.cloudflare.com/d1/platform/limits/). Лимиты провайдеров могут меняться. Фотографии занимают большую часть размера базы: приложение сжимает их и не хранит оригиналы. 500 МБ достаточно примерно для нескольких тысяч небольших фотографий, точное число зависит от размера и служебных данных.
+Источники: [Workers Builds limits](https://developers.cloudflare.com/workers/ci-cd/builds/limits-and-pricing/), [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/), [D1 limits](https://developers.cloudflare.com/d1/platform/limits/). Лимиты провайдеров могут меняться. Фотографии занимают большую часть размера базы: приложение сжимает их и не хранит оригиналы. 500 МБ достаточно примерно для нескольких тысяч небольших фотографий, точное число зависит от размера и служебных данных.
 
 Workers не требует постоянно работающего процесса и не имеет периода искусственного «сна», который нужно предотвращать пингами. Это serverless: запуск на запрос, возможны обычные сетевые задержки и cold start. Нельзя обещать абсолютное отсутствие задержек или SLA на бесплатных тарифах.
 
@@ -179,13 +178,12 @@ pnpm exec wrangler d1 export family-wishes --remote --output=backups/family-wish
 
 - «Не удалось подтвердить вход»: неверный `BOT_TOKEN` или запуск из другого бота. Проверьте secret; не отправляйте токен в GitHub issues.
 - «Время входа истекло»: закройте и заново откройте Mini App. Срок initData — час.
-- CORS: `APP_ORIGIN` без пути должен совпадать с origin Pages. После изменения домена обновите Worker и пересоберите клиент с новым API URL.
+- `ORIGIN_DENIED`: `APP_ORIGIN` без пути должен совпадать с адресом, по которому открыт сайт. После смены домена обновите `APP_ORIGIN` и `APP_URL` в `wrangler.jsonc`.
 - `NOT_CONFIGURED`: runtime secret не добавлен или не развёрнут. Build secret не заменяет runtime secret.
 - `INTERNAL` сразу после настройки: проверьте ID D1, binding `DB` и применение миграций.
-- Pages 404: Pages source должен быть GitHub Actions, URL включает имя репозитория и завершающий `/`.
 - В браузере нет имени Telegram: нажмите «Войти через Telegram» на сайте или откройте приложение через бота.
 - Окно Telegram пишет «origin required»: у бота не включён OpenID Connect Login (пункт 8). Не добавляйте в ссылку параметр `origin` — он переключает на старый виджет с вводом телефона.
-- Окно Telegram пишет «redirect_uri required»: адреса страницы нет в **Redirect URIs** (или он записан не точно). Добавьте `https://anastasiacopodevinho.github.io/filimonov-family-wishes/`, а в **Trusted Origins** — `https://anastasiacopodevinho.github.io`.
+- Окно Telegram пишет «redirect_uri required»: адреса страницы нет в **Redirect URIs** (или он записан не точно). Добавьте `https://filimonov-family-wishes-api.anastasia-filimonova-kokorina.workers.dev/`, а в **Trusted Origins** — `https://filimonov-family-wishes-api.anastasia-filimonova-kokorina.workers.dev`.
 - Окно входа не открывается: браузер заблокировал всплывающее окно. Разрешите всплывающие окна для сайта.
 - Гостевая ссылка открывает чат, а не приложение: включите **Main Mini App** в BotFather.
 - Невозможно прочитать HEIC: экспортируйте фото как JPEG/PNG.
@@ -193,8 +191,6 @@ pnpm exec wrangler d1 export family-wishes --remote --output=backups/family-wish
 
 ## Ссылка запуска и повторная публикация
 
-Основная ссылка для семьи: https://t.me/FilimonovFamilyWishes_bot?startapp — открывает Main Mini App. Ссылка без `?startapp` открывает чат бота, а адрес GitHub Pages открывает обычный сайт. Вне Telegram сайт сразу показывает кнопку «Войти через Telegram» (вход в браузере), без перехода в Mini App; ниже — ссылка на Mini App, чтобы скопировать и отправить близким. Гостевой список (`g_…`) и приглашение друга (`f_…`) открываются ссылками `t.me` в Telegram.
+Основная ссылка для семьи: https://t.me/FilimonovFamilyWishes_bot?startapp — открывает Main Mini App. Ссылка без `?startapp` открывает чат бота, а адрес Worker открывает обычный сайт. Вне Telegram сайт сразу показывает кнопку «Войти через Telegram» (вход в браузере), без перехода в Mini App; ниже — ссылка на Mini App, чтобы скопировать и отправить близким. Гостевой список (`g_…`) и приглашение друга (`f_…`) открываются ссылками `t.me` в Telegram.
 
 Браузерный вход отдельно требует Redirect URIs и Trusted Origins в настройках Login Widget бота (пункт 8). После настройки закройте старое окно с ошибкой и заново нажмите «Войти через Telegram». Main Mini App авторизуется подписанными `initData`, веб-вход — подписанным `id_token` Telegram и сессией.
-
-У запуска GitHub Pages №9 после PR #5 в журнале было `Multiple artifacts named "github-pages" ... count is 2`. Последние публикации №10 и №11 прошли; повторный запуск старой публикации может вернуть старую версию сайта. Новая схема именует артефакт по ID запуска и попытке, передаёт имя из job `build` в `deploy`. Это также сохраняет корректное имя при повторе только неудачного `deploy`. Исторический красный запуск остаётся историей; ориентируйтесь на публикацию актуальной main.

@@ -197,7 +197,11 @@ export async function openInBrowser() {
     // A short pause lets Telegram hand the link to the browser first.
     setTimeout(() => telegram?.close?.(), 400);
 }
-export const apiConfigured = !!import.meta.env.VITE_API_URL;
+// The published site and the API are one Worker, so a production build talks
+// to its own address; VITE_API_URL points the dev server at a local API.
+export const apiConfigured =
+  !!import.meta.env.VITE_API_URL || import.meta.env.PROD;
+const apiBase = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 export class RequestError extends Error {
   constructor(
     public status: number,
@@ -226,17 +230,14 @@ async function request(
   if (data !== undefined) headers["Content-Type"] = "application/json";
   let res: Response;
   try {
-    res = await fetch(
-      `${import.meta.env.VITE_API_URL.replace(/\/$/, "")}${path}`,
-      {
-        method,
-        headers,
-        body: data === undefined ? undefined : JSON.stringify(data),
-        credentials: "omit",
-        cache: "no-store",
-        signal: AbortSignal.timeout(timeout),
-      },
-    );
+    res = await fetch(`${apiBase}${path}`, {
+      method,
+      headers,
+      body: data === undefined ? undefined : JSON.stringify(data),
+      credentials: "omit",
+      cache: "no-store",
+      signal: AbortSignal.timeout(timeout),
+    });
   } catch {
     throw new Error(
       "Нет связи с приложением. Проверьте интернет и попробуйте ещё раз.",
