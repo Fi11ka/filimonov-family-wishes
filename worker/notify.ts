@@ -164,17 +164,21 @@ export class Outbox {
       [[openButton(this.env, "Мои брони", "b")]],
     );
   }
-  /** The owner added their own event: their friends learn how many days are left. */
-  async eventAdded(owner: Named, event: EventLike) {
+  /**
+   * A new event: friends who see the organizer's list learn how many days are
+   * left. Those invited got an invitation instead, so they are skipped.
+   */
+  async eventAdded(owner: Named, event: EventLike & { id: string }, invited: string[] = []) {
     this.send(
-      await this.friendsOf(owner.id),
+      await this.friendsOf(owner.id, invited),
       `📅 ${who(owner)} добавил(а) мероприятие «${esc(event.title)}»: ${when(event)}.`,
-      [[openButton(this.env, "Открыть вишлист", `l_${owner.id}`)]],
+      [[openButton(this.env, "Открыть мероприятие", `e_${event.id}`)]],
     );
   }
+  /** Invited: a guest takes part at once and can decline in «Мероприятия» (П24). */
   eventInvite(
     owner: Named,
-    event: EventLike & { key: string },
+    event: EventLike & { id: string },
     mode: "hero" | "everyone",
     ids: string[],
   ) {
@@ -183,22 +187,39 @@ export class Outbox {
       `🎉 ${who(owner)} приглашает вас на «${esc(event.title)}»: ${when(event)}.\n\n` +
         (mode === "everyone"
           ? "Это праздник для всех: участники видят, кто из них что забронировал в вишлистах друг друга. В своём вишлисте никто этого не видит."
-          : `В вишлисте ${esc(owner.name)} вы увидите, кто из приглашённых что забронировал. ${esc(owner.name)} этого не видит.`),
-      [
-        [
-          openButton(
-            this.env,
-            "Открыть мероприятие",
-            `e_${owner.id}_${event.key}_${event.date}`,
-          ),
-        ],
-      ],
+          : `В вишлисте ${esc(owner.name)} вы увидите, кто из приглашённых что забронировал. ${esc(owner.name)} этого не видит.`) +
+        "\n\nЕсли не сможете, нажмите «Отказаться от участия» в «Мероприятиях».",
+      [[openButton(this.env, "Открыть мероприятие", `e_${event.id}`)]],
+    );
+  }
+  /** The organizer moved the celebration or changed the place. Bookings stay. */
+  eventChanged(
+    owner: Named,
+    event: EventLike & { id: string },
+    ids: string[],
+    what: { date: boolean; place: boolean },
+  ) {
+    const changed = [what.date && "дата празднования", what.place && "место"]
+      .filter(Boolean)
+      .join(" и ");
+    this.send(
+      ids,
+      `📅 У мероприятия «${esc(event.title)}» ${who(owner)} изменилось: ${changed}. Теперь — ${when(event)}.`,
+      [[openButton(this.env, "Открыть мероприятие", `e_${event.id}`)]],
     );
   }
   eventCancelled(owner: Named, event: EventLike, ids: string[]) {
     this.send(
       ids,
-      `${who(owner)} отменил(а) праздник «${esc(event.title)}» (${eventDay(event.date)}). Приглашение больше не действует.`,
+      `${who(owner)} отменил(а) праздник «${esc(event.title)}» (${eventDay(event.date)}). Приглашение больше не действует, ваши брони остались в «Моих бронях».`,
+    );
+  }
+  /** «Напомнить» from an event with no wishes: the organizer is asked, nobody named. */
+  eventRemind(ownerId: string, event: EventLike & { id: string }) {
+    this.send(
+      [ownerId],
+      `🎁 Гости мероприятия «${esc(event.title)}» ждут ваших желаний. Добавьте в вишлист, что хотели бы получить.`,
+      [[openButton(this.env, "Открыть мероприятие", `e_${event.id}`)]],
     );
   }
   followRequest(from: Named, to: string) {

@@ -20,12 +20,21 @@ export type User = {
   events?: EventSpec[];
 };
 /** Friends the owner invited to an event; seen by the owner and those guests. */
-export type Invitation = {
-  key: string;
-  date: string;
+/** An event as lists show it (flows 5, 6, 10): two dates, the format, how many guests. */
+export type EventCard = {
+  id: string;
+  owner_id: string;
+  base: import("../shared/events").EventKey;
   title: string;
+  /** «Фактическая дата». */
+  actual_on: string;
+  /** «Когда отмечаем». */
+  celebrate_on: string;
+  days: number;
   mode: "hero" | "everyone";
-  guests: { id: string; name: string; username: string | null }[];
+  /** Only the wishes the organizer picked, not the whole list. */
+  picked: boolean;
+  guests?: number;
 };
 /** Someone in «Друзья»: the public card and whether we added each other. */
 export type Person = User & {
@@ -93,7 +102,7 @@ export type Booking = {
   /** The owner's events, to know by when to buy. */
   owner_events: EventSpec[];
   /** The owner's parties the user is invited to. */
-  my_events?: { key: string; date: string }[];
+  my_events?: { id: string; title: string; date: string }[];
   members: {
     id: string;
     name: string;

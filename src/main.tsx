@@ -1,7 +1,7 @@
 import { ACCOUNT_ID_PART } from "../shared/account-id";
-import { eventDay, untilText, upcomingEvents } from "../shared/events";
+import { daysUntil, eventDay, untilText, upcomingEvents } from "../shared/events";
 import { formatPrice, sharePrice } from "../shared/price";
-import { EventPage, EventsList, WishlistEvents } from "./events";
+import { EventForm, EventPage, EventsList, WishlistEvents } from "./events";
 import { ArchiveWish, ReserveDialog } from "./forms";
 import React, { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -110,7 +110,7 @@ import {
 } from "./filters";
 import {
   type Booking,
-  type Invitation,
+  type EventCard,
   type GiverRecord,
   type ListRef,
   type ToastAction,
@@ -164,9 +164,19 @@ function App() {
     [viewed, setViewed] = useState<Viewed | null>(null);
   // My people, whom I can invite to an event or a shared gift.
   const friends: Friend[] = [...people.friends, ...people.added_me];
+  // Event guests come from all four groups of «Друзья», each person once.
+  const invitable: Friend[] = [
+    ...people.friends,
+    ...people.requests,
+    ...people.outgoing,
+    ...people.added_me,
+  ].filter((p, i, all) => all.findIndex((x) => x.id === p.id) === i);
+  const [eventsVersion, setEventsVersion] = useState(0);
+  /** After a booking made on an event page, that page reloads its wishes. */
+  const eventReload = useRef<(() => Promise<void>) | null>(null);
   const [owner, setOwner] = useState<User | null>(demo ? demoUser : null),
     [gifts, setGifts] = useState<Wish[]>(demo ? demoGifts : []),
-    [invitations, setInvitations] = useState<Invitation[]>([]),
+    [invitations, setInvitations] = useState<EventCard[]>([]),
     [archive, setArchive] = useState<Wish[]>(demo ? demoArchive : []);
   const [tab, setTab] = useState<Tab>(
       guestToken || profileTarget || legacyLink ? "friends" : "mine",
@@ -210,15 +220,15 @@ function App() {
     owner: string;
     event: string;
   } | null>(null);
-  const [eventRef, setEventRef] = useState<{
-    owner: string;
-    key: string;
-    date: string;
-    /** Where «Назад» returns to. */
-    from: Tab;
+  const [eventRef, setEventRef] = useState<{ id: string; from: Tab } | null>(
+    null,
+  );
+  /** «Создать мероприятие», from an occasion or blank. */
+  const [eventForm, setEventForm] = useState<{
+    occasion?: import("../shared/events").UpcomingEvent;
   } | null>(null);
-  function openEvent(owner: string, key: string, date: string) {
-    setEventRef({ owner, key, date, from: tab });
+  function openEvent(id: string) {
+    setEventRef({ id, from: tab });
     setTab("event");
     setError("");
     setMenu(false);
@@ -539,12 +549,9 @@ function App() {
         await openPerson(openTarget.slice(2));
       else if (openTarget === "b") await navigate("bookings");
       else {
-        const e = openTarget.match(
-          new RegExp(
-            `^e_(${ACCOUNT_ID_PART})_([a-z0-9_]+)_(\\d{4}-\\d{2}-\\d{2})$`,
-          ),
-        );
-        if (e) openEvent(e[1], e[2], e[3]);
+        // A bot button: e_<event id>.
+        const e = openTarget.match(/^e_([a-f0-9-]{36})$/);
+        if (e) openEvent(e[1]);
       }
     });
   }, []);
@@ -636,7 +643,8 @@ function App() {
   }
   /** The list behind a dialog, after a booking changed. */
   async function reloadAfterBooking() {
-    if (tab === "bookings") await loadBookings();
+    if (tab === "event" && eventReload.current) await eventReload.current();
+    else if (tab === "bookings") await loadBookings();
     else if (guestView()) await refresh();
     else if (owner) await loadList(owner.id);
   }
@@ -1304,24 +1312,12 @@ function App() {
                           owner={owner}
                           own={own}
                           today={today}
-                          invitations={invitations}
-                          friends={friends}
-                          notice={notice}
+                          events={invitations}
                           onProfile={() => setModal("profile")}
-                          onOpen={
-                            user
-                              ? (e) => openEvent(owner.id, e.key, e.date)
-                              : undefined
+                          onOpen={user ? (id) => openEvent(id) : undefined}
+                          onCreate={(occasion) =>
+                            setEventForm({ occasion })
                           }
-                          onChanged={async () => {
-                            if (own && user) {
-                              setUser({
-                                ...user,
-                                ...(await api("/api/me")).user,
-                              });
-                            }
-                            await loadList(owner.id);
-                          }}
                         />
                       )}
                       {tab !== "archive" && (
@@ -1807,28 +1803,50 @@ function App() {
               )}
               {tab === "event" && eventRef && user && (
                 <EventPage
-                  key={`${eventRef.owner}:${eventRef.key}:${eventRef.date}`}
-                  owner={eventRef.owner}
-                  eventKey={eventRef.key}
-                  date={eventRef.date}
-                  me={user.id}
-                  friends={friends}
+                  key={eventRef.id}
+                  id={eventRef.id}
+                  me={user}
+                  people={invitable}
                   today={today}
                   notice={notice}
                   onBack={() =>
-                    void (eventRef.from === "events" ||
-                    eventRef.from === "bookings"
-                      ? navigate(eventRef.from)
-                      : openList(eventRef.owner))
+                    void navigate(
+                      eventRef.from === "event" ? "events" : eventRef.from,
+                    )
                   }
+                  onEvents={() => void navigate("events")}
                   onOpenList={(id, named) => void openList(id, named)}
+                  renderWishes={(wishes, reload) => (
+                    <div className="gift-grid">
+                      {wishes.map((g) => (
+                        <GiftCard
+                          key={g.id}
+                          wish={g}
+                          mode={g.owner_id === user.id ? "own" : "friend"}
+                          busy={busy}
+                          onEdit={() => undefined}
+                          onBought={() => undefined}
+                          onRestore={() => undefined}
+                          onDelete={() => undefined}
+                          onReserve={() => {
+                            eventReload.current = reload;
+                            void reserve(g);
+                          }}
+                          onAnswer={(join) => void answerInvite(g.id, join)}
+                        />
+                      ))}
+                    </div>
+                  )}
                 />
               )}
               {tab === "events" && user && (
                 <EventsList
-                  me={user.id}
+                  key={eventsVersion}
                   today={today}
-                  onOpen={(owner, key, date) => openEvent(owner, key, date)}
+                  onOpen={(id) => openEvent(id)}
+                  onCreate={(occasion) =>
+                    setEventForm({ occasion })
+                  }
                 />
               )}
               {tab === "bookings" &&
@@ -1945,9 +1963,7 @@ function App() {
                                   <NearestEvent
                                     booking={b}
                                     today={today}
-                                    onOpen={(key, date) =>
-                                      openEvent(b.owner_id, key, date)
-                                    }
+                                    onOpen={(id) => openEvent(id)}
                                   />
                                   {b.members.length > 0 && (
                                     <ul className="booking-members">
@@ -2197,6 +2213,21 @@ function App() {
                 }
               : undefined
           }
+        />
+      )}
+      {eventForm && user && (
+        <EventForm
+          me={user}
+          occasion={eventForm.occasion}
+          people={invitable}
+          wishes={own && !listMeta ? gifts : undefined}
+          onClose={() => setEventForm(null)}
+          onSaved={async (e) => {
+            setEventForm(null);
+            notice("Мероприятие создано");
+            setEventsVersion((v) => v + 1);
+            openEvent(e.id);
+          }}
         />
       )}
       {addingList && (
@@ -2854,26 +2885,35 @@ function NearestEvent({
 }: {
   booking: Booking;
   today: Date;
-  onOpen: (key: string, date: string) => void;
+  onOpen: (id: string) => void;
 }) {
-  const events = upcomingEvents(booking.owner_events || [], today);
-  const next =
-    events.find((e) =>
-      booking.my_events?.some((m) => m.key === e.key && m.date === e.date),
-    ) || events[0];
-  if (!next || booking.archived) return null;
+  if (booking.archived) return null;
+  // An event I take part in comes first and opens; otherwise the nearest occasion.
+  const mine = booking.my_events?.[0];
+  if (mine)
+    return (
+      <button
+        className="booking-event"
+        title="Успеть к мероприятию"
+        onClick={() => onOpen(mine.id)}
+      >
+        <CalendarDays size={14} />
+        <span>
+          {mine.title} · {eventDay(mine.date)} ·{" "}
+          {untilText(Math.max(0, daysUntil(mine.date, today)))}
+        </span>
+        <ChevronRight size={14} />
+      </button>
+    );
+  const next = upcomingEvents(booking.owner_events || [], today)[0];
+  if (!next) return null;
   return (
-    <button
-      className="booking-event"
-      title="Успеть к мероприятию"
-      onClick={() => onOpen(next.key, next.date)}
-    >
+    <span className="booking-event" title="Успеть к этому дню">
       <CalendarDays size={14} />
       <span>
         {next.title} · {eventDay(next.date)} · {untilText(next.days)}
       </span>
-      <ChevronRight size={14} />
-    </button>
+    </span>
   );
 }
 
