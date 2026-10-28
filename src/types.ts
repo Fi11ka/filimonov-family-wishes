@@ -9,6 +9,8 @@ export type User = {
   /** A closed profile shows its list only to friends it approved. */
   is_private?: boolean;
   wishlist_updated_at?: number | null;
+  /** «Подтвердить актуальность»: when the owner last confirmed the list. */
+  checked_at?: number | null;
   /** A few words under the wishlist title. */
   about?: string | null;
   /** Only in one's own profile. */

@@ -331,7 +331,7 @@ const HANDOFF_TTL = 120;
 async function profile(db: D1Database, id: string, self = false) {
   const p = await stmt(
     db,
-    "SELECT id,name,username,birthday,gender,event_title,event_date,allow_resharing,is_private,wishlist_updated_at,about,CASE WHEN photo='' THEN NULL ELSE photo_at END AS photo_at FROM users WHERE id=?",
+    "SELECT id,name,username,birthday,gender,event_title,event_date,allow_resharing,is_private,wishlist_updated_at,checked_at,about,CASE WHEN photo='' THEN NULL ELSE photo_at END AS photo_at FROM users WHERE id=?",
     id,
   ).first<{
     id: string;
@@ -344,6 +344,7 @@ async function profile(db: D1Database, id: string, self = false) {
     allow_resharing: number;
     is_private: number;
     wishlist_updated_at: number | null;
+    checked_at: number | null;
     about: string | null;
     photo_at: number | null;
   }>();
@@ -730,6 +731,12 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       uid,
     ).run();
     return { user: await profile(db, uid, true) };
+  }
+  if (path === "/api/me/checked" && method === "POST") {
+    // «Подтвердить актуальность»: only one's own list, and it tells nobody.
+    const at = now();
+    await stmt(db, "UPDATE users SET checked_at=? WHERE id=?", at, uid).run();
+    return { checked_at: at };
   }
   if (path === "/api/me" && method === "PATCH") {
     const b = await body(req);

@@ -680,6 +680,37 @@ main {
   font-size: 14px;
   color: var(--text-2);
 }
+/* «Вишлист актуален» or a nudge to confirm it (П36). */
+.freshness {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+.freshness p {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+}
+.freshness p svg {
+  flex: none;
+  margin-top: 2px;
+}
+.freshness.fresh > p:first-child {
+  color: var(--success);
+}
+.freshness.stale > p:first-child {
+  color: #7a5222;
+}
+.freshness .button.small {
+  min-height: 32px;
+  padding: 4px 12px;
+  font-size: var(--fs-sm);
+}
+.freshness .error {
+  flex-basis: 100%;
+}
 .wishlist-meta > .text-link {
   align-self: flex-start;
 }

@@ -86,6 +86,7 @@ import {
 import { GiftForm, Share, Modal, Confirm } from "./forms";
 import { Profile } from "./friends";
 import { Features, Welcome } from "./welcome";
+import { Freshness } from "./freshness";
 import { telegramAppLink } from "./telegram-links";
 import { Face } from "./avatar";
 // «Добавить много» with its spreadsheet reader is needed rarely: it loads on
@@ -1162,6 +1163,23 @@ function App() {
                               });
                             }
                             await loadList(owner.id);
+                          }}
+                        />
+                      )}
+                      {tab !== "archive" && (
+                        <Freshness
+                          checkedAt={owner.checked_at}
+                          own={own}
+                          now={today}
+                          onConfirmed={(at) => {
+                            // Only my own list: the one this button belonged to.
+                            setOwner((o) =>
+                              o && user && o.id === user.id
+                                ? { ...o, checked_at: at }
+                                : o,
+                            );
+                            setUser((u) => (u ? { ...u, checked_at: at } : u));
+                            notice("Актуальность подтверждена");
                           }}
                         />
                       )}
