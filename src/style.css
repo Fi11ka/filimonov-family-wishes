@@ -3283,6 +3283,85 @@ button.event-chip:hover {
 /* ==========================================================================
    Wish form
    ========================================================================== */
+/* The wish form (П26): the photo is a compact row; its tools live on a screen of their own. */
+.photo-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.photo-thumb {
+  width: 56px;
+  height: 42px;
+  flex: none;
+  border-radius: var(--r-sm);
+  object-fit: cover;
+  background: var(--surface-2);
+}
+.photo-thumb.no-photo {
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--accent-line);
+  color: var(--purple);
+}
+.more-fields {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.more-fields > summary {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--purple-dark);
+}
+.more-fields[open] > summary {
+  margin-bottom: 12px;
+}
+.more-fields > * + * {
+  margin-top: 12px;
+}
+.field-error {
+  margin: 6px 0 0;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+[aria-invalid="true"] {
+  border-color: var(--danger) !important;
+}
+.limit-note {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--purple-dark);
+  font-size: var(--fs-sm);
+}
+.photo-editor {
+  display: grid;
+  gap: 14px;
+}
+.photo-editor-tools {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+@media (min-width: 741px) {
+  /* Wide screens: the photo on the left, what to do with it on the right. */
+  .photo-editor {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    align-items: start;
+  }
+  .photo-editor .photo-tools {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+.form-footer:has(> .button + .button) {
+  display: flex;
+  gap: 10px;
+}
+.form-footer:has(> .button + .button) > .button {
+  flex: 1;
+}
 .gift-form .optional {
   margin-left: 4px;
   font-size: var(--fs-xs);

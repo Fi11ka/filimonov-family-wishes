@@ -132,6 +132,9 @@ type People = {
 /** A profile opened in «Друзья»: its card, and whether its list is open to me. */
 type Viewed = { card: Person & { is_private?: boolean }; can_view: boolean };
 interface Confirmation {
+  title?: string;
+  /** The button that keeps things as they are, «Отмена» by default. */
+  cancel?: string;
   text: string;
   action: string;
   danger?: boolean;
@@ -221,8 +224,10 @@ function App() {
     if (giftSaving) return;
     if (modal === "gift" && giftDirty) {
       setConfirmation({
-        text: "Изменения в желании ещё не сохранены. Закрыть карточку и потерять ввод?",
-        action: "Закрыть без сохранения",
+        title: "Выйти без сохранения?",
+        text: "Введённое в форме пропадёт.",
+        action: "Выйти",
+        cancel: "Остаться",
         danger: true,
         run: async () => {
           setModal(null);
@@ -2086,6 +2091,7 @@ function App() {
           {modal === "gift" ? (
             <GiftForm
               gift={editing}
+              activeCount={own ? gifts.length : 0}
               onDirty={() => setGiftDirty(true)}
               onSavingChange={setGiftSaving}
               onSaved={async () => {
@@ -2141,8 +2147,10 @@ function App() {
       )}
       {confirmation && (
         <Confirm
+          title={confirmation.title}
           text={confirmation.text}
           action={confirmation.action}
+          cancel={confirmation.cancel}
           danger={confirmation.danger}
           option={confirmation.option}
           onCancel={() => setConfirmation(null)}
