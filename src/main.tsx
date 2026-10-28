@@ -75,7 +75,9 @@ import { ErrorScreen } from "./error-screen";
 import { forgetGiftPhoto, giftPhoto } from "./gift-photo";
 import {
   demoArchive,
+  demoAttention,
   demoBookings,
+  demoGiven,
   demoFriends,
   demoGifts,
   demoIncoming,
@@ -105,6 +107,7 @@ import {
 import {
   type Booking,
   type Invitation,
+  type GiverRecord,
   type ToastAction,
   type ToastTone,
   type User,
@@ -173,6 +176,9 @@ function App() {
     [filtersOpen, setFiltersOpen] = useState(false),
     [filters, setFilters] = useState<Filters>(noFilters);
   const [bookings, setBookings] = useState<Booking[]>([]),
+    [attention, setAttention] = useState<GiverRecord[]>([]),
+    [given, setGiven] = useState<GiverRecord[]>([]),
+    [bookingsTab, setBookingsTab] = useState<"active" | "given">("active"),
     [busy, setBusy] = useState(false),
     [menu, setMenu] = useState(false),
     [opening, setOpening] = useState(false),
@@ -499,7 +505,11 @@ function App() {
         setOwner(null);
         setGifts([]);
       }
-      if (next === "bookings") setBookings(demoBookings);
+      if (next === "bookings") {
+        setBookings(demoBookings);
+        setAttention(demoAttention);
+        setGiven(demoGiven);
+      }
       return;
     }
     if (next === "mine" && user) await loadList(user.id);
@@ -520,7 +530,10 @@ function App() {
   async function loadBookings() {
     setLoading(true);
     try {
-      setBookings((await api("/api/reservations")).reservations);
+      const r = await api("/api/reservations");
+      setBookings(r.reservations);
+      setAttention(r.attention || []);
+      setGiven(r.given || []);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -678,6 +691,45 @@ function App() {
           else notice(organizer ? "Бронь отменена" : "Вы вышли из подарка");
         }, "Бронирование доступно после подключения приложения."),
     });
+  }
+  /** «Подарено» / «Это подарил я»: only the giver moves a card to «Подаренные». */
+  function markGiven(id: string, title: string, fromCard = false) {
+    setConfirmation({
+      text: fromCard
+        ? `Это вы подарили «${title}»? Карточка перейдёт во вкладку «Подаренные».`
+        : `Отметить «${title}» подаренным? Карточка перейдёт во вкладку «Подаренные», у получателя желание останется как есть.`,
+      action: fromCard ? "Это подарил я" : "Подарено",
+      run: () =>
+        guarded(async () => {
+          await api(`/api/reservations/${id}/gifted`, "POST");
+          notice("Отмечено как подаренное");
+          await loadBookings();
+        }, "В демо брони не меняются."),
+    });
+  }
+  /** «Удалить у меня»: only my closed card goes; nothing changes for anyone else. */
+  function hideRecord(c: GiverRecord) {
+    setConfirmation({
+      text: `Удалить карточку «${c.title}» только у вас? Желание получателя и чужие брони это не изменит.`,
+      action: "Удалить у меня",
+      danger: true,
+      run: () =>
+        guarded(async () => {
+          await api(`/api/reservations/${c.gift_id}/hide`, "POST");
+          setAttention((list) => list.filter((x) => x.gift_id !== c.gift_id));
+          notice("Карточка удалена");
+        }, "В демо брони не меняются."),
+    });
+  }
+  async function changeSeen(b: Booking) {
+    await guarded(async () => {
+      await api(`/api/reservations/${b.gift_id}/seen`, "POST");
+      setBookings((list) =>
+        list.map((x) =>
+          x.gift_id === b.gift_id ? { ...x, changed_fields: null } : x,
+        ),
+      );
+    }, "В демо брони не меняются.");
   }
   /** «Куплю сам»: the organizer keeps the booking, the others leave it. */
   function buyAlone(b: Booking) {
@@ -1614,145 +1666,290 @@ function App() {
                   </div>
                 ) : (
                   <section className="bookings">
-                    {bookings.length ? (
-                      bookings.map((b) => (
-                        <div className="booking" key={b.gift_id}>
-                          <div className="booking-main">
-                            <div className="booking-top">
-                              <h3>{b.title}</h3>
-                              <BookingPrice booking={b} />
-                            </div>
-                            <p className="booking-sub">
-                              <span className={`status-badge ${b.role}`}>
-                                {b.role === "invited"
-                                  ? "Зовут скинуться"
-                                  : b.role === "joined"
-                                    ? "Скидываемся"
-                                    : b.members.length
-                                      ? "Вы собираете"
-                                      : "Ваша бронь"}
-                              </span>
-                              <span>
-                                для {b.owner_name}
-                                {b.role !== "organizer" && b.organizer_name
-                                  ? ` · собирает ${b.organizer_name}`
-                                  : ""}
-                                {b.archived ? " · в архиве" : ""}
-                              </span>
-                            </p>
-                            <NearestEvent
-                              booking={b}
-                              today={today}
-                              onOpen={(key, date) =>
-                                openEvent(b.owner_id, key, date)
-                              }
-                            />
-                            {b.members.length > 0 && (
-                              <ul className="booking-members">
-                                {b.members.map((m) => (
-                                  <li
-                                    key={m.id}
-                                    className={m.status}
-                                    title={
-                                      m.status === "joined"
-                                        ? "Участвует"
-                                        : "Ждём ответа"
+                    <div className="segmented" role="tablist">
+                      <button
+                        role="tab"
+                        aria-selected={bookingsTab === "active"}
+                        className={bookingsTab === "active" ? "selected" : ""}
+                        onClick={() => setBookingsTab("active")}
+                      >
+                        Активные
+                        {bookings.length ? ` · ${bookings.length}` : ""}
+                      </button>
+                      <button
+                        role="tab"
+                        aria-selected={bookingsTab === "given"}
+                        className={bookingsTab === "given" ? "selected" : ""}
+                        onClick={() => setBookingsTab("given")}
+                      >
+                        Подаренные
+                      </button>
+                    </div>
+                    {bookingsTab === "given" ? (
+                      given.length ? (
+                        <div className="booking-grid">
+                          {given.map((c) => (
+                            <article className="booking" key={c.gift_id}>
+                              <RecordPhoto record={c} />
+                              <div className="booking-main">
+                                <h3>{c.title}</h3>
+                                <RecordPrice record={c} />
+                                <Recipient
+                                  record={c}
+                                  text={`${c.owner_name} · подарено${c.gifted_at ? ` ${shortDate(c.gifted_at)}` : ""}`}
+                                />
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="empty">
+                          <Gift size={34} />
+                          <h3>Здесь появятся подарки, которые вы отметите подаренными</h3>
+                          <p>
+                            Нажмите «Подарено» у брони, когда вручите подарок.
+                          </p>
+                        </div>
+                      )
+                    ) : (
+                      <>
+                        {bookings.length > 0 && (
+                          <div className="booking-grid">
+                            {bookings.map((b) => (
+                              <article className="booking" key={b.gift_id}>
+                                <div className="booking-photo">
+                                  <Photo
+                                    wish={
+                                      {
+                                        id: b.gift_id,
+                                        title: b.title,
+                                        has_photo: b.has_photo || 0,
+                                        updated_at: b.updated_at,
+                                      } as Wish
                                     }
-                                  >
-                                    {m.status === "joined" ? (
-                                      <Check size={12} />
-                                    ) : (
-                                      <Clock size={12} />
-                                    )}
-                                    {m.name}
-                                  </li>
-                                ))}
-                              </ul>
-                            )}
+                                    own={false}
+                                  />
+                                </div>
+                                <div className="booking-main">
+                                  <h3>{b.title}</h3>
+                                  <BookingPrice booking={b} />
+                                  <Recipient
+                                    record={b}
+                                    text={`Для ${b.owner_name}`}
+                                  />
+                                  <p className="booking-sub">
+                                    <span className={`status-badge ${b.role}`}>
+                                      {b.role === "invited"
+                                        ? "Зовут скинуться"
+                                        : b.role === "joined"
+                                          ? "Скидываемся"
+                                          : b.members.length
+                                            ? "Вы собираете"
+                                            : "Это дарите вы"}
+                                    </span>
+                                    {b.role !== "organizer" &&
+                                      b.organizer_name && (
+                                        <span>собирает {b.organizer_name}</span>
+                                      )}
+                                  </p>
+                                  {b.changed_fields && (
+                                    <p className="booking-note">
+                                      <Info size={15} />
+                                      <span>
+                                        Владелец изменил{" "}
+                                        {changedText(b.changed_fields)}. Бронь
+                                        осталась за вами.{" "}
+                                        <button
+                                          className="text-link"
+                                          disabled={busy}
+                                          onClick={() => void changeSeen(b)}
+                                        >
+                                          Понятно
+                                        </button>
+                                      </span>
+                                    </p>
+                                  )}
+                                  <NearestEvent
+                                    booking={b}
+                                    today={today}
+                                    onOpen={(key, date) =>
+                                      openEvent(b.owner_id, key, date)
+                                    }
+                                  />
+                                  {b.members.length > 0 && (
+                                    <ul className="booking-members">
+                                      {b.members.map((m) => (
+                                        <li
+                                          key={m.id}
+                                          className={m.status}
+                                          title={
+                                            m.status === "joined"
+                                              ? "Участвует"
+                                              : "Ждём ответа"
+                                          }
+                                        >
+                                          {m.status === "joined" ? (
+                                            <Check size={12} />
+                                          ) : (
+                                            <Clock size={12} />
+                                          )}
+                                          {m.name}
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  )}
+                                </div>
+                                <div className="booking-actions">
+                                  {b.role === "invited" ? (
+                                    <>
+                                      <button
+                                        className="button primary"
+                                        disabled={busy}
+                                        onClick={() =>
+                                          void answerInvite(b.gift_id, true)
+                                        }
+                                      >
+                                        Участвую
+                                      </button>
+                                      <button
+                                        className="button secondary"
+                                        disabled={busy}
+                                        onClick={() =>
+                                          void answerInvite(b.gift_id, false)
+                                        }
+                                      >
+                                        Не могу
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button
+                                        className="button primary"
+                                        disabled={busy}
+                                        onClick={() =>
+                                          markGiven(b.gift_id, b.title)
+                                        }
+                                      >
+                                        <Gift size={15} />
+                                        Подарено
+                                      </button>
+                                      {b.role === "organizer" && (
+                                        <button
+                                          className="button secondary"
+                                          disabled={busy}
+                                          onClick={async () => {
+                                            if (!friends.length)
+                                              await loadFriends().catch(
+                                                () => undefined,
+                                              );
+                                            setReserving({
+                                              gift: {
+                                                id: b.gift_id,
+                                                title: b.title,
+                                              },
+                                              ownerId: b.owner_id,
+                                              exclude: b.members.map(
+                                                (m) => m.id,
+                                              ),
+                                              invite: true,
+                                            });
+                                          }}
+                                        >
+                                          <UserPlus size={15} />
+                                          Пригласить
+                                        </button>
+                                      )}
+                                      {b.role === "organizer" &&
+                                        b.members.length > 0 && (
+                                          <button
+                                            className="button secondary"
+                                            disabled={busy}
+                                            onClick={() => buyAlone(b)}
+                                            title="Перестать скидываться: участники выйдут из брони"
+                                          >
+                                            <UserMinus size={15} />
+                                            Куплю сам
+                                          </button>
+                                        )}
+                                      <button
+                                        className="button secondary"
+                                        disabled={busy}
+                                        onClick={() => cancelBooking(b)}
+                                      >
+                                        {b.role === "organizer"
+                                          ? "Отменить бронь"
+                                          : "Выйти"}
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </article>
+                            ))}
                           </div>
-                          <div className="booking-actions">
-                            {b.role === "invited" ? (
-                              <>
-                                <button
-                                  className="button primary"
-                                  disabled={busy}
-                                  onClick={() =>
-                                    void answerInvite(b.gift_id, true)
-                                  }
+                        )}
+                        {attention.length > 0 && (
+                          <>
+                            <h3 className="booking-group">
+                              <CircleAlert size={17} /> Требует внимания
+                            </h3>
+                            <div className="booking-grid">
+                              {attention.map((c) => (
+                                <article
+                                  className="booking attention"
+                                  key={c.gift_id}
                                 >
-                                  Участвую
-                                </button>
-                                <button
-                                  className="button secondary"
-                                  disabled={busy}
-                                  onClick={() =>
-                                    void answerInvite(b.gift_id, false)
-                                  }
-                                >
-                                  Не могу
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                {b.role === "organizer" && !b.archived && (
-                                  <button
-                                    className="button secondary"
-                                    disabled={busy}
-                                    onClick={async () => {
-                                      if (!friends.length)
-                                        await loadFriends().catch(
-                                          () => undefined,
-                                        );
-                                      setReserving({
-                                        gift: { id: b.gift_id, title: b.title },
-                                        ownerId: b.owner_id,
-                                        exclude: b.members.map((m) => m.id),
-                                        invite: true,
-                                      });
-                                    }}
-                                  >
-                                    <UserPlus size={15} />
-                                    Пригласить
-                                  </button>
-                                )}
-                                {b.role === "organizer" &&
-                                  b.members.length > 0 && (
+                                  <RecordPhoto record={c} />
+                                  <div className="booking-main">
+                                    <h3>{c.title}</h3>
+                                    <RecordPrice record={c} />
+                                    <Recipient
+                                      record={c}
+                                      text={`Для ${c.owner_name}`}
+                                    />
+                                    <p className="booking-note">
+                                      <Info size={15} />
+                                      <span>{ownerActionText(c.reason)}</span>
+                                    </p>
+                                  </div>
+                                  <div className="booking-actions">
+                                    {c.reason === "gifted" && (
+                                      <button
+                                        className="button primary"
+                                        disabled={busy}
+                                        onClick={() =>
+                                          markGiven(c.gift_id, c.title, true)
+                                        }
+                                      >
+                                        Это подарил я
+                                      </button>
+                                    )}
                                     <button
                                       className="button secondary"
                                       disabled={busy}
-                                      onClick={() => buyAlone(b)}
-                                      title="Перестать скидываться: участники выйдут из брони"
+                                      onClick={() => hideRecord(c)}
                                     >
-                                      <UserMinus size={15} />
-                                      Куплю сам
+                                      Удалить у меня
                                     </button>
-                                  )}
-                                <button
-                                  className="button secondary"
-                                  disabled={busy}
-                                  onClick={() => cancelBooking(b)}
-                                >
-                                  {b.role === "organizer"
-                                    ? "Отменить бронь"
-                                    : "Выйти"}
-                                </button>
-                              </>
-                            )}
+                                  </div>
+                                </article>
+                              ))}
+                            </div>
+                          </>
+                        )}
+                        {!bookings.length && !attention.length && (
+                          <div className="empty">
+                            <Bookmark size={34} />
+                            <h3>Вы пока ничего не забронировали</h3>
+                            <p>Откройте вишлист друга и нажмите «Подарю».</p>
+                            <button
+                              className="button primary"
+                              onClick={() => void navigate("friends")}
+                            >
+                              Посмотреть желания друзей
+                            </button>
                           </div>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="empty">
-                        <Bookmark size={34} />
-                        <h3>У вас пока нет броней</h3>
-                        <p>Откройте вишлист друга и нажмите «Подарю».</p>
-                        <button
-                          className="button primary"
-                          onClick={() => void navigate("friends")}
-                        >
-                          Посмотреть желания друзей
-                        </button>
-                      </div>
+                        )}
+                      </>
                     )}
                   </section>
                 ))}
@@ -2377,5 +2574,83 @@ function NearestEvent({
       </span>
       <ChevronRight size={14} />
     </button>
+  );
+}
+
+/** What the owner did to a gift I chose, as my card says it (flow 16). */
+function ownerActionText(reason: GiverRecord["reason"]) {
+  return reason === "deleted"
+    ? "Владелец удалил своё желание. Бронь закрыта."
+    : reason === "changed_mind"
+      ? "Передумал: больше не хочет этот подарок. Бронь закрыта."
+      : reason === "bought_self"
+        ? "Куплено: владелец купил его сам. Бронь закрыта."
+        : "Получатель отметил, что получил подарок. Если это ваш, нажмите «Это подарил я».";
+}
+function changedText(fields: string) {
+  return fields
+    .split(",")
+    .map((f) => ({ title: "название", price: "цену", link: "ссылку" })[f])
+    .filter(Boolean)
+    .join(", ");
+}
+const shortDate = (seconds: number) =>
+  new Date(seconds * 1000).toLocaleDateString("ru-RU", {
+    day: "numeric",
+    month: "long",
+  });
+/** The recipient on a booking card: avatar and «Для …» or «Подарено …». */
+function Recipient({
+  record,
+  text,
+}: {
+  record: { owner_id: string; owner_name: string; owner_photo_at?: number | null };
+  text: string;
+}) {
+  return (
+    <p className="booking-for">
+      <span className="avatar tiny">
+        <Face
+          user={{
+            id: record.owner_id,
+            name: record.owner_name,
+            photo_at: record.owner_photo_at ?? null,
+          }}
+        />
+      </span>
+      {text}
+    </p>
+  );
+}
+function RecordPrice({ record: r }: { record: GiverRecord }) {
+  return r.price_minor !== null || r.price_max_minor !== null ? (
+    <p className="booking-price">
+      <strong>{formatPrice(r)}</strong>
+    </p>
+  ) : null;
+}
+/** The photo kept with my own record, read even after the wish is gone. */
+function RecordPhoto({ record }: { record: GiverRecord }) {
+  const [src, setSrc] = useState("");
+  useEffect(() => {
+    if (!record.has_photo || demo) return;
+    let alive = true;
+    api<{ photo: string }>(`/api/reservations/${record.gift_id}/photo`)
+      .then((r) => alive && setSrc(r.photo))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [record.gift_id, record.has_photo]);
+  return (
+    <div className="booking-photo">
+      {src ? (
+        <img src={src} alt={record.title} referrerPolicy="no-referrer" />
+      ) : (
+        <div className="photo-placeholder">
+          <Gift size={36} />
+        </div>
+      )}
+    </div>
   );
 }

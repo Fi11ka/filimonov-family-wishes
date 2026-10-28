@@ -44,6 +44,8 @@ import {
   archiveReasons,
   createGift,
   deleteGift,
+  giftChanged,
+  ownGift,
   restoreGift,
   type ArchiveReason,
 } from "./gifts";
@@ -1068,6 +1070,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       if (g.owner_id !== uid) missing();
       if (method === "PUT") {
         const v = giftInput(await body(req));
+        const before = await ownGift(db, uid, id);
         await stmt(
           db,
           "UPDATE gifts SET title=?,price_minor=?,price_max_minor=?,price_range=?,currency=?,shop_url=?,description=?,hearts=?,priority=?,photo=?,updated_at=unixepoch() WHERE id=? AND owner_id=?",
@@ -1084,6 +1087,8 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
           id,
           uid,
         ).run();
+        if (before)
+          await giftChanged(db, out, user, before, await ownGift(db, uid, id));
       } else await deleteGift(db, out, user, id);
       return { ok: true }; // Identical response whether reserved or available. No reservation-dependent errors.
     }
@@ -1232,6 +1237,82 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       return { ok: true, invited };
     }
   }
+  const recordMatch = path.match(
+    /^\/api\/reservations\/([a-f0-9-]{36})\/(gifted|seen|photo|hide)$/,
+  );
+  if (recordMatch) {
+    const [, id, action] = recordMatch;
+    if (action === "photo" && method === "GET") {
+      // The photo kept with my own record, after the wish itself is gone.
+      const r = await stmt(
+        db,
+        "SELECT photo FROM giver_records WHERE user_id=? AND gift_id=? AND photo<>''",
+        uid,
+        id,
+      ).first<{ photo: string }>();
+      if (!r) missing();
+      return { photo: r.photo };
+    }
+    if (method !== "POST") missing();
+    if (action === "seen") {
+      // «Понятно» after the owner changed the gift.
+      await stmt(
+        db,
+        `UPDATE reservations SET changed_at=NULL,changed_fields=NULL WHERE gift_id=?1
+        AND (user_id=?2 OR EXISTS(SELECT 1 FROM reservation_members m WHERE m.gift_id=?1 AND m.user_id=?2 AND m.status='joined'))`,
+        id,
+        uid,
+      ).run();
+      return { ok: true };
+    }
+    if (action === "hide") {
+      // «Удалить у меня»: only my closed card; the wish and other givers stay as they are.
+      const r = await stmt(
+        db,
+        "UPDATE giver_records SET hidden_at=? WHERE user_id=? AND gift_id=? AND gifted_at IS NULL AND hidden_at IS NULL RETURNING gift_id",
+        now(),
+        uid,
+        id,
+      ).first();
+      if (!r) missing();
+      return { ok: true };
+    }
+    // «Подарено» / «Это подарил я»: only the giver moves it to «Подаренные». From an
+    // active booking the wish stays taken; it is not archived for the owner.
+    const r = await stmt(
+      db,
+      `INSERT INTO giver_records(user_id,gift_id,owner_id,title,price_minor,price_max_minor,price_range,currency,shop_url,photo,gifted_at)
+      SELECT ?1,g.id,g.owner_id,g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.shop_url,g.photo,?3
+      FROM gifts g JOIN reservations r ON r.gift_id=g.id WHERE g.id=?2 AND g.archived_at IS NULL
+        AND (r.user_id=?1 OR EXISTS(SELECT 1 FROM reservation_members m WHERE m.gift_id=g.id AND m.user_id=?1 AND m.status='joined'))
+      ON CONFLICT(user_id,gift_id) DO UPDATE SET gifted_at=excluded.gifted_at WHERE giver_records.gifted_at IS NULL
+      RETURNING gift_id`,
+      uid,
+      id,
+      now(),
+    ).first();
+    const fromCard = r
+      ? r
+      : await stmt(
+          db,
+          "UPDATE giver_records SET gifted_at=? WHERE user_id=? AND gift_id=? AND reason='gifted' AND gifted_at IS NULL AND hidden_at IS NULL RETURNING gift_id",
+          now(),
+          uid,
+          id,
+        ).first();
+    // Pressed twice: already in «Подаренные», nothing doubles.
+    if (
+      !fromCard &&
+      !(await stmt(
+        db,
+        "SELECT 1 FROM giver_records WHERE user_id=? AND gift_id=? AND gifted_at IS NOT NULL",
+        uid,
+        id,
+      ).first())
+    )
+      missing();
+    return { ok: true };
+  }
   if (path === "/api/reservations" && method === "GET") {
     // Metadata available only while the viewer still has access (or was invited). Cancellation needs only gift ID.
     const rows = (
@@ -1240,13 +1321,16 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         `SELECT r.gift_id,
         CASE WHEN r.user_id=?1 THEN 'organizer' ELSE m.status END AS role,
         CASE WHEN m.user_id IS NOT NULL OR ${SEES("g.owner_id")} OR ${PARTY_PEER("?1", "g.owner_id")} OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=g.owner_id AND ${LINK_ACTIVE("l", "?2")}) THEN 1 ELSE 0 END AS visible,
-        g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.owner_id,ou.name AS owner_name,org.name AS organizer_name,
+        g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.shop_url,g.owner_id,ou.name AS owner_name,org.name AS organizer_name,
+        CASE WHEN ou.photo='' THEN NULL ELSE ou.photo_at END AS owner_photo_at,
+        CASE WHEN g.photo='' THEN 0 ELSE 1 END AS has_photo,g.updated_at,r.changed_fields,
         ou.birthday,ou.gender,ou.event_title,ou.event_date,
         CASE WHEN g.archived_at IS NULL THEN 0 ELSE 1 END AS archived
       FROM reservations r JOIN gifts g ON g.id=r.gift_id JOIN users ou ON ou.id=g.owner_id
       LEFT JOIN users org ON org.id=r.user_id
       LEFT JOIN reservation_members m ON m.gift_id=r.gift_id AND m.user_id=?1
       WHERE (r.user_id=?1 OR m.user_id IS NOT NULL) AND g.owner_id<>?1
+        AND NOT EXISTS(SELECT 1 FROM giver_records gr WHERE gr.user_id=?1 AND gr.gift_id=r.gift_id AND gr.gifted_at IS NOT NULL)
       ORDER BY role='invited' DESC,r.created_at DESC`,
         uid,
         now(),
@@ -1270,7 +1354,22 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       : [];
     // Parties of these owners the user is invited to: the booking links there.
     const mine = await myParties(db, uid);
+    // My own records: cards the owner closed («Требует внимания») and what I gave.
+    const records = (
+      await stmt(
+        db,
+        `SELECT gr.gift_id,gr.owner_id,u.name AS owner_name,CASE WHEN u.photo='' THEN NULL ELSE u.photo_at END AS owner_photo_at,
+          gr.title,gr.price_minor,gr.price_max_minor,gr.price_range,gr.currency,gr.shop_url,
+          CASE WHEN gr.photo='' THEN 0 ELSE 1 END AS has_photo,gr.reason,gr.changed_at,gr.gifted_at
+        FROM giver_records gr JOIN users u ON u.id=gr.owner_id
+        WHERE gr.user_id=? AND gr.hidden_at IS NULL
+        ORDER BY COALESCE(gr.gifted_at,gr.changed_at) DESC`,
+        uid,
+      ).all<Record<string, unknown>>()
+    ).results;
     return {
+      attention: records.filter((r) => r.gifted_at === null),
+      given: records.filter((r) => r.gifted_at !== null),
       reservations: rows.map(
         ({ visible, birthday, gender, event_title, event_date, ...r }) => ({
           ...r,
@@ -1294,6 +1393,9 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
                 title: "Подарок из закрытого списка",
                 price_minor: null,
                 price_max_minor: null,
+                shop_url: "",
+                has_photo: 0,
+                changed_fields: null,
               }),
           // Invitees see who organizes, not the other invitees.
           members:

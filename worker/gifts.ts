@@ -1,7 +1,7 @@
 // Gift changes made by the owner, from the website or from the bot, with the
 // notifications they cause. The owner's own answers never depend on bookings.
 import { legacyPriority } from "../shared/hearts";
-import { bookers, checkLimit, now, stmt } from "./core";
+import { checkLimit, now, stmt } from "./core";
 import type { Outbox } from "./notify";
 import type { giftInput, Identity } from "./security";
 export type GiftValues = ReturnType<typeof giftInput>;
@@ -55,6 +55,67 @@ export async function createGift(
   ).run();
   return id;
 }
+/** Who gave their word for a gift: the organizer of its booking and friends who joined. */
+async function givers(db: D1Database, giftId: string) {
+  return (
+    await stmt(
+      db,
+      `SELECT user_id FROM reservations WHERE gift_id=?1 AND user_id IS NOT NULL
+      UNION SELECT user_id FROM reservation_members WHERE gift_id=?1 AND status='joined'`,
+      giftId,
+    ).all<{ user_id: string }>()
+  ).results.map((r) => r.user_id);
+}
+export type OwnerAction = "deleted" | ArchiveReason;
+/**
+ * The owner deleted or archived a wish: each giver keeps a card of their choice
+ * as it was (flow 16), and the booking itself closes. A card the giver hid stays
+ * hidden; one already confirmed as given keeps its place in «Подаренные» and
+ * only learns what the owner did. Returns the givers to tell: those whose
+ * booking was still active.
+ */
+async function keepForGivers(db: D1Database, giftId: string, action: OwnerAction) {
+  const all = await givers(db, giftId);
+  const given = all.length
+    ? (
+        await stmt(
+          db,
+          `SELECT user_id FROM giver_records WHERE gift_id=? AND gifted_at IS NOT NULL AND user_id IN (${all.map(() => "?").join(",")})`,
+          giftId,
+          ...all,
+        ).all<{ user_id: string }>()
+      ).results.map((r) => r.user_id)
+    : [];
+  await db.batch([
+    stmt(
+      db,
+      `INSERT INTO giver_records(user_id,gift_id,owner_id,title,price_minor,price_max_minor,price_range,currency,shop_url,photo,reason,changed_at)
+      SELECT b.user_id,g.id,g.owner_id,g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.shop_url,g.photo,?2,?3
+      FROM gifts g JOIN (
+        SELECT gift_id,user_id FROM reservations WHERE user_id IS NOT NULL
+        UNION SELECT gift_id,user_id FROM reservation_members WHERE status='joined'
+      ) b ON b.gift_id=g.id WHERE g.id=?1
+      ON CONFLICT(user_id,gift_id) DO UPDATE SET reason=excluded.reason,changed_at=excluded.changed_at
+      WHERE giver_records.hidden_at IS NULL`,
+      giftId,
+      action,
+      now(),
+    ),
+    // Archived first and deleted later: the card says «Удалил» now.
+    ...(action === "deleted"
+      ? [
+          stmt(
+            db,
+            "UPDATE giver_records SET reason='deleted',changed_at=? WHERE gift_id=? AND hidden_at IS NULL AND reason<>'deleted'",
+            now(),
+            giftId,
+          ),
+        ]
+      : []),
+    stmt(db, "DELETE FROM reservations WHERE gift_id=?", giftId),
+  ]);
+  return all.filter((id) => !given.includes(id));
+}
 export async function deleteGift(
   db: D1Database,
   out: Outbox,
@@ -63,15 +124,14 @@ export async function deleteGift(
 ) {
   const g = await ownGift(db, owner.id, id);
   if (!g) return;
-  const booked = await bookers(db, id);
+  const tell = await keepForGivers(db, id, "deleted");
   await stmt(
     db,
     "DELETE FROM gifts WHERE id=? AND owner_id=?",
     id,
     owner.id,
   ).run();
-  // Bookers of an archived wish were told when it left the list.
-  if (g.archived_at === null) out.wishRemoved(owner, g, booked, "deleted");
+  out.wishRemoved(owner, g, tell, "deleted");
 }
 export const archiveReasons = [
   "changed_mind",
@@ -79,7 +139,10 @@ export const archiveReasons = [
   "bought_self",
 ] as const;
 export type ArchiveReason = (typeof archiveReasons)[number];
-/** Any wish can be archived for any reason, booked or not; bookings stay until the friends remove them. */
+/**
+ * Any wish can be archived for any reason, booked or not, with the same answer.
+ * A booking closes; its givers keep their cards (flow 16).
+ */
 export async function archiveGift(
   db: D1Database,
   out: Outbox,
@@ -97,7 +160,51 @@ export async function archiveGift(
     id,
     owner.id,
   ).first();
-  if (r) out.wishRemoved(owner, g, await bookers(db, id), reason);
+  if (r) out.wishRemoved(owner, g, await keepForGivers(db, id, reason), reason);
+}
+type Changeable = Pick<
+  StoredGift,
+  "id" | "title" | "price_minor" | "price_max_minor" | "price_range" | "currency" | "shop_url"
+>;
+/**
+ * The owner changed the title, price or link of a wish: whoever booked it gets a
+ * message and a mark in «Мои брони». The booking stays; the owner sees nothing.
+ */
+export async function giftChanged(
+  db: D1Database,
+  out: Outbox,
+  owner: Identity,
+  before: Changeable,
+  after: Changeable | null,
+) {
+  if (!after) return;
+  const fields = [
+    before.title !== after.title && "title",
+    (before.price_minor !== after.price_minor ||
+      before.price_max_minor !== after.price_max_minor ||
+      !!before.price_range !== !!after.price_range ||
+      before.currency !== after.currency) &&
+      "price",
+    before.shop_url !== after.shop_url && "link",
+  ].filter((f): f is string => !!f);
+  if (!fields.length) return;
+  const r = await stmt(
+    db,
+    "SELECT changed_fields FROM reservations WHERE gift_id=? AND user_id IS NOT NULL",
+    before.id,
+  ).first<{ changed_fields: string | null }>();
+  if (!r) return;
+  const all = [
+    ...new Set([...(r.changed_fields?.split(",").filter(Boolean) ?? []), ...fields]),
+  ];
+  await stmt(
+    db,
+    "UPDATE reservations SET changed_at=?,changed_fields=? WHERE gift_id=?",
+    now(),
+    all.join(","),
+    before.id,
+  ).run();
+  out.giftChanged(owner, after, await givers(db, before.id), fields);
 }
 /** A wish back from the archive is not news either. */
 export async function restoreGift(db: D1Database, owner: Identity, id: string) {
