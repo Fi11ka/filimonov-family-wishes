@@ -122,6 +122,22 @@ export function setGuestCode(giftId: string, code: string | null) {
     // Without storage the guest cannot cancel later; the booking itself is saved.
   }
 }
+// «Отправить близким» is offered once, after the first wish added on this device.
+const SHARE_OFFERED_KEY = "fw:share-offered";
+export function shareOffered() {
+  try {
+    return localStorage.getItem(SHARE_OFFERED_KEY) === "1";
+  } catch {
+    return true;
+  }
+}
+export function rememberShareOffered() {
+  try {
+    localStorage.setItem(SHARE_OFFERED_KEY, "1");
+  } catch {
+    // Without storage it is simply not offered.
+  }
+}
 // A guest's name, offered again the next time they book from this browser.
 const GUEST_NAME_KEY = "fw:guest-name";
 export function savedGuestName() {
