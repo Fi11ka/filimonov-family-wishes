@@ -152,3 +152,47 @@ export const demoBookings = [
     members: [],
   },
 ];
+/** Demo cards the owners closed («Требует внимания») and one already given. */
+const demoRecord = {
+  price_max_minor: null,
+  price_range: 0,
+  currency: "EUR",
+  shop_url: "",
+  has_photo: 0,
+  owner_photo_at: null,
+  changed_at: 1793000000,
+};
+export const demoAttention = [
+  {
+    ...demoRecord,
+    gift_id: "demo-r1",
+    owner_id: "1003",
+    owner_name: "Мария Филимонова",
+    title: "Настольная лампа",
+    price_minor: 6500,
+    reason: "gifted" as const,
+    gifted_at: null,
+  },
+  {
+    ...demoRecord,
+    gift_id: "demo-r2",
+    owner_id: "1002",
+    owner_name: "Александр Филимонов",
+    title: "Рюкзак для походов",
+    price_minor: 8900,
+    reason: "changed_mind" as const,
+    gifted_at: null,
+  },
+];
+export const demoGiven = [
+  {
+    ...demoRecord,
+    gift_id: "demo-r3",
+    owner_id: "1004",
+    owner_name: "Михаил Филимонов",
+    title: "Набор для каллиграфии",
+    price_minor: 3200,
+    reason: null,
+    gifted_at: 1792000000,
+  },
+];

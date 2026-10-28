@@ -297,6 +297,34 @@ before(async () => {
     )?.created_by,
     "999100",
   );
+  // A booking on an already archived wish: after 0021 it is the giver's record.
+  await db.batch([
+    db.prepare(
+      "INSERT INTO users(id,name) VALUES('fixture-owner','Owner'),('fixture-giver','Giver')",
+    ),
+    db.prepare(
+      "INSERT INTO gifts(id,owner_id,title,currency,priority,archived_at,archive_reason) VALUES('99930000-0000-4000-8000-000000000001','fixture-owner','Плед','RUB',2,unixepoch(),'changed_mind')",
+    ),
+    db.prepare(
+      "INSERT INTO reservations(gift_id,user_id) VALUES('99930000-0000-4000-8000-000000000001','fixture-giver')",
+    ),
+  ]);
+  await migrate("migrations/0020_drop_subscriptions.sql");
+  await migrate("migrations/0021_giver_records.sql");
+  assert.deepEqual(
+    {
+      ...(await db
+        .prepare(
+          "SELECT title,reason FROM giver_records WHERE user_id='fixture-giver'",
+        )
+        .first()),
+    },
+    { title: "Плед", reason: "changed_mind" },
+  );
+  assert.equal(
+    (await db.prepare("SELECT COUNT(*) AS n FROM reservations").first())?.n,
+    0,
+  );
   for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9])
     assert.equal((await call("/me", id)).status, 200);
 });
@@ -1590,7 +1618,7 @@ test("adding or removing wishes tells no friend; bookers learn their gift is gon
   const booker = await messages(703);
   assert.match(
     booker[0].text,
-    /удалил\(а\) из вишлиста «Велосипед» — подарок, который вы забронировали/,
+    /удалил\(а\) из вишлиста «Велосипед» — подарок, который вы выбрали/,
   );
   await settle();
   assert.equal((await messages(702, 0)).length, 0);
@@ -1602,7 +1630,7 @@ test("adding or removing wishes tells no friend; bookers learn their gift is gon
   await call(`/gifts/${h}/archive`, 701, "POST", { reason: "gifted" });
   assert.match(
     (await messages(703, 2))[1].text,
-    /отметил\(а\) «Самокат» как подаренный/,
+    /отметил\(а\), что получил\(а\) «Самокат»/,
   );
   await settle();
   assert.equal((await messages(702, 0)).length, 0);
@@ -3034,4 +3062,138 @@ test("sign-in: a new name or @username from Telegram is saved, a taken @username
   await db.prepare("UPDATE users SET name='Старое' WHERE id='7902'").run();
   assert.equal((await me(7902, "Петя", "masha_7901")).name, "Петя");
   assert.equal((await stored("7902"))?.name, "Петя");
+});
+test("«Мои брони»: the owner's actions leave the giver a card; only the giver moves it to «Подаренные»", async () => {
+  await befriend(7701, 7702);
+  await befriend(7701, 7703);
+  const book = async (title: string, by = 7702) => {
+    const id = await gift(7701, {
+      title,
+      price_minor: 250000,
+      currency: "RUB",
+      shop_url: "https://example.com/item",
+    });
+    assert.equal((await call(`/gifts/${id}/reservation`, by, "POST")).status, 200);
+    return id;
+  };
+  const deleted = await book("Плед");
+  const changed = await book("Книга");
+  const gifted = await book("Самокат");
+  const mine = await book("Лампа");
+  const free = await gift(7701, { title: "Свободное" });
+  // The owner's answers are the same, booked or not.
+  const answers = [
+    await call(`/gifts/${deleted}`, 7701, "DELETE"),
+    await call(`/gifts/${free}`, 7701, "DELETE"),
+  ];
+  assert.equal(answers[0].raw, answers[1].raw);
+  await call(`/gifts/${changed}/archive`, 7701, "POST", { reason: "changed_mind" });
+  await call(`/gifts/${gifted}/archive`, 7701, "POST", { reason: "gifted" });
+  let r = (await call("/reservations", 7702)).body;
+  assert.deepEqual(
+    r.reservations.map((b: any) => b.title),
+    ["Лампа"],
+  );
+  assert.deepEqual(
+    r.attention.map((c: any) => [c.title, c.reason]).sort(),
+    [
+      ["Книга", "changed_mind"],
+      ["Плед", "deleted"],
+      ["Самокат", "gifted"],
+    ],
+  );
+  // The card keeps what the gift was: price, link, recipient.
+  const plaid = r.attention.find((c: any) => c.title === "Плед");
+  assert.equal(plaid.price_minor, 250000);
+  assert.equal(plaid.shop_url, "https://example.com/item");
+  assert.equal(plaid.owner_name, "User 7701");
+  // The wish is free again after a restore, with no old booking.
+  await call(`/gifts/${changed}/restore`, 7701, "POST");
+  assert.equal(
+    (await call("/lists/7701", 7703)).body.gifts.find((g: any) => g.id === changed)
+      .reservation,
+    "available",
+  );
+  // Deleting it later turns «Передумал» into «Удалил».
+  await call(`/gifts/${changed}/archive`, 7701, "POST", { reason: "changed_mind" });
+  await call(`/gifts/${changed}`, 7701, "DELETE");
+  r = (await call("/reservations", 7702)).body;
+  assert.equal(
+    r.attention.find((c: any) => c.title === "Книга").reason,
+    "deleted",
+  );
+  // «Удалить у меня» hides only my card, for good.
+  assert.equal(
+    (await call(`/reservations/${deleted}/hide`, 7702, "POST")).status,
+    200,
+  );
+  // «Это подарил я» only where the owner marked it received.
+  assert.equal(
+    (await call(`/reservations/${changed}/gifted`, 7702, "POST")).status,
+    404,
+  );
+  assert.equal(
+    (await call(`/reservations/${gifted}/gifted`, 7702, "POST")).status,
+    200,
+  );
+  // «Подарено» from an active booking: the wish stays taken for everyone else.
+  assert.equal(
+    (await call(`/reservations/${mine}/gifted`, 7702, "POST")).status,
+    200,
+  );
+  assert.equal(
+    (await call(`/reservations/${mine}/gifted`, 7702, "POST")).status,
+    200,
+  );
+  r = (await call("/reservations", 7702)).body;
+  assert.deepEqual(r.reservations, []);
+  assert.deepEqual(
+    r.attention.map((c: any) => c.title),
+    ["Книга"],
+  );
+  assert.deepEqual(
+    r.given.map((c: any) => c.title).sort(),
+    ["Лампа", "Самокат"],
+  );
+  assert.equal(
+    (await call("/lists/7701", 7703)).body.gifts.find((g: any) => g.id === mine)
+      .reservation,
+    "reserved",
+  );
+  // The photo kept with the record; nobody else can read it.
+  assert.equal((await call(`/reservations/${mine}/photo`, 7703)).status, 404);
+  // Another person's actions never touch my records.
+  assert.equal((await call("/reservations", 7703)).body.attention.length, 0);
+});
+test("the giver hears when the title, price or link of their gift changes; the owner sees nothing", async () => {
+  await befriend(7801, 7802);
+  const g = await gift(7801, { title: "Чайник", price_minor: 300000, currency: "RUB" });
+  await call(`/gifts/${g}/reservation`, 7802, "POST");
+  await settle();
+  const before = (await messages(7802, 0)).length;
+  const edit = (v: object) =>
+    call(`/gifts/${g}`, 7801, "PUT", {
+      ...input,
+      title: "Чайник",
+      price_minor: 300000,
+      currency: "RUB",
+      ...v,
+    });
+  // Only the hint changed: no message.
+  assert.equal((await edit({ description: "белый" })).status, 200);
+  await settle();
+  assert.equal((await messages(7802, 0)).length, before);
+  await edit({ price_minor: 350000 });
+  const sent = await messages(7802, before + 1);
+  assert.match(sent[before].text, /изменил\(а\) цену у подарка «Чайник»/);
+  let b = (await call("/reservations", 7802)).body.reservations[0];
+  assert.equal(b.changed_fields, "price");
+  await edit({ title: "Чайник стеклянный", price_minor: 350000 });
+  b = (await call("/reservations", 7802)).body.reservations[0];
+  assert.equal(b.changed_fields, "price,title");
+  assert.equal((await call(`/reservations/${g}/seen`, 7802, "POST")).status, 200);
+  b = (await call("/reservations", 7802)).body.reservations[0];
+  assert.equal(b.changed_fields, null);
+  await settle();
+  assert.equal((await messages(7801, 0)).length, 0);
 });
