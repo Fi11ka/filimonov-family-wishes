@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import { LogOut, Share2 } from "lucide-react";
 import { api, demo, openBot, type Notifications } from "./api";
 import { AvatarEditor, Face } from "./avatar";
+import { LinkSettings } from "./forms";
 import { type User } from "./types";
 const months = [
   "Январь",
@@ -274,8 +275,9 @@ export function Profile({
         </button>
       </form>
       <button className="button primary full-width" onClick={onShare}>
-        <Share2 size={17} /> Поделиться профилем
+        <Share2 size={17} /> Поделиться
       </button>
+      <LinkSettings />
       {webSession ? (
         <div className="profile-logout">
           <button className="button secondary" onClick={() => onLogout(false)}>

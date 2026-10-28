@@ -795,10 +795,8 @@ test("old «Поделиться» and friend invitation links only lead to the 
   );
   // «Поделиться» now gives the profile link and the guest link only.
   const links = (await call("/guest-links", 9101)).body;
-  assert.equal(
-    links.profile_url,
-    "https://t.me/FilimonovFamilyWishes_bot?startapp=p_9101",
-  );
+  // A link to the site, not to the Mini App, whichever app it is sent to.
+  assert.equal(links.profile_url, "https://family.example/app/?p=9101");
   assert.deepEqual(
     links.links.map((l: any) => l.kind),
     ["guest"],
@@ -1214,6 +1212,8 @@ test("website sign-in keeps at most 10 sessions per account and limits attempts"
 
 test("«Поделиться» returns the same links again and a stranger can request to follow by the profile", async () => {
   await call("/me", 21);
+  // Opening «Поделиться» reads only: no guest link until it is shared.
+  assert.deepEqual((await call("/guest-links", 21)).body.links, []);
   const shared = await call("/guest-links", 21, "POST");
   const again = await call("/guest-links", 21);
   assert.deepEqual(again.body.links, shared.body.links);

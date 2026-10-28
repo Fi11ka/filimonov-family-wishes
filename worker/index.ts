@@ -2,6 +2,7 @@ import { ACCOUNT_ID_PART, isAccountId } from "../shared/account-id";
 import { validBirthday } from "../shared/birthday";
 import { legacyPriority } from "../shared/hearts";
 import { isId, isToken } from "../shared/token";
+import { siteProfileLink } from "../shared/site-link";
 import {
   ApiError,
   fail,
@@ -1287,7 +1288,8 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
   }
   if (path === "/api/guest-links" && (method === "GET" || method === "POST")) {
     // «Поделиться»: the profile link (gives no access by itself) and the owner's
-    // secret guest link for booking by name without Telegram.
+    // secret guest link for booking by name without an account. GET only reads;
+    // the guest link is made by POST, when the owner shares it.
     if (method === "POST") await rate(db, `links:${uid}`, 5);
     const find = () =>
       stmt(
@@ -1319,7 +1321,8 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         ]
       : [];
     return {
-      profile_url: `${BOT_LINK}?startapp=p_${uid}`,
+      // A link to the site; without signing in it shows only the card.
+      profile_url: siteProfileLink(https(env.APP_URL), uid),
       links,
       legacy_links: (
         await stmt(

@@ -13,6 +13,7 @@ import {
   ImageOff,
   ScanText,
   Users,
+  Share2,
 } from "lucide-react";
 import {
   api,
@@ -21,7 +22,6 @@ import {
   cropPhoto,
   demo,
   photoFromUrl,
-  profileLink,
   type ProductLookup,
   type ScreenshotLookup,
 } from "./api";
@@ -30,6 +30,7 @@ import { giftPhoto } from "./gift-photo";
 import { Hearts } from "./hearts";
 import { currencies, isCurrency } from "../shared/price";
 import { LookupState } from "./lookup-state";
+import { currentSite, shareLink, siteProfileLink } from "./share-links";
 import {
   DEFAULT_FRAMING,
   PhotoFrame,
@@ -1006,165 +1007,261 @@ export function GiftForm({
     </form>
   );
 }
-export function CopyValue({
-  value,
-  warning,
-}: {
-  value: string;
-  warning?: string;
-}) {
-  const [confirmCopy, setConfirmCopy] = useState(false);
-  const [copyError, setCopyError] = useState("");
+type GuestLinks = {
+  profile_url: string;
+  links: { id: string; kind: string; web_url: string }[];
+  legacy_links?: { id: string }[];
+};
+/**
+ * The fallback when the system menu is missing: a button, never the address
+ * itself (П29). The copied link is the kind that was chosen.
+ */
+function CopyLink({ url }: { url: string }) {
+  const [state, setState] = useState<"" | "copied" | "failed">("");
   async function copy() {
     try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      setCopyError("");
-      setConfirmCopy(false);
-      setTimeout(() => setCopied(false), 2500);
+      await navigator.clipboard.writeText(url);
+      setState("copied");
     } catch {
-      setCopyError(
-        "Не удалось скопировать. Выделите ссылку и скопируйте вручную.",
-      );
+      setState("failed");
     }
   }
-  const [copied, setCopied] = useState(false);
   return (
-    <>
-      <div className="copy-value">
-        <input
-          readOnly
-          value={value}
-          aria-label="Ссылка или код для копирования"
-          onFocus={(e) => e.target.select()}
-          onCopy={
-            warning
-              ? (e) => {
-                  e.preventDefault();
-                  setConfirmCopy(true);
-                }
-              : undefined
-          }
-        />
-        <button
-          type="button"
-          className="icon-button"
-          aria-label="Скопировать"
-          onClick={() => {
-            if (warning) setConfirmCopy(true);
-            else void copy();
-          }}
-        >
-          {copied ? <Check size={18} /> : <Copy size={18} />}
-        </button>
-      </div>
-      {copyError && <p role="alert">{copyError}</p>}
-      {confirmCopy && (
-        <Confirm
-          title="Перед копированием"
-          text={warning!}
-          action="Скопировать ссылку"
-          onCancel={() => setConfirmCopy(false)}
-          onConfirm={() => void copy()}
-        />
+    <div className="copy-link">
+      <button
+        type="button"
+        className="button secondary full-width"
+        onClick={() => void copy()}
+      >
+        {state === "copied" ? <Check size={17} /> : <Copy size={17} />}
+        {state === "copied"
+          ? "Скопировано"
+          : state === "failed"
+            ? "Скопировать ещё раз"
+            : "Скопировать ссылку"}
+      </button>
+      {state === "failed" && (
+        <p className="error" role="alert">
+          Не удалось скопировать ссылку. Попробуйте ещё раз.
+        </p>
       )}
-    </>
+    </div>
   );
 }
 /**
- * «Поделиться»: the profile link, which by itself opens only the card of a
- * closed profile, and for one's own list the secret guest link without Telegram.
+ * «Поделиться»: «Поделиться» sends the profile link (wishes after signing in),
+ * «Поделиться без входа» the guest link to a simplified list. Both go to the
+ * site through the system menu. Opening this window creates nothing: the guest
+ * link is made only when it is shared. Revoking and replacing live in the profile.
  */
 export function Share({
   ownerId,
+  ownerName,
   own = true,
 }: {
   ownerId?: string;
+  ownerName?: string;
   own?: boolean;
 }) {
-  const [profile, setProfile] = useState(
-    !own && ownerId ? profileLink(ownerId) : "",
-  );
-  const [links, setLinks] = useState<
-    { id: string; kind: string; web_url: string }[]
-  >([]);
+  const [guestUrl, setGuestUrl] = useState("");
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [legacy, setLegacy] = useState<{ id: string }[]>([]);
+  // Where the system menu was not available: the link to copy instead.
+  const [fallback, setFallback] = useState<{
+    kind: "profile" | "guest";
+    url: string;
+  } | null>(null);
   useEffect(() => {
-    if (!own) return;
-    api("/api/guest-links")
-      .then((d) => (d.links.length ? d : api("/api/guest-links", "POST")))
-      .then((d) => {
-        setProfile(d.profile_url);
-        setLinks(d.links);
-        setLegacy(d.legacy_links || []);
-      })
-      .catch((e) => setError(e.message));
+    if (!own || demo) return;
+    // Only reads: an existing guest link is ready for the click, so the system
+    // menu still opens within the person's gesture.
+    api<GuestLinks>("/api/guest-links")
+      .then((d) => setGuestUrl(d.links[0]?.web_url || ""))
+      .catch(() => undefined);
   }, [own]);
+  async function send(kind: "profile" | "guest") {
+    setError("");
+    setFallback(null);
+    if (demo) {
+      setError("В демо ссылки не создаются.");
+      return;
+    }
+    let url = "";
+    if (kind === "profile") {
+      if (!ownerId) return;
+      url = siteProfileLink(currentSite(), ownerId);
+    } else if (guestUrl) url = guestUrl;
+    else {
+      setBusy(true);
+      try {
+        url = (await api<GuestLinks>("/api/guest-links", "POST")).links[0]
+          ?.web_url;
+        setGuestUrl(url || "");
+      } catch (e) {
+        setError((e as Error).message);
+        return;
+      } finally {
+        setBusy(false);
+      }
+      if (!url) return;
+    }
+    const text =
+      kind === "guest"
+        ? "Мой вишлист: выберите подарок, вход не нужен"
+        : own
+          ? "Мой вишлист: выберите подарок"
+          : `Вишлист ${ownerName || ""}`.trim();
+    const result = await shareLink(url, text);
+    if (result === "unavailable") setFallback({ kind, url });
+  }
   return (
-    <div className="share-result">
-      {error && <p role="alert">{error}</p>}
-      <section>
-        <h3>Ссылка на профиль</h3>
-        <p>
-          {own
-            ? "Отправьте её друзьям и родным. Если профиль закрытый, по ссылке видно только имя и фото, а вишлист — после того, как вы одобрите запрос в друзья."
-            : "По ссылке откроется профиль. Если вишлист закрытый, его увидят только друзья, которых одобрил владелец."}
+    <div className="share-result share-choices">
+      <button
+        type="button"
+        className="share-choice"
+        disabled={busy}
+        onClick={() => void send("profile")}
+      >
+        <Share2 size={20} />
+        <span>
+          <strong>Поделиться</strong>
+          <small>
+            {own
+              ? "Ссылка на ваш профиль. Желания откроются после входа; закрытый вишлист — после того, как вы одобрите запрос в друзья."
+              : "Ссылка на профиль. Желания откроются после входа тем, кому они доступны."}
+          </small>
+        </span>
+      </button>
+      {fallback?.kind === "profile" && <CopyLink url={fallback.url} />}
+      {own && (
+        <>
+          <button
+            type="button"
+            className="share-choice"
+            disabled={busy}
+            onClick={() => void send("guest")}
+          >
+            <LinkIcon size={20} />
+            <span>
+              <strong>Поделиться без входа</strong>
+              <small>
+                Упрощённый список: открывается без входа, для брони достаточно
+                имени. Отправляйте тем, кому доверяете.
+              </small>
+            </span>
+          </button>
+          {fallback?.kind === "guest" && <CopyLink url={fallback.url} />}
+        </>
+      )}
+      {error && (
+        <p className="error" role="alert">
+          {error}
         </p>
-        {profile && <CopyValue value={profile} />}
-      </section>
-      {legacy.map((link) => (
-        <div className="active-link" key={link.id}>
+      )}
+    </div>
+  );
+}
+/** Profile: the guest link is revoked or replaced here, apart from sending it. */
+export function LinkSettings() {
+  const [data, setData] = useState<GuestLinks | null>(null);
+  const [ask, setAsk] = useState<
+    | { kind: "revoke" | "replace"; id: string }
+    | { kind: "legacy"; id: string }
+    | null
+  >(null);
+  const [done, setDone] = useState("");
+  const [error, setError] = useState("");
+  const load = () =>
+    api<GuestLinks>("/api/guest-links")
+      .then(setData)
+      .catch((e) => setError((e as Error).message));
+  useEffect(() => {
+    if (!demo) void load();
+  }, []);
+  async function run(a: NonNullable<typeof ask>) {
+    setAsk(null);
+    setError("");
+    setDone("");
+    try {
+      await api(`/api/guest-links/${a.id}`, "DELETE");
+      if (a.kind === "replace") await api("/api/guest-links", "POST");
+      await load();
+      setDone(
+        a.kind === "replace"
+          ? "Ссылка заменена. Отправьте новую через «Поделиться без входа»."
+          : "Ссылка отозвана",
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  if (demo || !data) return null;
+  const link = data.links[0];
+  return (
+    <section className="link-settings">
+      <h3>Ссылка без входа</h3>
+      {link ? (
+        <>
+          <p className="small-text">
+            Действует: по ней ваш список открывается без входа.
+          </p>
+          <div className="link-settings-actions">
+            <button
+              type="button"
+              className="text-link"
+              onClick={() => setAsk({ kind: "replace", id: link.id })}
+            >
+              Заменить
+            </button>
+            <button
+              type="button"
+              className="text-link danger"
+              onClick={() => setAsk({ kind: "revoke", id: link.id })}
+            >
+              Отозвать
+            </button>
+          </div>
+        </>
+      ) : (
+        <p className="small-text">
+          Нет. Она появится, когда вы нажмёте «Поделиться без входа».
+        </p>
+      )}
+      {(data.legacy_links || []).map((l) => (
+        <div className="active-link" key={l.id}>
           <span>Ранее созданная ссылка без входа</span>
           <button
+            type="button"
             className="text-link danger"
-            onClick={async () => {
-              if (!window.confirm("Отозвать старую ссылку без входа?")) return;
-              try {
-                await api(`/api/guest-links/${link.id}`, "DELETE");
-                setLegacy(legacy.filter((l) => l.id !== link.id));
-              } catch (e) {
-                setError((e as Error).message);
-              }
-            }}
+            onClick={() => setAsk({ kind: "legacy", id: l.id })}
           >
             Отозвать
           </button>
         </div>
       ))}
-      {links.map((link) => (
-        <section key={link.id}>
-          <h3>Для близких без Telegram</h3>
-          <p>
-            Секретная ссылка: открывает вишлист без входа, для брони достаточно
-            имени. Давайте её только тем, кому доверяете.
-          </p>
-          <CopyValue
-            value={link.web_url}
-            warning="По этой ссылке видны все подарки и брони. Не открывайте её сами, если хотите сохранить сюрприз."
-          />
-          <button
-            className="text-link danger"
-            onClick={async () => {
-              if (
-                !window.confirm(
-                  "Заменить ссылку? Люди со старой ссылкой потеряют доступ.",
-                )
-              )
-                return;
-              try {
-                await api(`/api/guest-links/${link.id}`, "DELETE");
-                setLinks((await api("/api/guest-links", "POST")).links);
-              } catch (e) {
-                setError((e as Error).message);
-              }
-            }}
-          >
-            Заменить ссылку
-          </button>
-        </section>
-      ))}
-    </div>
+      {done && <p role="status">{done}</p>}
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+      {ask && (
+        <Confirm
+          title={
+            ask.kind === "replace" ? "Заменить ссылку?" : "Отозвать ссылку?"
+          }
+          text={
+            ask.kind === "replace"
+              ? "Старая ссылка перестанет работать. Новую нужно будет отправить заново."
+              : "Ссылка перестанет работать. Брони, сделанные по ней, сохранятся."
+          }
+          action={ask.kind === "replace" ? "Заменить" : "Отозвать"}
+          danger={ask.kind !== "replace"}
+          onCancel={() => setAsk(null)}
+          onConfirm={() => void run(ask)}
+        />
+      )}
+    </section>
   );
 }
 export function ArchiveWish({
