@@ -63,6 +63,8 @@ import {
   setGuestCode,
   setSessionToken,
   signedIn,
+  signedInBefore,
+  rememberSignIn,
   telegram,
   telegramLink,
   type Notifications,
@@ -239,11 +241,18 @@ function App() {
   /** The first-visit tour, with the bot status for its «Открыть бота». */
   const [welcome, setWelcome] = useState<Notifications | null | false>(false);
   const welcomeShown = useRef(false);
+  /** Someone who came by a link sees what was sent first; the tour waits for their first action. */
+  const [welcomeLater, setWelcomeLater] = useState(
+    !!(guestToken || profileTarget || legacyLink || openTarget),
+  );
+  const returning = signedInBefore();
   /** A guest link opened without an account: only that list, with bookings by name.
    * Signed in, the link just opens the list and the rest of the app works as usual. */
   const guestView = () => !!guestToken && !signedIn();
   const own = !!user && owner?.id === user.id;
   const notice = (message: string, tone: ToastTone = "ok") => {
+    // A finished action counts as the first one for the deferred welcome.
+    if (tone === "ok") setWelcomeLater(false);
     setToast({ text: message, tone });
     setTimeout(() => setToast(null), 4500);
   };
@@ -337,6 +346,7 @@ function App() {
           if (failed) throw failed;
         };
         const me = await api("/api/me");
+        rememberSignIn();
         setUser(me.user);
         setWebSession(!!me.web_session);
         if (me.welcome && !welcomeShown.current) {
@@ -439,6 +449,7 @@ function App() {
     });
   }, []);
   async function navigate(next: Tab) {
+    setWelcomeLater(false);
     setMenu(false);
     setNamedList(null);
     setFilters(noFilters);
@@ -726,9 +737,13 @@ function App() {
             ? a.priority - b.priority
             : b.priority - a.priority,
     );
-  // Without signing in only a guest link or an open profile shows a list.
-  const visitor = !user && !!viewed?.can_view;
-  const locked = !demo && !user && !guestToken && !visitor && !loading;
+  const openInTelegram = (
+    <a className="button telegram-login" href={telegramLink()}>
+      <Send size={17} /> Открыть в Telegram
+    </a>
+  );
+  // Without signing in only a guest link shows wishes; a profile shows its card.
+  const locked = !demo && !user && !guestToken && !loading;
   const viewingFriend = tab === "friends" && !!owner && !own;
   // A closed profile I do not follow shows its card instead of the list.
   const closedCard =
@@ -876,34 +891,39 @@ function App() {
                 <>
                   <PersonCard card={viewed.card} />
                   <p>
-                    Вишлист закрытый. Войдите через Telegram и добавьте в
-                    друзья: вишлист откроется, когда{" "}
-                    {viewed.card.name.split(" ")[0]} одобрит запрос.
+                    Войдите, чтобы увидеть вишлист{" "}
+                    {viewed.card.name.split(" ")[0]}.
+                    {viewed.card.is_private
+                      ? " Он закрытый: откроется, когда вас одобрят в друзья."
+                      : ""}
                   </p>
                 </>
               ) : profileTarget || legacyLink ? (
                 <>
                   <h1>Вам прислали профиль</h1>
-                  <p>
-                    Войдите через Telegram, чтобы открыть вишлист и забронировать
-                    подарок. Это бесплатно и займёт минуту.
-                  </p>
+                  <p>Войдите, чтобы открыть вишлист и выбрать подарок.</p>
                 </>
+              ) : returning ? (
+                <h1>Войдите снова</h1>
               ) : (
                 <>
                   <h1>Вишлист</h1>
                   <p>
-                    Войдите через Telegram, чтобы добавить желания и выбрать
-                    подарки друзьям.
+                    Собирайте желания в одном месте, смотрите вишлисты близких
+                    и тайно выбирайте им подарки.
                   </p>
                 </>
               )}
-              {apiConfigured && !telegram?.initData && (
-                <WebLogin onSignedIn={() => void refresh()} />
+              {/* Two equal ways in; more sign-in methods join this row later. */}
+              {apiConfigured && !telegram?.initData ? (
+                <WebLogin
+                  compact
+                  onSignedIn={() => void refresh()}
+                  alternative={openInTelegram}
+                />
+              ) : (
+                <div className="login-choices">{openInTelegram}</div>
               )}
-              <a className="text-link" href={telegramLink()}>
-                Открыть в Telegram <ArrowUpRight size={15} />
-              </a>
               {error && (
                 <div className="error" role="alert">
                   {error}
@@ -914,10 +934,14 @@ function App() {
                   Сервис пока недоступен. Попробуйте позже.
                 </p>
               )}
-              <a className="text-link" href="?demo=1">
-                Попробовать демо
-              </a>
-              <Features />
+              {!returning && (
+                <>
+                  <a className="text-link" href="?demo=1">
+                    Попробовать демо
+                  </a>
+                  <Features />
+                </>
+              )}
             </section>
           ) : (
             <>
@@ -925,15 +949,6 @@ function App() {
                 <div className="guest-banner">
                   <LinkIcon size={18} />
                   <span>Вишлист для близких · без регистрации</span>
-                </div>
-              )}
-              {visitor && (
-                <div className="guest-banner">
-                  <LinkIcon size={18} />
-                  <span>Открытый вишлист · чтобы забронировать, войдите</span>
-                  <a href={telegramLink()}>
-                    Открыть в Telegram <ArrowUpRight size={14} />
-                  </a>
                 </div>
               )}
               {guestView() && (
@@ -1410,9 +1425,7 @@ function App() {
                                 ? "own"
                                 : user
                                   ? "friend"
-                                  : guestView()
-                                    ? "guest"
-                                    : "visitor"
+                                  : "guest"
                           }
                           busy={busy}
                           onEdit={() => {
@@ -1739,7 +1752,7 @@ function App() {
           }}
         />
       )}
-      {welcome !== false && user && !modal && (
+      {welcome !== false && !welcomeLater && user && !modal && (
         <Modal
           title="Добро пожаловать!"
           closeOnBackdrop={false}
@@ -1966,8 +1979,7 @@ function GiftCard({
   onAnswer,
 }: {
   wish: Wish;
-  /** «visitor»: an open profile seen without signing in; booking needs Telegram. */
-  mode: "own" | "friend" | "guest" | "visitor" | "archive";
+  mode: "own" | "friend" | "guest" | "archive";
   busy: boolean;
   onEdit: () => void;
   onBought: () => void;

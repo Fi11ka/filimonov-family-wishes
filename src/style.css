@@ -2231,6 +2231,19 @@ button.event-chip:hover {
 }
 .web-login.compact {
   margin: 0;
+  width: min(100%, 420px);
+}
+/* «Войти через Telegram» and «Открыть в Telegram» side by side, the same size. */
+.login-choices {
+  width: min(100%, 420px);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+.login-choices > .button {
+  width: 100%;
+  justify-content: center;
 }
 .web-login .small-text {
   max-width: 340px;

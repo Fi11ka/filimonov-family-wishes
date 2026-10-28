@@ -75,9 +75,12 @@ function openTelegramLogin(
 export function WebLogin({
   onSignedIn,
   compact,
+  alternative,
 }: {
   onSignedIn: () => void;
   compact?: boolean;
+  /** An equal way in shown beside the button, e.g. «Открыть в Telegram». */
+  alternative?: React.ReactNode;
 }) {
   const [clientId, setClientId] = useState<number | null>(null),
     [ready, setReady] = useState(false),
@@ -154,14 +157,17 @@ export function WebLogin({
   }
   return (
     <div className={`web-login ${compact ? "compact" : ""}`}>
-      <button
-        className="button telegram-login"
-        disabled={!clientId || !ready || busy}
-        onClick={signIn}
-      >
-        <Send size={17} />
-        {busy ? "Ждём подтверждения…" : "Войти через Telegram"}
-      </button>
+      <div className={alternative ? "login-choices" : undefined}>
+        <button
+          className="button telegram-login"
+          disabled={!clientId || !ready || busy}
+          onClick={signIn}
+        >
+          <Send size={17} />
+          {busy ? "Ждём подтверждения…" : "Войти через Telegram"}
+        </button>
+        {alternative}
+      </div>
       {busy && (
         <button
           className="text-link"

@@ -141,10 +141,11 @@ async function canView(
   if (user?.id === owner) return true;
   // One query: an open profile or an approved follower of a closed one, a fellow
   // guest of an upcoming party, or the guest link (the Telegram «Поделиться»
-  // links now lead to the profile only).
+  // links now lead to the profile only). Without signing in only the guest link
+  // shows wishes, even of an open profile.
   return !!(await stmt(
     db,
-    `SELECT 1 AS ok WHERE ${SEES("?2")}
+    `SELECT 1 AS ok WHERE (?1<>'' AND ${SEES("?2")})
     OR (?1<>'' AND ${PARTY_PEER("?1", "?2")})
     OR (?3<>'' AND EXISTS(SELECT 1 FROM guest_links WHERE owner_id=?2 AND token_hash=?3 AND ${LINK_ACTIVE("guest_links", "?4")} AND kind='guest'))`,
     user?.id || "",
@@ -159,8 +160,8 @@ async function list(
   user: Identity | null,
   guestView = false,
 ) {
-  // The owner's list never reads reservations; others (an open profile seen
-  // without signing in too) see only whether a gift is free.
+  // The owner's list never reads reservations; others (a guest link without
+  // signing in too) see only whether a gift is free.
   if (!guestView && user?.id === owner)
     return (
       await stmt(
@@ -494,8 +495,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         (path === "/api/guest" ||
           /^\/api\/gifts\/[a-f0-9-]{36}\/photo$/.test(path) ||
           AVATAR_PATH.test(path) ||
-          // An open profile is seen without signing in; a closed one shows its card.
-          LIST_PATH.test(path) ||
+          // Any profile shows only its card until the person signs in.
           PROFILE_PATH.test(path)))
     )
   )

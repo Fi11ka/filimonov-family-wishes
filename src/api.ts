@@ -123,6 +123,22 @@ export function setGuestCode(giftId: string, code: string | null) {
   }
 }
 export const signedIn = () => !!telegram?.initData || !!sessionToken();
+// Set after the first sign-in on this device: an expired session gets a short «Войдите снова».
+const SIGNED_IN_BEFORE_KEY = "fw:signed-in-before";
+export function signedInBefore() {
+  try {
+    return localStorage.getItem(SIGNED_IN_BEFORE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+export function rememberSignIn() {
+  try {
+    localStorage.setItem(SIGNED_IN_BEFORE_KEY, "1");
+  } catch {
+    // Without storage a returning person just sees the full sign-in screen.
+  }
+}
 /** Website only: turns the one-time code from the Mini App into a normal sign-in. */
 export async function redeemHandoff() {
   if (!handoffCode || telegram?.initData) return false;
