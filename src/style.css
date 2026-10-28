@@ -1448,6 +1448,71 @@ button.event-chip:hover {
 .owner-actions .reserve-button {
   margin-left: 0;
 }
+/* «Подарю»: the main action of a friend's card, big and full width. */
+.reserve-button.wide {
+  flex: 1 0 100%;
+  margin-left: 0;
+  min-height: 48px;
+  font-size: var(--fs-md);
+}
+.reserve-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+.reserve-status.mine {
+  color: var(--success);
+}
+.reserve-mine {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+/* The booking dialog: what is being chosen, then «Готово!». */
+.reserve-gift {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 14px;
+  align-items: center;
+}
+.reserve-gift:not(:has(.reserve-photo)) {
+  grid-template-columns: 1fr;
+}
+.reserve-photo {
+  width: 96px;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.reserve-photo img,
+.reserve-photo .photo-placeholder {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.reserve-price {
+  margin: 4px 0 0;
+  font-weight: 600;
+}
+.reserve-done {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  color: var(--success);
+  font-weight: 600;
+}
+.reserve-done svg {
+  flex: none;
+  margin-top: 2px;
+}
 /* Without a shop link the action row starts at the left edge like the text above. */
 .card-actions > .owner-actions:first-child {
   margin-left: 0;
@@ -2151,6 +2216,15 @@ button.event-chip:hover {
 }
 .guest-banner + .button {
   margin-bottom: 16px;
+}
+.toast-action {
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  color: var(--purple);
+  font-weight: 700;
+}
+.toast-action:hover {
+  background: var(--accent-soft);
 }
 .toast {
   position: fixed;

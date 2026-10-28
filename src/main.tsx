@@ -60,6 +60,7 @@ import {
   profileTarget,
   redeemHandoff,
   RequestError,
+  savedGuestName,
   setGuestCode,
   setSessionToken,
   signedIn,
@@ -103,6 +104,7 @@ import {
 import {
   type Booking,
   type Invitation,
+  type ToastAction,
   type ToastTone,
   type User,
   type Friend,
@@ -155,7 +157,11 @@ function App() {
     ),
     [loading, setLoading] = useState(!demo),
     [error, setError] = useState(""),
-    [toast, setToast] = useState<{ text: string; tone: ToastTone } | null>(
+    [toast, setToast] = useState<{
+      text: string;
+      tone: ToastTone;
+      action?: ToastAction;
+    } | null>(
       null,
     );
   const [modal, setModal] = useState<ModalKind | null>(null),
@@ -227,14 +233,14 @@ function App() {
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, [giftDirty, modal]);
-  const [guestGift, setGuestGift] = useState<Wish | null>(null);
   const [reserving, setReserving] = useState<{
-    gift: { id: string; title: string };
+    gift: { id: string; title: string } & Partial<Wish>;
     ownerId: string;
     exclude?: string[];
     invite?: boolean;
+    /** A guest link without an account: booking by name. */
+    guest?: boolean;
   } | null>(null);
-  const [guestName, setGuestName] = useState("");
   /** A friend's list I was looking at is no longer open to me. */
   const [lostAccess, setLostAccess] = useState(false);
   /** Whose profile a link opened: the welcome dialog names them. */
@@ -252,11 +258,21 @@ function App() {
    * Signed in, the link just opens the list and the rest of the app works as usual. */
   const guestView = () => !!guestToken && !signedIn();
   const own = !!user && owner?.id === user.id;
-  const notice = (message: string, tone: ToastTone = "ok") => {
+  const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  /** A toast; with `action` (e.g. «Вернуть») it stays for seven seconds. */
+  const notice = (
+    message: string,
+    tone: ToastTone = "ok",
+    action?: ToastAction,
+  ) => {
     // A finished action counts as the first one for the deferred welcome.
     if (tone === "ok") setWelcomeLater(false);
-    setToast({ text: message, tone });
-    setTimeout(() => setToast(null), 4500);
+    setToast({ text: message, tone, action });
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(
+      () => setToast(null),
+      action ? 7000 : 4500,
+    );
   };
   const fullscreen = useFullscreen((message) => notice(message, "error"));
   async function loadList(id: string) {
@@ -542,11 +558,47 @@ function App() {
       setBusy(false);
     }
   }
+  /** The list behind a dialog, after a booking changed. */
+  async function reloadAfterBooking() {
+    if (tab === "bookings") await loadBookings();
+    else if (guestView()) await refresh();
+    else if (owner) await loadList(owner.id);
+  }
+  /**
+   * «Вернуть» after a cancelled booking: books again only if the gift is still
+   * free. The server books atomically, so a second try cannot double it.
+   */
+  function undoCancel(giftId: string) {
+    return {
+      label: "Вернуть",
+      run: () =>
+        guarded(async () => {
+          try {
+            if (guestView()) {
+              const r = await api(`/api/guest-reservations/${giftId}`, "POST", {
+                name: savedGuestName() || "Гость",
+              });
+              setGuestCode(giftId, r.code);
+            } else await api(`/api/gifts/${giftId}/reservation`, "POST", {});
+            notice("Бронь возвращена");
+          } catch (e) {
+            notice(
+              e instanceof RequestError && e.code === "TAKEN"
+                ? "Вернуть не получилось: этот подарок уже выбрал кто-то другой."
+                : (e as Error).message,
+              "error",
+            );
+          } finally {
+            await reloadAfterBooking();
+          }
+        }, ""),
+    };
+  }
   async function reserve(g: Wish) {
     if (guestView()) {
       if (g.reservation === "reserved" && guestCodes()[g.id])
         setConfirmation({
-          text: `Отменить бронь «${g.title}»? Подарок снова станет свободным, его сможет забронировать кто-то другой.`,
+          text: `Отменить бронь «${g.title}»? Подарок снова станет свободным, его сможет выбрать кто-то другой.`,
           action: "Отменить бронь",
           danger: true,
           run: () =>
@@ -555,7 +607,7 @@ function App() {
                 await api(`/api/guest-reservations/${g.id}/cancel`, "POST", {
                   code: guestCodes()[g.id],
                 });
-                notice("Бронь отменена");
+                notice("Бронь отменена", "ok", undoCancel(g.id));
               } finally {
                 // Cancelled now or earlier by someone else: the code is no longer needed.
                 setGuestCode(g.id, null);
@@ -563,7 +615,7 @@ function App() {
               }
             }, ""),
         });
-      else setGuestGift(g);
+      else setReserving({ gift: g, ownerId: g.owner_id, guest: true });
       return;
     }
     if (g.reservation !== "mine") {
@@ -575,14 +627,16 @@ function App() {
     setConfirmation({
       text: g.group_joined
         ? `Отменить бронь «${g.title}»? Это совместный подарок, бот сообщит об этом в Telegram.`
-        : `Отменить бронь «${g.title}»? Подарок снова станет свободным, его сможет забронировать кто-то другой.`,
+        : `Отменить бронь «${g.title}»? Подарок снова станет свободным, его сможет выбрать кто-то другой.`,
       action: "Отменить бронь",
       danger: true,
       run: () =>
         guarded(async () => {
           try {
             await api(`/api/gifts/${g.id}/reservation`, "DELETE");
-            notice("Бронь отменена");
+            // A shared gift cannot come back: its members were let go.
+            if (g.group_joined) notice("Бронь отменена");
+            else notice("Бронь отменена", "ok", undoCancel(g.id));
           } finally {
             if (owner) await loadList(owner.id);
           }
@@ -611,14 +665,16 @@ function App() {
         ? `Выйти из совместного подарка «${b.title}»? Бронь останется за организатором, бот ему сообщит.`
         : b.members.length
           ? `Отменить бронь «${b.title}»? Совместный подарок отменится для всех участников, бот им сообщит.`
-          : `Отменить бронь «${b.title}»? Подарок снова станет свободным, его сможет забронировать кто-то другой.`,
+          : `Отменить бронь «${b.title}»? Подарок снова станет свободным, его сможет выбрать кто-то другой.`,
       action: organizer ? "Отменить бронь" : "Выйти",
       danger: true,
       run: () =>
         guarded(async () => {
           await api(`/api/gifts/${b.gift_id}/reservation`, "DELETE");
           setBookings((list) => list.filter((x) => x.gift_id !== b.gift_id));
-          notice(organizer ? "Бронь отменена" : "Вы вышли из подарка");
+          if (organizer && !b.members.length)
+            notice("Бронь отменена", "ok", undoCancel(b.gift_id));
+          else notice(organizer ? "Бронь отменена" : "Вы вышли из подарка");
         }, "Бронирование доступно после подключения приложения."),
     });
   }
@@ -1359,7 +1415,7 @@ function App() {
                   })()}
                   {guestView() && (
                     <p className="list-help">
-                      Нажмите «Забронировать» у подарка, который хотите купить.
+                      Нажмите «Подарю» у подарка, который хотите купить.
                     </p>
                   )}
                   {namedList && owner && namedList.owner === owner.id && (
@@ -1671,7 +1727,7 @@ function App() {
                       <div className="empty">
                         <Bookmark size={34} />
                         <h3>У вас пока нет броней</h3>
-                        <p>Откройте вишлист друга и нажмите «Забронировать».</p>
+                        <p>Откройте вишлист друга и нажмите «Подарю».</p>
                         <button
                           className="button primary"
                           onClick={() => void navigate("friends")}
@@ -1699,6 +1755,18 @@ function App() {
             <Check size={17} />
           )}
           {toast.text}
+          {toast.action && (
+            <button
+              className="toast-action"
+              onClick={() => {
+                const run = toast.action!.run;
+                setToast(null);
+                void run();
+              }}
+            >
+              {toast.action.label}
+            </button>
+          )}
           <button
             className="icon-button"
             onClick={() => setToast(null)}
@@ -1708,73 +1776,39 @@ function App() {
           </button>
         </div>
       )}
-      {guestGift && (
-        <Modal
-          title="Забронировать подарок"
-          onClose={() => {
-            if (!busy) setGuestGift(null);
-          }}
-        >
-          <form
-            className="share-result"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void guarded(async () => {
-                try {
-                  const r = await api(
-                    `/api/guest-reservations/${guestGift.id}`,
-                    "POST",
-                    { name: guestName },
-                  );
-                  setGuestCode(guestGift.id, r.code);
-                  setGuestGift(null);
-                  notice("Подарок забронирован!");
-                } finally {
-                  await refresh();
-                }
-              }, "");
-            }}
-          >
-            <h3>{guestGift.title}</h3>
-            <label>
-              Кто будет покупать подарок?
-              <input
-                autoFocus
-                required
-                maxLength={80}
-                value={guestName}
-                onChange={(e) => setGuestName(e.target.value)}
-                placeholder="Ваше имя"
-              />
-            </label>
-            <p>
-              Владелец списка не увидит, кто выбрал подарок. Отменить бронь
-              можно будет с этого устройства.
-            </p>
-            <button
-              className="button primary"
-              disabled={busy || !guestName.trim()}
-            >
-              {busy ? "Бронируем…" : "Забронировать"}
-            </button>
-          </form>
-        </Modal>
-      )}
       {reserving && (
         <ReserveDialog
           gift={reserving.gift}
+          photo={
+            reserving.gift.has_photo !== undefined && (
+              <Photo wish={reserving.gift as Wish} own={false} />
+            )
+          }
           ownerId={reserving.ownerId}
           exclude={reserving.exclude}
           invite={reserving.invite}
+          guest={reserving.guest}
           friends={friends}
           onClose={() => setReserving(null)}
-          onDone={async (message) => {
-            setReserving(null);
-            telegram?.HapticFeedback?.notificationOccurred("success");
-            notice(message);
-            if (tab === "bookings") await loadBookings();
-            else if (owner) await loadList(owner.id);
+          onBooked={async (message, code) => {
+            if (code) setGuestCode(reserving.gift.id, code);
+            if (message)
+              telegram?.HapticFeedback?.notificationOccurred("success");
+            // Inviting more friends ends with a toast; a booking keeps its «Готово!».
+            if (reserving.invite) {
+              setReserving(null);
+              notice(message);
+            }
+            await reloadAfterBooking();
           }}
+          onBookings={
+            user
+              ? () => {
+                  setReserving(null);
+                  void navigate("bookings");
+                }
+              : undefined
+          }
         />
       )}
       {archiveGift && (
@@ -2155,38 +2189,38 @@ function GiftCard({
                 Не могу
               </button>
             </span>
-          ) : guestCode && g.reservation === "reserved" ? (
-            <button
-              disabled={busy}
-              className="reserve-button mine"
-              onClick={onReserve}
-            >
-              <Check size={14} />
-              Отменить бронь
-            </button>
+          ) : g.reservation === "mine" ||
+            (guestCode && g.reservation === "reserved") ? (
+            // My own choice: say so, with a quiet way to cancel.
+            <span className="reserve-mine">
+              <span className="reserve-status mine">
+                <Check size={15} />
+                Это дарите вы
+              </span>
+              <button
+                className="text-link danger"
+                disabled={busy}
+                onClick={onReserve}
+              >
+                Отменить бронь
+              </button>
+            </span>
           ) : mode === "friend" || mode === "guest" ? (
-            <button
-              disabled={busy || g.reservation === "reserved"}
-              className={`reserve-button ${g.reservation === "mine" ? "mine" : ""}`}
-              onClick={onReserve}
-            >
-              {g.reservation === "reserved" ? (
-                <>
-                  <Bookmark size={13} />
-                  Забронировано
-                </>
-              ) : g.reservation === "mine" ? (
-                <>
-                  <Check size={14} />
-                  Отменить бронь
-                </>
-              ) : (
-                <>
-                  <Gift size={14} />
-                  Забронировать
-                </>
-              )}
-            </button>
+            g.reservation === "reserved" ? (
+              <span className="reserve-status">
+                <Bookmark size={14} />
+                Уже выбрал кто-то другой
+              </span>
+            ) : (
+              <button
+                disabled={busy}
+                className="reserve-button wide"
+                onClick={onReserve}
+              >
+                <Gift size={17} />
+                Подарю
+              </button>
+            )
           ) : (
             <a className="reserve-button" href={telegramLink()}>
               Хочу подарить

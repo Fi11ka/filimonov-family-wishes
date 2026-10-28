@@ -122,6 +122,22 @@ export function setGuestCode(giftId: string, code: string | null) {
     // Without storage the guest cannot cancel later; the booking itself is saved.
   }
 }
+// A guest's name, offered again the next time they book from this browser.
+const GUEST_NAME_KEY = "fw:guest-name";
+export function savedGuestName() {
+  try {
+    return localStorage.getItem(GUEST_NAME_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+export function saveGuestName(name: string) {
+  try {
+    localStorage.setItem(GUEST_NAME_KEY, name);
+  } catch {
+    // Without storage the guest just types the name again.
+  }
+}
 export const signedIn = () => !!telegram?.initData || !!sessionToken();
 // Set after the first sign-in on this device: an expired session gets a short «Войдите снова».
 const SIGNED_IN_BEFORE_KEY = "fw:signed-in-before";
@@ -166,6 +182,8 @@ export class RequestError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** The API's error code, e.g. TAKEN when someone booked the gift first. */
+    public code = "",
   ) {
     super(message);
   }
@@ -211,6 +229,7 @@ async function request(
     throw new RequestError(
       res.status,
       value.error?.message || "Не удалось выполнить запрос.",
+      typeof value.error?.code === "string" ? value.error.code : "",
     );
   }
   return res;
