@@ -1,123 +1,101 @@
-// Events of a wishlist owner and the friends invited to them. Guests of one event
-// see who else is invited and whose bookings are theirs; the owner sees the guests
-// they chose but never a booking.
+// Events: as many as a person likes, each with its own guests, two dates and the
+// wishes it shows (flows 5, 6 and 10). The standard occasions from the profile are
+// only a list to start from. Guests take part as soon as they are invited and can
+// decline; the organizer sees the guests they chose but never a booking.
 import {
   eventSpecs,
   daysUntil,
-  isUpcoming,
   upcomingEvents,
   validEventDate,
-  type EventSpec,
+  type EventKey,
 } from "../shared/events";
-import { ACCOUNT_ID_PART, isAccountId } from "../shared/account-id";
-import { fail, text, usernameOf, type Identity } from "./security";
-import { CONNECTED, now, stmt } from "./core";
+import { fail, text, type Identity } from "./security";
+import { isId } from "../shared/token";
+import { now, stmt } from "./core";
 import type { Outbox } from "./notify";
 export const GUEST_LIMIT = 50;
 type Person = { id: string; name: string; username: string | null };
-export async function ownerSpecs(db: D1Database, ownerId: string) {
-  const r = await stmt(
-    db,
-    "SELECT birthday,gender,event_title,event_date FROM users WHERE id=?",
-    ownerId,
-  ).first<{
-    birthday: string | null;
-    gender: string | null;
-    event_title: string | null;
-    event_date: string | null;
-  }>();
-  return r ? eventSpecs(r) : [];
-}
-/** Event specs of several owners in one query (an unknown owner has none). */
-async function specsOf(db: D1Database, ownerIds: string[]) {
-  const specs = new Map<string, EventSpec[]>();
-  const ids = [...new Set(ownerIds)];
-  if (!ids.length) return specs;
+export type Mode = "hero" | "everyone";
+type EventRow = {
+  id: string;
+  owner_id: string;
+  base: EventKey;
+  title: string;
+  actual_on: string;
+  celebrate_on: string;
+  mode: Mode;
+  place: string | null;
+  picked: number;
+};
+const COLUMNS =
+  "e.id,e.owner_id,e.base,e.title,e.actual_on,e.celebrate_on,e.mode,e.place,e.picked";
+/**
+ * Still current: until a day after the later of the two dates. Afterwards the
+ * event leaves the lists and stops opening wishlists; bookings stay as they are.
+ */
+const CURRENT = `MAX(e.actual_on,e.celebrate_on)>=date('now','-1 day')`;
+/** User `u` takes part in event `e`: its organizer, or a guest who has not declined. */
+const member = (u: string) =>
+  `(e.owner_id=${u} OR EXISTS(SELECT 1 FROM event_members x WHERE x.event_id=e.id AND x.user_id=${u} AND x.declined_at IS NULL))`;
+/**
+ * SQL condition: `viewer` takes part in a current event of `owner` that shows
+ * the whole wishlist, or both take part in a «для всех» event, whose other
+ * guests' lists open in full. A picked set opens only its wishes: EVENT_GIFT.
+ */
+export const PARTY_PEER = (viewer: string, owner: string) =>
+  `EXISTS(SELECT 1 FROM events e WHERE ${CURRENT} AND ${member(viewer)}
+    AND ((e.owner_id=${owner} AND e.picked=0) OR (e.mode='everyone' AND e.owner_id<>${owner} AND ${member(owner)})))`;
+/** SQL condition: `gift` is one of the wishes a current event of its owner shows to `viewer`. */
+export const EVENT_GIFT = (viewer: string, gift: string, owner: string) =>
+  `EXISTS(SELECT 1 FROM events e JOIN event_wishes w ON w.event_id=e.id
+    WHERE w.gift_id=${gift} AND e.owner_id=${owner} AND e.picked=1 AND ${CURRENT} AND ${member(viewer)})`;
+/** Who may invite whom: anyone in the four groups of «Друзья», either way, approved or not. */
+const PEOPLE = (other: string) =>
+  `EXISTS(SELECT 1 FROM follows f WHERE (f.follower_id=?1 AND f.target_id=${other}) OR (f.follower_id=${other} AND f.target_id=?1))`;
+const shape = (e: EventRow) => ({
+  id: e.id,
+  owner_id: e.owner_id,
+  base: e.base,
+  title: e.title,
+  actual_on: e.actual_on,
+  celebrate_on: e.celebrate_on,
+  days: Math.max(0, daysUntil(e.celebrate_on)),
+  mode: e.mode,
+  picked: !!e.picked,
+});
+type Shaped = ReturnType<typeof shape>;
+const forMessage = (e: Shaped) => ({
+  id: e.id,
+  title: e.title,
+  date: e.celebrate_on,
+  days: e.days,
+});
+async function guestsOf(db: D1Database, ids: string[]) {
+  if (!ids.length) return new Map<string, (Person & { declined: boolean })[]>();
   const rows = (
     await stmt(
       db,
-      "SELECT id,birthday,gender,event_title,event_date FROM users WHERE id IN (SELECT value FROM json_each(?))",
+      `SELECT m.event_id,u.id,u.name,u.username,m.declined_at FROM event_members m JOIN users u ON u.id=m.user_id
+      WHERE m.event_id IN (SELECT value FROM json_each(?)) ORDER BY m.created_at,u.name`,
       JSON.stringify(ids),
-    ).all<{
-      id: string;
-      birthday: string | null;
-      gender: string | null;
-      event_title: string | null;
-      event_date: string | null;
-    }>()
+    ).all<Person & { event_id: string; declined_at: number | null }>()
   ).results;
-  for (const r of rows) specs.set(r.id, eventSpecs(r));
-  return specs;
-}
-export type Mode = "hero" | "everyone";
-/** Whose bookings are named where: see migrations/0012_events.sql. */
-const PARTY_ROWS = `SELECT p.owner_id,p.event_key,p.event_on,p.mode,p.description,u.id,u.name,u.username
-  FROM event_parties p LEFT JOIN event_guests e ON e.owner_id=p.owner_id AND e.event_key=p.event_key AND e.event_on=p.event_on
-  LEFT JOIN users u ON u.id=e.user_id WHERE p.event_on>=date('now','-2 days')`;
-type PartyRow = {
-  owner_id: string;
-  event_key: string;
-  event_on: string;
-  mode: Mode;
-  description: string | null;
-  /** NULL for a party without guests. */
-  id: string | null;
-  name: string;
-  username: string | null;
-};
-/** User `u` (a placeholder or column) takes part in party `p`: its owner or a guest. */
-const member = (u: string) =>
-  `(p.owner_id=${u} OR EXISTS(SELECT 1 FROM event_guests x WHERE x.owner_id=p.owner_id AND x.event_key=p.event_key AND x.event_on=p.event_on AND x.user_id=${u}))`;
-/**
- * SQL condition: `viewer` is a guest of `owner`'s upcoming party, or both take
- * part in a «праздник для всех». It opens the list even without friendship
- * (people can be invited by their Telegram username).
- * Stale rows (a changed birthday or gender) are removed when the profile changes.
- */
-export const PARTY_PEER = (viewer: string, owner: string) =>
-  `EXISTS(SELECT 1 FROM event_parties p WHERE p.event_on>=date('now','-1 day') AND ${member(viewer)} AND (p.owner_id=${owner} OR (p.mode='everyone' AND ${member(owner)})))`;
-/** Groups guest rows into parties that are still ahead (a changed birthday leaves old rows behind). */
-async function parties(db: D1Database, rows: PartyRow[]) {
-  const specs = await specsOf(
-    db,
-    rows.map((r) => r.owner_id),
-  );
-  const found = new Map<
-    string,
-    {
-      owner_id: string;
-      key: string;
-      date: string;
-      title: string;
-      mode: Mode;
-      description: string;
-      guests: Person[];
-    }
-  >();
-  for (const r of rows) {
-    const own = specs.get(r.owner_id) ?? [];
-    if (!isUpcoming(own, r.event_key, r.event_on)) continue;
-    const id = `${r.owner_id}:${r.event_key}:${r.event_on}`;
-    if (!found.has(id))
-      found.set(id, {
-        owner_id: r.owner_id,
-        key: r.event_key,
-        date: r.event_on,
-        title: own.find((s) => s.key === r.event_key)?.title || "",
-        mode: r.mode,
-        description: r.description || "",
-        guests: [],
-      });
-    if (r.id)
-      found
-        .get(id)!
-        .guests.push({ id: r.id, name: r.name, username: r.username });
-  }
-  return [...found.values()];
+  const by = new Map<string, (Person & { declined: boolean })[]>();
+  for (const r of rows)
+    by.set(r.event_id, [
+      ...(by.get(r.event_id) || []),
+      {
+        id: r.id,
+        name: r.name,
+        username: r.username,
+        declined: r.declined_at !== null,
+      },
+    ]);
+  return by;
 }
 /**
- * The owner's invitations the viewer may see: all of them for the owner,
- * otherwise only events the viewer is invited to, with the other guests.
+ * The owner's current events the viewer may see in their wishlist: every one
+ * for the owner, otherwise those the viewer takes part in.
  */
 export async function invitations(
   db: D1Database,
@@ -128,21 +106,27 @@ export async function invitations(
   const rows = (
     await stmt(
       db,
-      `${PARTY_ROWS} AND p.owner_id=?1 AND (?2=?1 OR EXISTS(SELECT 1 FROM event_guests v WHERE v.owner_id=p.owner_id AND v.event_key=p.event_key AND v.event_on=p.event_on AND v.user_id=?2))
-      ORDER BY e.created_at,u.name`,
-
+      `SELECT ${COLUMNS} FROM events e WHERE e.owner_id=?1 AND ${CURRENT} AND (?2=?1 OR ${member("?2")})
+      ORDER BY e.celebrate_on,e.created_at`,
       ownerId,
       viewerId,
-    ).all<PartyRow>()
+    ).all<EventRow>()
   ).results;
-  return (await parties(db, rows)).map(({ owner_id: _, ...p }) => p);
+  const guests = await guestsOf(
+    db,
+    rows.map((r) => r.id),
+  );
+  return rows.map((r) => ({
+    ...shape(r),
+    guests: (guests.get(r.id) || []).filter((g) => !g.declined).length,
+  }));
 }
 /**
  * Names of who booked each gift in listOwner's list, as the viewer may see them:
- * the viewer and the bookers share an event with listOwner as its hero, or a
- * «праздник для всех» listOwner takes part in. Guests from a link are named by
- * what they typed; other bookings stay a plain «Забронировано».
- * Nobody learns this about their own list.
+ * the viewer and the bookers take part in an event of listOwner, or in a «для
+ * всех» event listOwner takes part in. Guests from a link are named by what
+ * they typed; other bookings stay without a name. Nobody learns this about
+ * their own list.
  */
 export async function bookerNames(
   db: D1Database,
@@ -151,18 +135,25 @@ export async function bookerNames(
 ) {
   const names = new Map<string, string[]>();
   if (viewerId === listOwner) return names;
-  const rows = (
+  const shared = (
     await stmt(
       db,
-      `${PARTY_ROWS} AND ${member("?1")} AND (p.owner_id=?2 OR (p.mode='everyone' AND ${member("?2")}))`,
+      `SELECT e.id,e.owner_id FROM events e WHERE ${CURRENT} AND ${member("?1")}
+      AND (e.owner_id=?2 OR (e.mode='everyone' AND ${member("?2")}))`,
       viewerId,
       listOwner,
-    ).all<PartyRow>()
+    ).all<{ id: string; owner_id: string }>()
   ).results;
-  const shared = await parties(db, rows);
   if (!shared.length) return names;
+  const guests = await guestsOf(
+    db,
+    shared.map((e) => e.id),
+  );
   const together = new Set(
-    shared.flatMap((p) => [p.owner_id, ...p.guests.map((g) => g.id)]),
+    shared.flatMap((e) => [
+      e.owner_id,
+      ...(guests.get(e.id) || []).filter((g) => !g.declined).map((g) => g.id),
+    ]),
   );
   const bookings = (
     await stmt(
@@ -183,24 +174,46 @@ export async function bookerNames(
   }
   return names;
 }
-/** Upcoming parties the user is a guest of, nearest first. */
+/** Current events the user takes part in as a guest, nearest first. */
 export async function myParties(db: D1Database, uid: string) {
-  const rows = (
+  return (
     await stmt(
       db,
-      "SELECT owner_id,event_key AS key,event_on AS date FROM event_guests WHERE user_id=? AND event_on>=date('now','-2 days') ORDER BY event_on",
+      `SELECT e.id,e.owner_id,e.title,e.celebrate_on AS date FROM events e
+      JOIN event_members m ON m.event_id=e.id AND m.user_id=? AND m.declined_at IS NULL
+      WHERE ${CURRENT} ORDER BY e.celebrate_on`,
       uid,
-    ).all<{ owner_id: string; key: string; date: string }>()
+    ).all<{ id: string; owner_id: string; title: string; date: string }>()
   ).results;
-  const specs = await specsOf(
-    db,
-    rows.map((r) => r.owner_id),
-  );
-  return rows.filter((r) =>
-    isUpcoming(specs.get(r.owner_id) ?? [], r.key, r.date),
-  );
 }
-/** Owner's event routes; null when the path is not one of them. */
+const standardTitle: Record<EventKey, string> = {
+  birthday: "День рождения",
+  new_year: "Новый год",
+  march8: "8 Марта",
+  feb23: "23 Февраля",
+  custom: "",
+};
+const missing = (): never => fail(404, "NOT_FOUND", "Мероприятие недоступно.");
+/** A date that is a real day, not long past and not beyond three years. */
+function eventDate(value: unknown, label: string) {
+  const earliest = new Date(now() * 1000 - 86400000).toISOString().slice(0, 10);
+  const latest = new Date(now() * 1000 + 3 * 366 * 86400000)
+    .toISOString()
+    .slice(0, 10);
+  if (!validEventDate(value) || value < earliest || value > latest)
+    fail(
+      400,
+      "VALIDATION",
+      `Укажите ${label}: не раньше сегодняшней и не дальше чем через 3 года.`,
+    );
+  return value;
+}
+type Wishes = (
+  owner: string,
+  user: Identity,
+  event: string | null,
+) => Promise<object[]>;
+/** Event routes; null when the path is not one of them. */
 export async function eventRoute(
   db: D1Database,
   out: Outbox,
@@ -210,322 +223,289 @@ export async function eventRoute(
   body: () => Promise<Record<string, unknown>>,
   rate: (key: string, max: number) => Promise<void>,
   canView: (owner: string) => Promise<boolean>,
+  wishes: Wishes,
 ) {
   const uid = user.id;
+  const load = (id: string) =>
+    stmt(db, `SELECT ${COLUMNS} FROM events e WHERE e.id=?`, id).first<EventRow>();
+  /** The guests asked for: people from «Друзья» only, at most GUEST_LIMIT. */
+  async function chosenGuests(value: unknown) {
+    if (
+      !Array.isArray(value) ||
+      value.length > GUEST_LIMIT ||
+      !value.every((v) => typeof v === "string")
+    )
+      fail(400, "VALIDATION", `Можно пригласить до ${GUEST_LIMIT} человек.`);
+    const ids = [...new Set(value as string[])].filter((id) => id !== uid);
+    if (!ids.length) return [];
+    return (
+      await stmt(
+        db,
+        `SELECT u.id FROM users u WHERE u.id IN (SELECT value FROM json_each(?2)) AND ${PEOPLE("u.id")}`,
+        uid,
+        JSON.stringify(ids),
+      ).all<{ id: string }>()
+    ).results.map((r) => r.id);
+  }
+  /** «Весь вишлист» (null) or chosen wishes: only my active personal ones count. */
+  function wishSet(value: unknown) {
+    if (value === null || value === undefined) return null;
+    if (!Array.isArray(value)) fail(400, "VALIDATION", "Выберите желания.");
+    return [...new Set((value as unknown[]).filter(isId))].slice(0, 100);
+  }
+  const putWishes = (event: string, ids: string[]) =>
+    ids.map((g) =>
+      stmt(
+        db,
+        `INSERT OR IGNORE INTO event_wishes(event_id,gift_id)
+        SELECT ?1,id FROM gifts WHERE id=?2 AND owner_id=?3 AND list_id IS NULL AND archived_at IS NULL`,
+        event,
+        g,
+        uid,
+      ),
+    );
   if (path === "/api/events" && method === "GET") {
-    // «Мероприятия»: one's own upcoming events and the parties one is invited to.
-    const specs = await ownerSpecs(db, uid);
+    // «Мероприятия»: the standard occasions to start from, my events and the ones I am invited to.
+    const me = await stmt(
+      db,
+      "SELECT birthday,gender FROM users WHERE id=?",
+      uid,
+    ).first<{ birthday: string | null; gender: string | null }>();
     const mine = await invitations(db, uid, uid);
     const rows = (
       await stmt(
         db,
-        `SELECT p.owner_id,p.event_key,p.event_on,p.mode,u.name,u.username FROM event_parties p
-        JOIN event_guests e ON e.owner_id=p.owner_id AND e.event_key=p.event_key AND e.event_on=p.event_on AND e.user_id=?
-        JOIN users u ON u.id=p.owner_id WHERE p.event_on>=date('now','-2 days') ORDER BY p.event_on`,
+        `SELECT ${COLUMNS},u.name,u.username,m.declined_at FROM events e
+        JOIN event_members m ON m.event_id=e.id AND m.user_id=?
+        JOIN users u ON u.id=e.owner_id WHERE ${CURRENT} ORDER BY e.celebrate_on`,
         uid,
-      ).all<{
-        owner_id: string;
-        event_key: string;
-        event_on: string;
-        mode: Mode;
-        name: string;
-        username: string | null;
-      }>()
+      ).all<EventRow & Person & { declined_at: number | null }>()
     ).results;
-    const hosts = await specsOf(
-      db,
-      rows.map((r) => r.owner_id),
-    );
-    const invited = [];
-    for (const r of rows) {
-      const own = hosts.get(r.owner_id) ?? [];
-      if (!isUpcoming(own, r.event_key, r.event_on)) continue;
-      invited.push({
-        owner: { id: r.owner_id, name: r.name, username: r.username },
-        event: eventOf(own, r.event_key, r.event_on),
-        mode: r.mode,
-      });
-    }
     return {
-      mine: upcomingEvents(specs, new Date(now() * 1000)).map((e) => {
-        const party = mine.find((p) => p.key === e.key && p.date === e.date);
-        return {
-          event: e,
-          mode: party?.mode || null,
-          guests: party?.guests.length || 0,
-        };
-      }),
-      invited,
+      occasions: upcomingEvents(eventSpecs(me || {}), new Date(now() * 1000)),
+      mine,
+      invited: rows.map((r) => ({
+        ...shape(r),
+        owner: { id: r.owner_id, name: r.name, username: r.username },
+        declined: r.declined_at !== null,
+      })),
     };
   }
-  if (path === "/api/events/custom" && method === "PUT") {
+  if (path === "/api/events" && method === "POST") {
+    // One form: occasion or a title, two dates, «для всех» / «для одного», which
+    // wishes, whom to invite. A new event never replaces another.
     const b = await body();
     await rate(`event:${uid}`, 10);
-    const title = text(b.title, 80);
+    const base = (
+      ["birthday", "new_year", "march8", "feb23", "custom"] as EventKey[]
+    ).includes(b.base as EventKey)
+      ? (b.base as EventKey)
+      : "custom";
+    const title = text(b.title ?? "", 80) || standardTitle[base];
     if (!title) fail(400, "VALIDATION", "Введите название мероприятия.");
-    const date = b.date;
-    const today = new Date(now() * 1000 - 86400000).toISOString().slice(0, 10);
-    const latest = new Date(now() * 1000 + 3 * 366 * 86400000)
-      .toISOString()
-      .slice(0, 10);
-    if (!validEventDate(date) || date < today || date > latest)
-      fail(
-        400,
-        "VALIDATION",
-        "Укажите дату мероприятия: не раньше сегодняшней и не дальше чем через 3 года.",
-      );
-    // One event of one's own: the new one replaces the old, and so do its guests.
-    const old = await stmt(
-      db,
-      "SELECT event_title,event_date FROM users WHERE id=?",
-      uid,
-    ).first<{ event_title: string | null; event_date: string | null }>();
-    const same = old?.event_date === date;
+    const actual = eventDate(b.actual_on, "дату");
+    const celebrate =
+      b.celebrate_on === undefined || b.celebrate_on === null || b.celebrate_on === ""
+        ? actual
+        : eventDate(b.celebrate_on, "когда отмечаете");
+    const mode = b.mode === "everyone" ? "everyone" : "hero";
+    const place = text(b.place ?? "", 1000) || null;
+    const picked = wishSet(b.wishes);
+    const guests = await chosenGuests(b.guests ?? []);
+    const id = crypto.randomUUID();
     await db.batch([
       stmt(
         db,
-        "UPDATE users SET event_title=?,event_date=? WHERE id=?",
+        "INSERT INTO events(id,owner_id,base,title,actual_on,celebrate_on,mode,place,picked) VALUES(?,?,?,?,?,?,?,?,?)",
+        id,
+        uid,
+        base,
         title,
-        date,
-        uid,
+        actual,
+        celebrate,
+        mode,
+        place,
+        picked ? 1 : 0,
       ),
-      ...(same
-        ? []
-        : [
-            stmt(
-              db,
-              "DELETE FROM event_parties WHERE owner_id=? AND event_key='custom'",
-              uid,
-            ),
-          ]),
-    ]);
-    if (old?.event_title !== title || !same) {
-      await out.eventAdded(user, {
-        title,
-        date,
-        days: Math.max(0, daysUntil(date)),
-      });
-    }
-    return { ok: true };
-  }
-  if (path === "/api/events/custom" && method === "DELETE") {
-    await db.batch([
-      stmt(
-        db,
-        "UPDATE users SET event_title=NULL,event_date=NULL WHERE id=?",
-        uid,
-      ),
-      stmt(
-        db,
-        "DELETE FROM event_parties WHERE owner_id=? AND event_key='custom'",
-        uid,
+      ...putWishes(id, picked || []),
+      ...guests.map((g) =>
+        stmt(
+          db,
+          "INSERT INTO event_members(event_id,user_id) VALUES(?,?)",
+          id,
+          g,
+        ),
       ),
     ]);
-    return { ok: true };
+    const e = shape((await load(id))!);
+    if (guests.length) out.eventInvite(user, forMessage(e), mode, guests);
+    // Friends hear about it once; the invited already got their invitation.
+    await out.eventAdded(user, forMessage(e), guests);
+    return { event: e };
   }
-  if (
-    (path === "/api/events/party" || path === "/api/events/guests") &&
-    method === "PUT"
-  ) {
-    // Guests, mode and description of one event; fields left out stay as they are.
-    // Only newly added friends get a message; removing someone is silent.
-    const b = await body();
-    await rate(`eguests:${uid}`, 20);
-    const { specs, key, date } = await ownEvent(db, uid, b);
-    const party = await stmt(
+  const one = path.match(/^\/api\/events\/([a-f0-9-]{36})(\/decline|\/remind)?$/);
+  if (!one) return null;
+  const event = await load(one[1]);
+  if (!event) missing();
+  const e = event!;
+  const own = e.owner_id === uid;
+  const membership = await stmt(
+    db,
+    "SELECT declined_at FROM event_members WHERE event_id=? AND user_id=?",
+    e.id,
+    uid,
+  ).first<{ declined_at: number | null }>();
+  if (one[2] === "/decline" && (method === "POST" || method === "DELETE")) {
+    // «Отказаться от участия» and undoing it. Bookings stay in «Мои брони».
+    if (!membership) missing();
+    await stmt(
       db,
-      `SELECT mode,description FROM event_parties WHERE ${WHERE}`,
+      "UPDATE event_members SET declined_at=? WHERE event_id=? AND user_id=?",
+      method === "POST" ? now() : null,
+      e.id,
       uid,
-      key,
-      date,
-    ).first<{ mode: Mode; description: string | null }>();
-    const mode = b.mode ?? party?.mode ?? "hero";
-    if (mode !== "hero" && mode !== "everyone")
-      fail(400, "VALIDATION", "Выберите, для кого праздник.");
-    const description =
-      b.description === undefined
-        ? party?.description || null
-        : text(b.description ?? "", 1000) || null;
-    const value = b.friends;
-    if (
-      value !== undefined &&
-      (!Array.isArray(value) ||
-        value.length > GUEST_LIMIT ||
-        !value.every(isAccountId))
-    )
-      fail(400, "VALIDATION", `Выберите до ${GUEST_LIMIT} друзей.`);
-    // People who are not friends are added by their Telegram username.
-    const names = b.usernames ?? [];
-    if (!Array.isArray(names) || names.length > GUEST_LIMIT)
-      fail(400, "VALIDATION", `Можно пригласить до ${GUEST_LIMIT} человек.`);
-    const wantedNames = names.map((n) => {
-      const u = usernameOf(n);
-      if (!u)
-        fail(
-          400,
-          "VALIDATION",
-          "Введите ник Telegram, например @anna_filimonova.",
-        );
-      return u;
-    });
-    const byName = wantedNames.length
-      ? (
-          await stmt(
-            db,
-            // Nicknames are Telegram ones: look them up among Telegram sign-ins.
-            `SELECT user_id AS id,username FROM identities WHERE provider='telegram' AND username IN (${wantedNames.map(() => "?").join(",")})`,
-            ...wantedNames,
-          ).all<{ id: string; username: string }>()
-        ).results
-      : [];
-    const unknown = wantedNames.filter(
-      (n) => !byName.some((u) => u.username === n),
-    );
-    if (unknown.length)
-      fail(
-        404,
-        "USER_NOT_FOUND",
-        `Не нашли ${unknown.map((n) => `@${n}`).join(", ")}. Человек должен хотя бы раз открыть приложение в Telegram.`,
-      );
-    const named = byName.map((u) => u.id);
+    ).run();
+    return { declined: method === "POST" };
+  }
+  if (one[2] === "/remind" && method === "POST") {
+    // «Напомнить»: the bot asks the organizer to add wishes, without saying who asked.
+    if (!membership || membership.declined_at !== null) missing();
+    await rate(`remind:${uid}:${e.id}`, 1);
+    out.eventRemind(e.owner_id, forMessage(shape(e)));
+    return { ok: true };
+  }
+  if (one[2]) return null;
+  if (method === "GET") {
+    // The event page. Who takes part sees the guests, the place and the wishes;
+    // whoever sees the organizer's list sees only what the event is.
     const current =
-      value === undefined
-        ? []
-        : (
+      Math.max(daysUntil(e.actual_on), daysUntil(e.celebrate_on)) >= -1;
+    const visible =
+      own || (membership && current) || (current && (await canView(e.owner_id)));
+    if (!visible) missing();
+    const taking = own || (!!membership && membership.declined_at === null);
+    const [owner, guests, list] = await Promise.all([
+      stmt(
+        db,
+        "SELECT id,name,username FROM users WHERE id=?",
+        e.owner_id,
+      ).first<Person>(),
+      guestsOf(db, [e.id]),
+      taking ? wishes(e.owner_id, user, e.picked ? e.id : null) : [],
+    ]);
+    const people = guests.get(e.id) || [];
+    return {
+      event: shape(e),
+      owner,
+      place: taking || membership ? e.place || "" : "",
+      is_owner: own,
+      member: membership ? { declined: membership.declined_at !== null } : null,
+      // The organizer sees who declined; guests see who takes part.
+      guests: own ? people : taking ? people.filter((g) => !g.declined) : [],
+      wishes: list,
+      wish_ids: own && e.picked
+        ? (
             await stmt(
               db,
-              `SELECT user_id FROM event_guests WHERE ${WHERE}`,
-              uid,
-              key,
-              date,
-            ).all<{ user_id: string }>()
-          ).results.map((r) => r.user_id);
-    const wanted =
-      value === undefined && !named.length
-        ? null
-        : [
-            ...new Set([
-              ...((value as string[] | undefined) ?? current),
-              ...named,
-            ]),
-          ].filter((id) => id !== uid);
-    if (wanted && wanted.length > GUEST_LIMIT)
-      fail(400, "VALIDATION", `Можно пригласить до ${GUEST_LIMIT} человек.`);
-    const results = await db.batch([
-      stmt(
-        db,
-        `INSERT INTO event_parties(owner_id,event_key,event_on,mode,description) VALUES(?,?,?,?,?)
-        ON CONFLICT DO UPDATE SET mode=excluded.mode,description=excluded.description`,
-        uid,
-        key,
-        date,
-        mode,
-        description,
-      ),
-      ...(wanted
-        ? [
-            stmt(
-              db,
-              `DELETE FROM event_guests WHERE ${WHERE} AND user_id NOT IN (${["''", ...wanted.map(() => "?")].join(",")})`,
-              uid,
-              key,
-              date,
-              ...wanted,
-            ),
-            // Own people (followers, people followed) by ID; anyone else only by the username typed now.
-            ...wanted.map((id) =>
-              stmt(
-                db,
-                `INSERT INTO event_guests(owner_id,event_key,event_on,user_id)
-                SELECT ?1,?2,?3,?4 WHERE ?5=1 OR ${CONNECTED("?4")} ON CONFLICT DO NOTHING RETURNING user_id`,
-                uid,
-                key,
-                date,
-                id,
-                named.includes(id) ? 1 : 0,
-              ),
-            ),
-          ]
-        : []),
-    ]);
-    const added = results
-      .slice(2)
-      .flatMap((r) =>
-        (r.results as { user_id: string }[]).map((x) => x.user_id),
-      );
-    if (added.length)
-      out.eventInvite(user, eventOf(specs, key, date), mode, added);
-    return { invitations: await invitations(db, uid, uid) };
-  }
-  if (path === "/api/events/cancel" && method === "POST") {
-    // «Передумал справлять»: the event stays, every invitation is withdrawn.
-    const b = await body();
-    const { specs, key, date } = await ownEvent(db, uid, b);
-    const removed = (
-      await stmt(
-        db,
-        `DELETE FROM event_guests WHERE ${WHERE} RETURNING user_id`,
-        uid,
-        key,
-        date,
-      ).all<{ user_id: string }>()
-    ).results.map((r) => r.user_id);
-    out.eventCancelled(user, eventOf(specs, key, date), removed);
-    return { invitations: await invitations(db, uid, uid) };
-  }
-  const page = path.match(
-    new RegExp(
-      `^/api/events/(${ACCOUNT_ID_PART})/([a-z0-9_]+)/(\\d{4}-\\d{2}-\\d{2})$`,
-    ),
-  );
-  if (page && method === "GET") {
-    // The event page: anyone who sees the wishlist; the guests and the
-    // description only for the owner and the guests.
-    const [, ownerId, key, date] = page;
-    const specs = await ownerSpecs(db, ownerId);
-    if (!isUpcoming(specs, key, date))
-      fail(404, "NOT_FOUND", "Мероприятие уже прошло или изменилось.");
-    const party = (await invitations(db, ownerId, uid)).find(
-      (p) => p.key === key && p.date === date,
-    );
-    if (!party && ownerId !== uid && !(await canView(ownerId))) missing();
-    const owner = await stmt(
-      db,
-      "SELECT id,name,username FROM users WHERE id=?",
-      ownerId,
-    ).first<Person>();
-    return {
-      owner,
-      event: eventOf(specs, key, date),
-      mode: party?.mode || "hero",
-      description: party?.description || "",
-      guests: party?.guests || [],
-      is_owner: ownerId === uid,
-      invited: !!party && ownerId !== uid,
+              "SELECT gift_id FROM event_wishes WHERE event_id=?",
+              e.id,
+            ).all<{ gift_id: string }>()
+          ).results.map((r) => r.gift_id)
+        : null,
     };
   }
-  return null;
-}
-const WHERE = "owner_id=? AND event_key=? AND event_on=?";
-const missing = (): never => fail(404, "NOT_FOUND", "Мероприятие недоступно.");
-/** The owner's upcoming event named in a request body. */
-async function ownEvent(
-  db: D1Database,
-  uid: string,
-  b: Record<string, unknown>,
-) {
-  const specs = await ownerSpecs(db, uid);
-  const key = String(b.key ?? ""),
-    date = String(b.date ?? "");
-  if (!isUpcoming(specs, key, date))
-    fail(404, "NOT_FOUND", "Мероприятие уже прошло или изменилось.");
-  return { specs, key, date };
-}
-function eventOf(specs: EventSpec[], key: string, date: string) {
-  return {
-    key,
-    title: specs.find((s) => s.key === key)?.title || "",
-    date,
-    days: Math.max(0, daysUntil(date)),
-  };
+  if (!own) missing();
+  if (method === "DELETE") {
+    // Cancelling: the guests are told; bookings stay with the givers.
+    const told = (
+      await stmt(
+        db,
+        "SELECT user_id FROM event_members WHERE event_id=? AND declined_at IS NULL",
+        e.id,
+      ).all<{ user_id: string }>()
+    ).results.map((r) => r.user_id);
+    await stmt(db, "DELETE FROM events WHERE id=?", e.id).run();
+    out.eventCancelled(user, forMessage(shape(e)), told);
+    return { ok: true };
+  }
+  if (method !== "PATCH") missing();
+  // Management from «Мероприятия»: when we celebrate, the place, the format,
+  // the wishes and the guests. The actual date never changes here.
+  const b = await body();
+  await rate(`eventedit:${uid}`, 30);
+  const title =
+    b.title === undefined ? e.title : text(b.title ?? "", 80) || e.title;
+  const celebrate =
+    b.celebrate_on === undefined
+      ? e.celebrate_on
+      : eventDate(b.celebrate_on, "когда отмечаете");
+  const place =
+    b.place === undefined ? e.place : text(b.place ?? "", 1000) || null;
+  const mode =
+    b.mode === undefined ? e.mode : b.mode === "everyone" ? "everyone" : "hero";
+  const picked = b.wishes === undefined ? undefined : wishSet(b.wishes);
+  const before = (
+    await stmt(
+      db,
+      "SELECT user_id FROM event_members WHERE event_id=?",
+      e.id,
+    ).all<{ user_id: string }>()
+  ).results.map((r) => r.user_id);
+  const guests =
+    b.guests === undefined ? before : await chosenGuests(b.guests);
+  const added = guests.filter((g) => !before.includes(g));
+  const removed = before.filter((g) => !guests.includes(g));
+  await db.batch([
+    stmt(
+      db,
+      "UPDATE events SET title=?,celebrate_on=?,place=?,mode=?,picked=?,updated_at=unixepoch() WHERE id=?",
+      title,
+      celebrate,
+      place,
+      mode,
+      picked === undefined ? e.picked : picked ? 1 : 0,
+      e.id,
+    ),
+    ...(picked === undefined
+      ? []
+      : [
+          stmt(db, "DELETE FROM event_wishes WHERE event_id=?", e.id),
+          ...putWishes(e.id, picked || []),
+        ]),
+    // A guest taken off loses access through the event; their bookings stay.
+    ...removed.map((g) =>
+      stmt(
+        db,
+        "DELETE FROM event_members WHERE event_id=? AND user_id=?",
+        e.id,
+        g,
+      ),
+    ),
+    ...added.map((g) =>
+      stmt(
+        db,
+        "INSERT INTO event_members(event_id,user_id) VALUES(?,?)",
+        e.id,
+        g,
+      ),
+    ),
+  ]);
+  const fresh = shape((await load(e.id))!);
+  if (added.length) out.eventInvite(user, forMessage(fresh), fresh.mode, added);
+  if (celebrate !== e.celebrate_on || place !== e.place) {
+    const stay = (
+      await stmt(
+        db,
+        "SELECT user_id FROM event_members WHERE event_id=? AND declined_at IS NULL",
+        e.id,
+      ).all<{ user_id: string }>()
+    ).results
+      .map((r) => r.user_id)
+      .filter((g) => !added.includes(g));
+    out.eventChanged(user, forMessage(fresh), stay, {
+      date: celebrate !== e.celebrate_on,
+      place: place !== e.place,
+    });
+  }
+  return { event: fresh };
 }

@@ -3960,3 +3960,38 @@ button.event-chip:hover {
 .guest-dead {
   margin-top: 40px;
 }
+
+/* ==========================================================================
+   Events (flows 5, 6, 10): occasions are only suggestions, events stand out
+   ========================================================================== */
+.event-chip.occasion {
+  border-style: dashed;
+  background: transparent;
+}
+.event-chip.occasion .event-chip-text strong {
+  font-weight: 500;
+}
+.events-list-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.events-list-head .event-subtitle {
+  margin: 0;
+}
+.event-form {
+  display: grid;
+  gap: 12px;
+}
+.event-form .event-mode .setting-toggle {
+  padding: 6px 0;
+}
+.event-form .friend-picker {
+  max-height: 220px;
+  overflow: auto;
+}
+.button.secondary.danger {
+  color: var(--danger);
+}

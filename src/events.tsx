@@ -1,29 +1,32 @@
+// Events (flows 5, 6 and 10): as many as you like, each with its guests, two
+// dates and the wishes it shows. The standard occasions from the profile only
+// suggest what to create. Guests take part at once and may decline.
 import React, { useEffect, useState } from "react";
 import {
   ArrowLeft,
   ArrowUpRight,
+  BellRing,
   CalendarPlus,
   ChevronRight,
-  Eye,
   Pencil,
-  PartyPopper,
   Trash2,
-  UserPlus,
   Users,
-  X,
 } from "lucide-react";
 import {
-  eventDay,
-  eventSpecs,
   daysLeft,
   daysUntil,
+  eventDay,
+  eventSpecs,
   untilText,
   upcomingEvents,
+  type EventKey,
   type UpcomingEvent,
 } from "../shared/events";
 import { api, demo } from "./api";
 import { Confirm, Modal } from "./forms";
-import type { Friend, Invitation, ToastTone, User } from "./types";
+import { WishPicker } from "./wish-picker";
+import type { EventCard, Friend, ToastTone, User, Wish } from "./types";
+
 const icons: Record<string, string> = {
   birthday: "🎂",
   new_year: "🎄",
@@ -32,87 +35,105 @@ const icons: Record<string, string> = {
   custom: "🎉",
 };
 const modeText = {
-  hero: "Подарки виновнику торжества",
-  everyone: "Обмен подарками",
+  hero: "Для одного: подарки организатору",
+  everyone: "Для всех: обмен подарками",
 };
-/** Events in the wishlist header; the owner adds their own and invites friends. */
+const guestWord = (n: number) =>
+  n % 10 === 1 && n % 100 !== 11
+    ? "гость"
+    : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14)
+      ? "гостя"
+      : "гостей";
+const when = (date: string, today: Date) => {
+  const d = Math.max(0, daysUntil(date, today));
+  return `${eventDay(date)} · ${d ? untilText(d) : "сегодня"}`;
+};
+/** «Фактическая дата» and «Когда отмечаем»: one line when they are the same day. */
+function Dates({ e, today }: { e: EventCard; today: Date }) {
+  return e.actual_on === e.celebrate_on ? (
+    <>{when(e.celebrate_on, today)}</>
+  ) : (
+    <>
+      Когда отмечаем: {when(e.celebrate_on, today)} · Фактическая дата:{" "}
+      {eventDay(e.actual_on)}
+    </>
+  );
+}
+
+/**
+ * The wishlist header: the occasions (info only; the owner creates an event
+ * from one) and the events the viewer takes part in, plus «Создать мероприятие».
+ */
 export function WishlistEvents({
   owner,
   own,
   today,
-  invitations,
-  friends,
-  onChanged,
-  onProfile,
+  events,
   onOpen,
-  notice,
+  onCreate,
+  onProfile,
 }: {
   owner: User;
   own: boolean;
   today: Date;
-  invitations: Invitation[];
-  friends: Friend[];
-  onChanged: () => Promise<void>;
+  /** The owner's events this viewer may see: all for the owner, else where invited. */
+  events: EventCard[];
+  onOpen?: (id: string) => void;
+  onCreate: (occasion?: UpcomingEvent) => void;
   onProfile: () => void;
-  /** Opens the event page (owner: any event; guests: the ones they are invited to). */
-  onOpen?: (e: UpcomingEvent) => void;
-  notice: (message: string, tone?: ToastTone) => void;
 }) {
-  const [dialog, setDialog] = useState<"event" | "invite" | null>(null);
-  const events = upcomingEvents(owner.events ?? eventSpecs(owner), today);
-  const custom = events.find((e) => e.key === "custom");
-  const invited = (e: UpcomingEvent) =>
-    invitations.find((i) => i.key === e.key && i.date === e.date);
-  // One compact row of chips: each opens the event page, where guests and
-  // details live. Events with invited guests stand out and show the count.
+  const occasions = upcomingEvents(owner.events ?? eventSpecs(owner), today);
   return (
     <div className="wishlist-events">
       <ul className="event-chips">
-        {events.map((e) => {
-          const party = invited(e);
-          const guests = party?.guests.length || 0;
-          const label = (
-            <>
+        {events.map((e) => (
+          <li key={e.id} className="has-party">
+            <button className="event-chip" onClick={() => onOpen?.(e.id)}>
               <span className="event-chip-icon" aria-hidden="true">
-                {icons[e.key]}
+                {icons[e.base]}
               </span>
               <span className="event-chip-text">
                 <strong>{e.title}</strong>
                 <small>
-                  {eventDay(e.date)} · {untilText(e.days)}
+                  {eventDay(e.celebrate_on)} · {untilText(e.days)}
                 </small>
               </span>
-              {guests > 0 && (
-                <span
-                  className="event-chip-guests"
-                  aria-label={`Гостей: ${guests}`}
-                  title={`${modeText[party!.mode]} · гостей: ${guests}`}
-                >
+              {!!e.guests && (
+                <span className="event-chip-guests" aria-label={`Гостей: ${e.guests}`}>
                   <Users size={13} />
-                  {guests}
+                  {e.guests}
                 </span>
               )}
+              <ChevronRight size={14} className="event-chip-arrow" />
+            </button>
+          </li>
+        ))}
+        {occasions.map((o) => {
+          const label = (
+            <>
+              <span className="event-chip-icon" aria-hidden="true">
+                {icons[o.key]}
+              </span>
+              <span className="event-chip-text">
+                <strong>{o.title}</strong>
+                <small>
+                  {eventDay(o.date)} · {untilText(o.days)}
+                </small>
+              </span>
             </>
           );
           return (
-            <li key={e.key} className={guests ? "has-party" : undefined}>
-              {onOpen ? (
-                <button className="event-chip" onClick={() => onOpen(e)}>
+            <li key={o.key}>
+              {own ? (
+                <button
+                  className="event-chip occasion"
+                  title="Создать мероприятие по этому поводу"
+                  onClick={() => onCreate(o)}
+                >
                   {label}
-                  <ChevronRight size={14} className="event-chip-arrow" />
                 </button>
               ) : (
-                <span className="event-chip">{label}</span>
-              )}
-              {own && e.key === "custom" && (
-                <button
-                  className="icon-button event-edit"
-                  aria-label="Изменить мероприятие"
-                  title="Изменить мероприятие"
-                  onClick={() => setDialog("event")}
-                >
-                  <Pencil size={14} />
-                </button>
+                <span className="event-chip occasion">{label}</span>
               )}
             </li>
           );
@@ -124,434 +145,379 @@ export function WishlistEvents({
             </button>
           </li>
         )}
-        {own && !custom && (
-          <li>
-            <button
-              className="event-chip add"
-              onClick={() => setDialog("event")}
-            >
-              <CalendarPlus size={15} /> Мероприятие
-            </button>
-          </li>
-        )}
         {own && (
           <li>
-            <button
-              className="event-chip add"
-              onClick={() => setDialog("invite")}
-            >
-              <PartyPopper size={15} /> Пригласить
+            <button className="event-chip add" onClick={() => onCreate()}>
+              <CalendarPlus size={15} /> Создать мероприятие
             </button>
           </li>
         )}
       </ul>
-      {dialog === "event" && (
-        <EventDialog
-          current={custom}
-          onClose={() => setDialog(null)}
-          onSaved={async (message) => {
-            setDialog(null);
-            notice(message);
-            await onChanged();
-          }}
-        />
-      )}
-      {dialog === "invite" && (
-        <InviteDialog
-          events={events}
-          invitations={invitations}
-          friends={friends}
-          onClose={() => setDialog(null)}
-          onSaved={async (message) => {
-            setDialog(null);
-            notice(message);
-            await onChanged();
-          }}
-        />
-      )}
     </div>
   );
 }
+
 const isoDay = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-function EventDialog({
-  current,
+
+/**
+ * «Создать мероприятие» in one form, and its edit: occasion or a title, the
+ * two dates, «для одного» / «для всех», the place, which wishes and whom to
+ * invite (the four groups of «Друзья»). Editing keeps the occasion and the
+ * actual date.
+ */
+export function EventForm({
+  me,
+  event,
+  occasion,
+  people,
+  wishes,
+  initialWishes = null,
+  initialGuests = [],
+  initialPlace = "",
   onClose,
   onSaved,
 }: {
-  current?: UpcomingEvent;
+  me: User;
+  event?: EventCard;
+  occasion?: UpcomingEvent;
+  people: Friend[];
+  /** My active wishes, to pick from; loaded here when not given. */
+  wishes?: Pick<Wish, "id" | "title">[];
+  initialWishes?: string[] | null;
+  initialGuests?: string[];
+  initialPlace?: string;
   onClose: () => void;
-  onSaved: (message: string) => Promise<void>;
+  onSaved: (e: EventCard) => Promise<void> | void;
 }) {
-  const [title, setTitle] = useState(current?.title || ""),
-    [date, setDate] = useState(current?.date || ""),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState("");
-  async function run(action: () => Promise<void>) {
-    if (demo) {
-      setError("В демо мероприятия не сохраняются.");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      await action();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
+  const occasions = upcomingEvents(me.events ?? eventSpecs(me), new Date());
+  const [base, setBase] = useState<EventKey>(event?.base ?? occasion?.key ?? "custom");
+  const [title, setTitle] = useState(
+    event?.title ?? (occasion ? "" : ""),
+  );
+  const fromOccasion = occasions.find((o) => o.key === base);
+  const [actual, setActual] = useState(
+    event?.actual_on ?? occasion?.date ?? "",
+  );
+  const [later, setLater] = useState(
+    !!event && event.celebrate_on !== event.actual_on,
+  );
+  const [celebrate, setCelebrate] = useState(event?.celebrate_on ?? "");
+  const [mode, setMode] = useState<"hero" | "everyone">(event?.mode ?? "hero");
+  const [place, setPlace] = useState(initialPlace);
+  const [picked, setPicked] = useState<string[] | null>(initialWishes);
+  const [picking, setPicking] = useState(false);
+  const [guests, setGuests] = useState<string[]>(initialGuests);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [mine, setMine] = useState(wishes ?? []);
+  useEffect(() => {
+    if (wishes || demo) return;
+    api<{ gifts: Wish[] }>(`/api/lists/${me.id}`)
+      .then((d) => setMine(d.gifts))
+      .catch(() => undefined);
+  }, []);
+  const today = isoDay(new Date());
   return (
     <Modal
-      title={current ? "Мероприятие" : "Добавить мероприятие"}
-      onClose={() => !busy && onClose()}
+      title={event ? "Мероприятие" : "Создать мероприятие"}
+      closeOnBackdrop={false}
+      onClose={() => {
+        if (!busy) onClose();
+      }}
     >
       <form
-        className="share-result"
-        onSubmit={(e) => {
+        className="share-result event-form"
+        onSubmit={async (e) => {
           e.preventDefault();
-          void run(async () => {
-            await api("/api/events/custom", "PUT", { title, date });
-            await onSaved(
-              current ? "Мероприятие сохранено" : "Мероприятие добавлено",
-            );
-          });
-        }}
-      >
-        <label>
-          Название
-          <input
-            autoFocus
-            required
-            maxLength={80}
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="Например: новоселье"
-          />
-        </label>
-        <label>
-          Дата
-          <input
-            type="date"
-            required
-            min={isoDay(new Date())}
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-          />
-        </label>
-        <p className="small-text">
-          Своё мероприятие может быть одно: новое заменит прежнее. Друзья с
-          включёнными уведомлениями получат сообщение в Telegram.
-        </p>
-        {error && (
-          <p className="error" role="alert">
-            {error}
-          </p>
-        )}
-        <button
-          className="button primary full-width"
-          disabled={busy || !title.trim() || !date}
-        >
-          {busy ? "Сохраняем…" : "Сохранить"}
-        </button>
-        {current && (
-          <button
-            type="button"
-            className="text-link danger"
-            disabled={busy}
-            onClick={() =>
-              void run(async () => {
-                await api("/api/events/custom", "DELETE");
-                await onSaved("Мероприятие удалено");
-              })
-            }
-          >
-            <Trash2 size={14} /> Удалить мероприятие
-          </button>
-        )}
-      </form>
-    </Modal>
-  );
-}
-export function InviteDialog({
-  events,
-  initialKey,
-  invitations,
-  friends,
-  onClose,
-  onSaved,
-}: {
-  events: UpcomingEvent[];
-  initialKey?: string;
-  invitations: Invitation[];
-  friends: Friend[];
-  onClose: () => void;
-  onSaved: (message: string) => Promise<void>;
-}) {
-  const partyOf = (e?: UpcomingEvent) =>
-    invitations.find((i) => i.key === e?.key && i.date === e?.date);
-  const [key, setKey] = useState<string>(initialKey || events[0]?.key || "");
-  const event = events.find((e) => e.key === key);
-  const [mode, setMode] = useState(partyOf(event)?.mode || "hero");
-  const [picked, setPicked] = useState<string[]>(
-    partyOf(event)?.guests.map((g) => g.id) || [],
-  );
-  // People who are not friends are added by their Telegram username.
-  const [usernames, setUsernames] = useState<string[]>([]),
-    [nick, setNick] = useState("");
-  const [busy, setBusy] = useState(false),
-    [error, setError] = useState("");
-  // Friends plus guests invited earlier by username.
-  const people = [
-    ...friends,
-    ...(partyOf(event)?.guests || []).filter(
-      (g) => !friends.some((f) => f.id === g.id),
-    ),
-  ];
-  function addNick() {
-    const v = nick.trim().replace(/^@/, "").toLowerCase();
-    if (!/^[a-z][a-z0-9_]{3,31}$/.test(v)) {
-      setError("Введите ник Telegram, например @anna_filimonova.");
-      return;
-    }
-    setError("");
-    const friend = people.find((p) => p.username?.toLowerCase() === v);
-    if (friend) {
-      if (!picked.includes(friend.id)) setPicked([...picked, friend.id]);
-    } else if (!usernames.includes(v)) setUsernames([...usernames, v]);
-    setNick("");
-  }
-  function choose(next: string) {
-    setKey(next);
-    const party = partyOf(events.find((e) => e.key === next));
-    setMode(party?.mode || "hero");
-    setPicked(party?.guests.map((g) => g.id) || []);
-  }
-  return (
-    <Modal title="Пригласить на мероприятие" onClose={() => !busy && onClose()}>
-      <form
-        className="share-result"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!event) return;
           if (demo) {
-            setError("В демо приглашения не отправляются.");
+            setError("В демо мероприятия не создаются.");
             return;
           }
           setBusy(true);
           setError("");
-          void api("/api/events/party", "PUT", {
-            key: event.key,
-            date: event.date,
-            mode,
-            friends: picked,
-            usernames,
-          })
-            .then(() =>
-              onSaved(
-                picked.length || usernames.length
-                  ? "Список гостей сохранён, новым гостям ушли приглашения"
-                  : "Список гостей пуст",
-              ),
-            )
-            .catch((err) => setError((err as Error).message))
-            .finally(() => setBusy(false));
+          try {
+            const common = {
+              celebrate_on: later && celebrate ? celebrate : actual,
+              mode,
+              place,
+              wishes: picked,
+              guests,
+            };
+            const r = event
+              ? await api<{ event: EventCard }>(`/api/events/${event.id}`, "PATCH", {
+                  ...common,
+                  ...(event.base === "custom" ? { title } : {}),
+                })
+              : await api<{ event: EventCard }>("/api/events", "POST", {
+                  ...common,
+                  base,
+                  title: base === "custom" ? title : title || undefined,
+                  actual_on: actual,
+                });
+            await onSaved(r.event);
+          } catch (err) {
+            setError((err as Error).message);
+          } finally {
+            setBusy(false);
+          }
         }}
       >
-        <label hidden={!!initialKey}>
-          Мероприятие
-          <select value={key} onChange={(e) => choose(e.target.value)}>
-            {events.map((e) => (
-              <option key={e.key} value={e.key}>
-                {e.title} · {eventDay(e.date)}
-              </option>
-            ))}
-          </select>
+        {!event && (
+          <label>
+            Повод
+            <select
+              value={base}
+              onChange={(e) => {
+                const key = e.target.value as EventKey;
+                setBase(key);
+                const o = occasions.find((x) => x.key === key);
+                if (o) setActual(o.date);
+              }}
+            >
+              {occasions.map((o) => (
+                <option key={o.key} value={o.key}>
+                  {o.title} · {eventDay(o.date)}
+                </option>
+              ))}
+              <option value="custom">Другое</option>
+            </select>
+          </label>
+        )}
+        {(base === "custom" || event?.base === "custom") && (
+          <label>
+            Название
+            <input
+              required
+              maxLength={80}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Новоселье, выпускной…"
+            />
+          </label>
+        )}
+        <label>
+          Фактическая дата
+          <input
+            type="date"
+            required
+            min={today}
+            value={actual}
+            disabled={!!event || (base !== "custom" && !!fromOccasion)}
+            onChange={(e) => setActual(e.target.value)}
+          />
         </label>
+        <label className="setting-toggle">
+          <input
+            type="checkbox"
+            checked={later}
+            onChange={(e) => setLater(e.target.checked)}
+          />
+          <span>Отмечаем в другой день</span>
+        </label>
+        {later && (
+          <label>
+            Когда отмечаем
+            <input
+              type="date"
+              required
+              min={today}
+              value={celebrate}
+              onChange={(e) => setCelebrate(e.target.value)}
+            />
+          </label>
+        )}
         <fieldset className="event-mode">
-          <legend>Для кого праздник</legend>
+          <legend>Формат</legend>
           {(["hero", "everyone"] as const).map((m) => (
             <label key={m} className="setting-toggle">
               <input
                 type="radio"
-                name="mode"
+                name="event-mode"
                 checked={mode === m}
                 onChange={() => setMode(m)}
               />
-              <span>
-                {modeText[m]}
-                <small>
-                  {m === "hero"
-                    ? "Гости видят, кто из них что забронировал, только в вашем вишлисте."
-                    : "Вы и гости видите, кто из участников что забронировал, в вишлистах друг друга."}
-                </small>
-              </span>
+              <span>{modeText[m]}</span>
             </label>
           ))}
         </fieldset>
-        <p className="small-text">
-          Гости увидят, кто ещё приглашён. Кто и что забронировал в своём
-          вишлисте, не видит никто — и вы тоже.
-        </p>
-        {people.length ? (
-          <div className="friend-picker">
-            {people.map((f) => (
-              <label key={f.id} className="setting-toggle">
-                <input
-                  type="checkbox"
-                  checked={picked.includes(f.id)}
-                  disabled={busy}
-                  onChange={(e) =>
-                    setPicked(
-                      e.target.checked
-                        ? [...picked, f.id]
-                        : picked.filter((id) => id !== f.id),
-                    )
-                  }
-                />
-                {f.name}
-                {f.username ? ` · @${f.username}` : ""}
-              </label>
-            ))}
-          </div>
-        ) : (
-          <p className="small-text">
-            <Users size={14} /> Пока некого выбрать: здесь будут ваши
-            друзья и те, кто добавил вас в друзья. Остальных можно позвать по
-            нику Telegram.
-          </p>
-        )}
-        <div className="invite-nick">
-          <input
-            aria-label="Ник Telegram"
-            placeholder="@ник в Telegram"
-            value={nick}
-            disabled={busy}
-            onChange={(e) => setNick(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                addNick();
-              }
-            }}
+        <label>
+          Место и время
+          <textarea
+            rows={2}
+            maxLength={1000}
+            value={place}
+            onChange={(e) => setPlace(e.target.value)}
+            placeholder="Где и когда собираемся"
           />
-          <button
-            type="button"
-            className="button secondary"
-            disabled={busy || !nick.trim()}
-            onClick={addNick}
-          >
-            <UserPlus size={15} /> Добавить
-          </button>
-        </div>
-        {usernames.length > 0 && (
-          <ul className="invite-nicks">
-            {usernames.map((u) => (
-              <li key={u}>
-                @{u}
+        </label>
+        <fieldset className="event-mode">
+          <legend>Желания</legend>
+          <label className="setting-toggle">
+            <input
+              type="radio"
+              name="event-wishes"
+              checked={picked === null}
+              onChange={() => setPicked(null)}
+            />
+            <span>
+              Весь вишлист
+              <small className="muted"> · новые желания появятся сами</small>
+            </span>
+          </label>
+          <label className="setting-toggle">
+            <input
+              type="radio"
+              name="event-wishes"
+              checked={picked !== null}
+              onChange={() => setPicking(true)}
+            />
+            <span>
+              {picked === null ? "Выбрать желания" : `Выбрано желаний: ${picked.length}`}
+              {picked !== null && (
                 <button
                   type="button"
-                  className="icon-button"
-                  aria-label={`Убрать @${u}`}
-                  onClick={() => setUsernames(usernames.filter((x) => x !== u))}
+                  className="text-link"
+                  onClick={() => setPicking(true)}
                 >
-                  <X size={13} />
+                  Изменить
                 </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        <p className="small-text">
-          По нику можно позвать и тех, кого нет в ваших друзьях: человек
-          должен хотя бы раз открыть приложение. Гости видят вишлист виновника
-          торжества.
-        </p>
+              )}
+            </span>
+          </label>
+        </fieldset>
+        <fieldset className="event-mode">
+          <legend>Кого пригласить</legend>
+          {people.length ? (
+            <div className="friend-picker">
+              {people.map((p) => (
+                <label key={p.id} className="setting-toggle">
+                  <input
+                    type="checkbox"
+                    checked={guests.includes(p.id)}
+                    onChange={(e) =>
+                      setGuests(
+                        e.target.checked
+                          ? [...guests, p.id]
+                          : guests.filter((g) => g !== p.id),
+                      )
+                    }
+                  />
+                  {p.name}
+                  {p.username ? ` · @${p.username}` : ""}
+                </label>
+              ))}
+            </div>
+          ) : (
+            <p className="small-text">
+              Пригласить можно людей из «Друзей»: добавьте кого-нибудь или
+              поделитесь своим профилем.
+            </p>
+          )}
+          <small className="muted">
+            Приглашённые сразу участвуют; отказаться они смогут сами.
+            Приглашение не меняет дружбу.
+          </small>
+        </fieldset>
         {error && (
           <p className="error" role="alert">
             {error}
           </p>
         )}
-        <button className="button primary full-width" disabled={busy || !event}>
-          {busy ? "Сохраняем…" : "Сохранить приглашения"}
+        <button className="button primary full-width" disabled={busy}>
+          {busy ? "Сохраняем…" : event ? "Сохранить" : "Создать"}
         </button>
       </form>
+      {picking && (
+        <WishPicker
+          wishes={mine}
+          initial={picked}
+          onClose={() => setPicking(false)}
+          onDone={(ids) => {
+            setPicked(ids);
+            setPicking(false);
+          }}
+        />
+      )}
     </Modal>
   );
 }
+
 type EventPageData = {
+  event: EventCard;
   owner: { id: string; name: string; username: string | null };
-  event: UpcomingEvent;
-  mode: "hero" | "everyone";
-  description: string;
-  guests: { id: string; name: string; username: string | null }[];
+  place: string;
   is_owner: boolean;
-  /** Guests and the description are shown only to the owner and the guests. */
-  invited?: boolean;
+  member: { declined: boolean } | null;
+  guests: { id: string; name: string; username: string | null; declined: boolean }[];
+  wishes: Wish[];
+  wish_ids: string[] | null;
 };
-/** Who is invited and what the party is about; the owner edits it here. */
+
+/**
+ * One event: what and when, the place, who takes part, and the wishes it
+ * shows. The organizer edits and cancels it here; a guest declines or comes
+ * back. An event that is gone says so and leads to «Мои мероприятия».
+ */
 export function EventPage({
-  owner,
-  eventKey,
-  date,
+  id,
   me,
-  friends,
   today,
+  people,
   onBack,
+  onEvents,
   onOpenList,
+  renderWishes,
   notice,
 }: {
-  owner: string;
-  eventKey: string;
-  date: string;
-  me: string;
-  friends: Friend[];
+  id: string;
+  me: User;
   today: Date;
+  people: Friend[];
   onBack: () => void;
-  /** `named`: the event whose guests' bookings are named in that list. */
+  onEvents: () => void;
   onOpenList: (id: string, named?: string) => void;
+  /** The wishes as cards with «Подарю»; reloads after a booking via `reload`. */
+  renderWishes: (wishes: Wish[], reload: () => Promise<void>) => React.ReactNode;
   notice: (message: string, tone?: ToastTone) => void;
 }) {
   const [data, setData] = useState<EventPageData | null>(null),
+    [gone, setGone] = useState(false),
     [error, setError] = useState(""),
-    [dialog, setDialog] = useState<"guests" | "cancel" | null>(null),
     [editing, setEditing] = useState(false),
-    [text, setText] = useState(""),
+    [cancelling, setCancelling] = useState(false),
     [busy, setBusy] = useState(false);
   async function load() {
     if (demo) {
-      // The demo shows a party for everyone with two of the demo friends.
-      setData({
-        owner: { id: me, name: "Анастасия Филимонова", username: "nastya_f" },
-        event: {
-          key: eventKey as UpcomingEvent["key"],
-          title: eventKey === "new_year" ? "Новый год" : "Праздник",
-          date,
-          days: daysUntil(date, today),
-        },
-        mode: "everyone",
-        description:
-          "Встречаемся у нас дома в 19:00. Дресс-код — что-нибудь блестящее ✨",
-        guests: friends.slice(0, 2).map(({ id, name, username }) => ({
-          id,
-          name,
-          username: username ?? null,
-        })),
-        is_owner: owner === me,
-        invited: owner !== me,
-      });
+      setGone(true);
       return;
     }
     try {
-      setData(await api(`/api/events/${owner}/${eventKey}/${date}`));
+      setData(await api(`/api/events/${id}`));
       setError("");
     } catch (e) {
-      setError((e as Error).message);
+      if ((e as { status?: number }).status === 404) setGone(true);
+      else setError((e as Error).message);
     }
   }
   useEffect(() => {
     void load();
-  }, [owner, eventKey, date]);
+  }, [id]);
+  if (gone)
+    return (
+      <section className="closed-profile">
+        <span className="event-icon">🎈</span>
+        <h3>Мероприятие недоступно</h3>
+        <p className="muted">
+          {demo
+            ? "В демо мероприятия не открываются."
+            : "Его отменили, оно уже прошло или вас больше нет среди гостей. Ваши брони остались в «Моих бронях»."}
+        </p>
+        <button className="button primary" onClick={onEvents}>
+          Мои мероприятия
+        </button>
+      </section>
+    );
   if (error)
     return (
       <section className="event-page">
@@ -571,24 +537,13 @@ export function EventPage({
       </div>
     );
   const { event, is_owner: own } = data;
-  const days = Math.max(0, daysUntil(event.date, today));
-  const people = [
-    { ...data.owner, host: true },
-    ...data.guests.map((g) => ({ ...g, host: false })),
-  ];
-  // In «праздник для всех» every list shows who of the party booked; in the
-  // hero's case only the hero's list does. Nobody sees it in their own list.
-  const named = (id: string) =>
-    id !== me && (data.mode === "everyone" || id === data.owner.id);
-  async function saveText() {
+  const taking = own || (!!data.member && !data.member.declined);
+  const days = Math.max(0, daysUntil(event.celebrate_on, today));
+  async function decline(back: boolean) {
     setBusy(true);
     try {
-      await api("/api/events/party", "PUT", {
-        key: event.key,
-        date: event.date,
-        description: text,
-      });
-      setEditing(false);
+      await api(`/api/events/${id}/decline`, back ? "DELETE" : "POST");
+      notice(back ? "Вы снова участвуете" : "Вы отказались от участия");
       await load();
     } catch (e) {
       notice((e as Error).message, "error");
@@ -596,252 +551,204 @@ export function EventPage({
       setBusy(false);
     }
   }
+  const free = data.wishes.filter(
+    (w) => w.reservation === "available" || w.reservation === "invited",
+  );
   return (
     <section className="event-page">
       <button className="text-link" onClick={onBack}>
         <ArrowLeft size={15} /> Назад
       </button>
       <div className="event-head">
-        <span className="event-icon">{icons[event.key]}</span>
+        <span className="event-icon">{icons[event.base]}</span>
         <div>
           <h2>{event.title}</h2>
           <p className="muted">
-            {own ? "Ваш праздник" : `Праздник: ${data.owner.name}`} ·{" "}
-            {eventDay(event.date)} · {days ? daysLeft(days) : "сегодня"}
+            {own ? "Ваше мероприятие" : `Организатор: ${data.owner.name}`} ·{" "}
+            {days ? daysLeft(days) : "сегодня"}
           </p>
-          {data.guests.length > 0 && (
-            <p className="small-text">
-              {modeText[data.mode]}:{" "}
-              {data.mode === "everyone"
-                ? "участники видят, кто из них что забронировал, в вишлистах друг друга"
-                : `гости видят, кто из них что забронировал, в вишлисте ${own ? "виновника торжества" : data.owner.name}`}
-              . Брони людей не из числа гостей показываются без имени, а в
-              своём вишлисте никто не видит, кто что дарит.
-            </p>
-          )}
+          <p className="small-text">
+            <Dates e={event} today={today} />
+          </p>
+          {taking && <p className="small-text">{modeText[event.mode]}</p>}
         </div>
       </div>
-      {editing ? (
-        <div className="about-form">
-          <textarea
-            autoFocus
-            rows={4}
-            maxLength={1000}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            aria-label="Описание мероприятия"
-            placeholder="Где и когда собираемся, дресс-код, что взять с собой"
-          />
-          <div className="about-actions">
-            <span className="small-text">{text.length}/1000</span>
-            <button
-              className="button secondary"
-              disabled={busy}
-              onClick={() => setEditing(false)}
-            >
-              Отмена
-            </button>
-            <button
-              className="button primary"
-              disabled={busy}
-              onClick={() => void saveText()}
-            >
-              {busy ? "Сохраняем…" : "Сохранить"}
-            </button>
-          </div>
-        </div>
-      ) : data.description ? (
-        <p className="event-description">
-          {data.description}
-          {own && (
-            <button
-              className="icon-button about-edit"
-              aria-label="Изменить описание"
-              onClick={() => {
-                setText(data.description);
-                setEditing(true);
-              }}
-            >
-              <Pencil size={14} />
-            </button>
-          )}
-        </p>
-      ) : own ? (
-        <button
-          className="text-link"
-          onClick={() => {
-            setText("");
-            setEditing(true);
-          }}
-        >
-          <Pencil size={14} /> Добавить описание: место, время, дресс-код
-        </button>
-      ) : null}
-      <h3 className="event-subtitle" hidden={!own && !data.invited}>
-        Участники{data.guests.length ? ` · ${data.guests.length + 1}` : ""}
-      </h3>
-      {!own && !data.invited ? (
-        <>
-          <p className="muted">
-            Описание и список гостей видят только приглашённые.
-          </p>
-          <button
-            className="button secondary event-open-list"
-            onClick={() => onOpenList(data.owner.id, undefined)}
-          >
-            Вишлист: {data.owner.name} <ArrowUpRight size={14} />
-          </button>
-        </>
-      ) : data.guests.length ? (
-        <ul className="event-people">
-          {people.map((p) => (
-            <li key={p.id}>
-              <span className="event-person">
-                <strong>{p.id === me ? "Вы" : p.name}</strong>
-                {p.username && p.id !== me && <small> @{p.username}</small>}
-                {p.host && (
-                  <span className="person-role">
-                    {data.mode === "everyone"
-                      ? "организатор"
-                      : "виновник торжества"}
-                  </span>
-                )}
-                {named(p.id) && (
-                  <small className="person-names">
-                    <Eye size={13} /> В вишлисте видно, кто из гостей что
-                    дарит
-                  </small>
-                )}
-              </span>
-              {(p.id === me || data.mode === "everyone" || p.host) && (
-                <button
-                  className="button secondary"
-                  onClick={() =>
-                    onOpenList(p.id, named(p.id) ? event.title : undefined)
-                  }
-                >
-                  {p.id === me ? "Мой вишлист" : "Вишлист"}
-                  <ArrowUpRight size={14} />
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="muted">
-          {own ? "Пока никто не приглашён." : "Список гостей пуст."}
-        </p>
-      )}
+      {data.place && <p className="event-description">{data.place}</p>}
       {own && (
         <div className="event-owner-actions">
-          <button
-            className="button primary"
-            onClick={() => setDialog("guests")}
-          >
-            <Users size={16} />
-            {data.guests.length
-              ? "Изменить список гостей"
-              : "Пригласить друзей"}
+          <button className="button secondary" onClick={() => setEditing(true)}>
+            <Pencil size={15} /> Изменить: дата, место, гости, желания
           </button>
-          {data.guests.length > 0 && (
+          <button
+            className="button secondary danger"
+            onClick={() => setCancelling(true)}
+          >
+            <Trash2 size={15} /> Отменить мероприятие
+          </button>
+        </div>
+      )}
+      {data.member && (
+        <div className="event-owner-actions">
+          {data.member.declined ? (
+            <>
+              <p className="muted">Вы отказались от участия.</p>
+              <button
+                className="button secondary"
+                disabled={busy}
+                onClick={() => void decline(true)}
+              >
+                Всё-таки участвую
+              </button>
+            </>
+          ) : (
             <button
               className="text-link danger"
-              onClick={() => setDialog("cancel")}
+              disabled={busy}
+              onClick={() => void decline(false)}
             >
-              Отменить праздник
+              Отказаться от участия
             </button>
           )}
         </div>
       )}
-      {dialog === "guests" && (
-        <InviteDialog
-          events={[event]}
-          initialKey={event.key}
-          invitations={
-            data.guests.length || data.description
-              ? [
-                  {
-                    key: event.key,
-                    date: event.date,
-                    title: event.title,
-                    mode: data.mode,
-                    guests: data.guests,
-                  },
-                ]
-              : []
-          }
-          friends={friends}
-          onClose={() => setDialog(null)}
-          onSaved={async (message) => {
-            setDialog(null);
-            notice(message);
+      {taking && (
+        <>
+          <h3 className="event-subtitle">
+            Участники · {data.guests.filter((g) => !g.declined).length + 1}
+          </h3>
+          <ul className="event-people">
+            {[{ ...data.owner, declined: false, host: true }, ...data.guests.map((g) => ({ ...g, host: false }))].map(
+              (p) => (
+                <li key={p.id}>
+                  <span className="event-person">
+                    <strong>{p.id === me.id ? "Вы" : p.name}</strong>
+                    {p.username && p.id !== me.id && <small> @{p.username}</small>}
+                    {p.host && <span className="person-role">организатор</span>}
+                    {p.declined && <span className="person-role">отказался(-ась)</span>}
+                  </span>
+                  {!p.declined && p.id !== me.id && (p.host || event.mode === "everyone") && (
+                    <button
+                      className="button secondary"
+                      onClick={() => onOpenList(p.id, event.title)}
+                    >
+                      Вишлист <ArrowUpRight size={14} />
+                    </button>
+                  )}
+                </li>
+              ),
+            )}
+          </ul>
+          <h3 className="event-subtitle">
+            Желания{event.picked ? " · выбраны организатором" : ""}
+          </h3>
+          {!data.wishes.length ? (
+            // «Пока нет желаний»: a gentle nudge to the organizer through the bot.
+            <div className="empty">
+              <h3>Пока нет желаний</h3>
+              {!own && (
+                <button
+                  className="text-link"
+                  onClick={async () => {
+                    try {
+                      await api(`/api/events/${id}/remind`, "POST");
+                      notice("Бот напомнит организатору, не называя вас");
+                    } catch (e) {
+                      notice((e as Error).message, "error");
+                    }
+                  }}
+                >
+                  <BellRing size={15} /> Напомнить
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              {!own && !free.length && (
+                // Only givers see this; the organizer never sees booking states.
+                <p className="muted">Свободных желаний нет: все уже кто-то выбрал.</p>
+              )}
+              {renderWishes(data.wishes, load)}
+            </>
+          )}
+        </>
+      )}
+      {!taking && !data.member && (
+        <button
+          className="button secondary event-open-list"
+          onClick={() => onOpenList(data.owner.id)}
+        >
+          Вишлист: {data.owner.name} <ArrowUpRight size={14} />
+        </button>
+      )}
+      {editing && (
+        <EventForm
+          me={me}
+          event={event}
+          people={people}
+          initialWishes={data.wish_ids}
+          initialGuests={data.guests.map((g) => g.id)}
+          initialPlace={data.place}
+          onClose={() => setEditing(false)}
+          onSaved={async () => {
+            setEditing(false);
+            notice("Мероприятие сохранено");
             await load();
           }}
         />
       )}
-      {dialog === "cancel" && (
+      {cancelling && (
         <Confirm
-          title="Отменить праздник?"
-          text="Приглашения отменятся, гостям придёт сообщение в Telegram. Само мероприятие и описание останутся — пригласить можно будет снова."
-          action="Отменить праздник"
+          title="Отменить мероприятие?"
+          text="Участники получат сообщение. Брони останутся у дарителей."
+          action="Отменить мероприятие"
+          cancel="Не отменять"
           danger
-          onCancel={() => setDialog(null)}
-          onConfirm={() => {
-            setDialog(null);
-            if (demo) return;
-            void api("/api/events/cancel", "POST", {
-              key: event.key,
-              date: event.date,
-            })
-              .then(async () => {
-                notice("Праздник отменён, гостям ушло сообщение");
-                await load();
-              })
-              .catch((e) => notice((e as Error).message, "error"));
+          onCancel={() => setCancelling(false)}
+          onConfirm={async () => {
+            setCancelling(false);
+            try {
+              await api(`/api/events/${id}`, "DELETE");
+              notice("Мероприятие отменено");
+              onEvents();
+            } catch (e) {
+              notice((e as Error).message, "error");
+            }
           }}
         />
       )}
     </section>
   );
 }
+
 type EventsData = {
-  mine: {
-    event: UpcomingEvent;
-    mode: "hero" | "everyone" | null;
-    guests: number;
-  }[];
-  invited: {
+  occasions: UpcomingEvent[];
+  mine: EventCard[];
+  invited: (EventCard & {
     owner: { id: string; name: string; username: string | null };
-    event: UpcomingEvent;
-    mode: "hero" | "everyone";
-  }[];
+    declined: boolean;
+  })[];
 };
-const guestWord = (n: number) =>
-  n % 10 === 1 && n % 100 !== 11
-    ? "гость"
-    : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14)
-      ? "гостя"
-      : "гостей";
-/** «Мероприятия»: parties one is invited to and one's own upcoming events. */
+
+/**
+ * «Мероприятия»: my events to manage, the occasions to start one from (they are
+ * not events yet: no guests, no invitations), and where I am invited.
+ */
 export function EventsList({
-  me,
   today,
   onOpen,
+  onCreate,
 }: {
-  me: string;
   today: Date;
-  onOpen: (owner: string, key: string, date: string) => void;
+  onOpen: (id: string) => void;
+  onCreate: (occasion?: UpcomingEvent) => void;
 }) {
   const [data, setData] = useState<EventsData | null>(null),
     [error, setError] = useState("");
   useEffect(() => {
     if (demo) {
       setData({
-        mine: upcomingEvents(eventSpecs({}), today).map((event) => ({
-          event,
-          mode: null,
-          guests: 0,
-        })),
+        occasions: upcomingEvents(eventSpecs({}), today),
+        mine: [],
         invited: [],
       });
       return;
@@ -863,66 +770,87 @@ export function EventsList({
         Загрузка…
       </div>
     );
-  const left = (e: UpcomingEvent) => {
-    const d = Math.max(0, daysUntil(e.date, today));
-    return d ? daysLeft(d) : "сегодня";
-  };
+  const row = (e: EventCard, sub: React.ReactNode, extra?: string) => (
+    <li key={e.id} className={extra}>
+      <button className="event-row" onClick={() => onOpen(e.id)}>
+        <span className="event-icon small">{icons[e.base]}</span>
+        <span>
+          <strong>{e.title}</strong>
+          <small>{sub}</small>
+        </span>
+        <ChevronRight size={16} />
+      </button>
+    </li>
+  );
   return (
     <section className="events-list">
+      <div className="events-list-head">
+        <h3 className="event-subtitle">Мои мероприятия</h3>
+        <button className="button primary" onClick={() => onCreate()}>
+          <CalendarPlus size={16} /> Создать мероприятие
+        </button>
+      </div>
+      {data.mine.length ? (
+        <ul className="event-people">
+          {data.mine.map((e) =>
+            row(
+              e,
+              <>
+                <Dates e={e} today={today} /> ·{" "}
+                {e.guests ? `${e.guests} ${guestWord(e.guests)}` : "гостей нет"}
+              </>,
+              "has-party",
+            ),
+          )}
+        </ul>
+      ) : (
+        <p className="muted">Пока нет своих мероприятий.</p>
+      )}
+      <h3 className="event-subtitle">Поводы</h3>
+      <p className="small-text">
+        Из профиля: это ещё не мероприятия — гостей и приглашений у них нет.
+        Нажмите, чтобы создать.
+      </p>
+      <ul className="event-people">
+        {data.occasions.map((o) => (
+          <li key={o.key}>
+            <button className="event-row" onClick={() => onCreate(o)}>
+              <span className="event-icon small">{icons[o.key]}</span>
+              <span>
+                <strong>{o.title}</strong>
+                <small>{when(o.date, today)}</small>
+              </span>
+              <CalendarPlus size={16} />
+            </button>
+          </li>
+        ))}
+        <li>
+          <button className="event-row" onClick={() => onCreate()}>
+            <span className="event-icon small">🎉</span>
+            <span>
+              <strong>Другое</strong>
+              <small>Новоселье, выпускной — любой повод</small>
+            </span>
+            <CalendarPlus size={16} />
+          </button>
+        </li>
+      </ul>
       <h3 className="event-subtitle">Меня пригласили</h3>
       {data.invited.length ? (
         <ul className="event-people">
-          {data.invited.map((p) => (
-            <li key={`${p.owner.id}:${p.event.key}:${p.event.date}`}>
-              <button
-                className="event-row"
-                onClick={() => onOpen(p.owner.id, p.event.key, p.event.date)}
-              >
-                <span className="event-icon small">{icons[p.event.key]}</span>
-                <span>
-                  <strong>{p.event.title}</strong> · {p.owner.name}
-                  <small>
-                    {eventDay(p.event.date)} · {left(p.event)} ·{" "}
-                    {modeText[p.mode]}
-                  </small>
-                </span>
-                <ChevronRight size={16} />
-              </button>
-            </li>
-          ))}
+          {data.invited.map((e) =>
+            row(
+              e,
+              <>
+                {e.owner.name} · <Dates e={e} today={today} />
+                {e.declined ? " · вы отказались" : ""}
+              </>,
+            ),
+          )}
         </ul>
       ) : (
         <p className="muted">Пока никто не пригласил.</p>
       )}
-      <h3 className="event-subtitle">Мои мероприятия</h3>
-      <ul className="event-people">
-        {data.mine.map((m) => (
-          <li
-            key={m.event.key}
-            className={m.guests ? "has-party" : undefined}
-          >
-            <button
-              className="event-row"
-              onClick={() => onOpen(me, m.event.key, m.event.date)}
-            >
-              <span className="event-icon small">{icons[m.event.key]}</span>
-              <span>
-                <strong>{m.event.title}</strong>
-                <small>
-                  {eventDay(m.event.date)} · {left(m.event)} ·{" "}
-                  {m.guests
-                    ? `${m.guests} ${guestWord(m.guests)} · ${modeText[m.mode || "hero"]}`
-                    : "гостей нет"}
-                </small>
-              </span>
-              <ChevronRight size={16} />
-            </button>
-          </li>
-        ))}
-      </ul>
-      <p className="small-text">
-        Своё мероприятие и день рождения добавляются в шапке «Моего вишлиста».
-      </p>
     </section>
   );
 }

@@ -53,6 +53,7 @@ import { botRoute, cleanupBotStates } from "./bot";
 import { birthdayReminders } from "./birthdays";
 import {
   PARTY_PEER,
+  EVENT_GIFT,
   bookerNames,
   eventRoute,
   invitations,
@@ -163,7 +164,7 @@ async function canView(
  * Which wishes of an owner a view shows: one list (null: the personal one) and,
  * for a guest link with picked wishes, only those.
  */
-type Scope = { list: string | null; link?: string };
+type Scope = { list: string | null; link?: string; event?: string };
 async function list(
   db: D1Database,
   owner: string,
@@ -171,7 +172,9 @@ async function list(
   guestView = false,
   scope: Scope = { list: null },
 ) {
-  const where = `g.list_id IS ?3 AND (?4='' OR EXISTS(SELECT 1 FROM guest_link_gifts lg WHERE lg.link_id=?4 AND lg.gift_id=g.id))`;
+  // A picked guest link or a picked event shows only its wishes.
+  const where = `g.list_id IS ?3 AND (?4='' OR EXISTS(SELECT 1 FROM guest_link_gifts lg WHERE lg.link_id=?4 AND lg.gift_id=g.id))
+    AND (?5='' OR EXISTS(SELECT 1 FROM event_wishes ew WHERE ew.event_id=?5 AND ew.gift_id=g.id))`;
   // The owner's list never reads reservations; others (a guest link without
   // signing in too) see only whether a gift is free.
   if (!guestView && user?.id === owner)
@@ -183,6 +186,7 @@ async function list(
         owner,
         scope.list,
         scope.link || "",
+        scope.event || "",
       ).all<Gift>()
     ).results;
   // Guests of an event see who booked; the owner returned above and never does.
@@ -200,6 +204,7 @@ async function list(
       owner,
       scope.list,
       scope.link || "",
+      scope.event || "",
     ).all(),
     guestView || !user ? null : bookerNames(db, owner, user.id),
   ]);
@@ -886,25 +891,12 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         stmt(db, "UPDATE users SET notify=? WHERE id=?", b.notify ? 1 : 0, uid),
       );
     if (b.gender !== undefined)
+      // Events already created keep their dates: the profile only feeds the occasions list.
       updates.push(
-        // 8 March or 23 February that is no longer this person's event loses its guests.
-        stmt(
-          db,
-          "DELETE FROM event_parties WHERE owner_id=? AND event_key IN ('march8','feb23') AND event_key<>?",
-          uid,
-          b.gender === "female" ? "march8" : b.gender === "male" ? "feb23" : "",
-        ),
         stmt(db, "UPDATE users SET gender=? WHERE id=?", b.gender, uid),
       );
     if (b.birthday !== undefined)
       updates.push(
-        // A changed birthday is another date: the old party's guests go.
-        stmt(
-          db,
-          "DELETE FROM event_parties WHERE owner_id=?1 AND event_key='birthday' AND (SELECT birthday FROM users WHERE id=?1) IS NOT ?2",
-          uid,
-          b.birthday,
-        ),
         stmt(db, "UPDATE users SET birthday=? WHERE id=?", b.birthday, uid),
       );
     if (b.allow_resharing !== undefined) {
@@ -1112,9 +1104,19 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
       id,
     ).first<{ id: string; owner_id: string; archived_at: number | null }>();
     if (!g) missing();
+    // The whole list, or this wish as one an event picked for its guests.
+    const seesGift = async () =>
+      (await canView(db, g.owner_id, user, guest)) ||
+      !!(await stmt(
+        db,
+        `SELECT 1 WHERE ${EVENT_GIFT("?1", "?2", "?3")}`,
+        uid,
+        g.id,
+        g.owner_id,
+      ).first());
     if (giftMatch[2] === "/photo" && method === "GET") {
       if (g.owner_id !== uid && g.archived_at !== null) missing();
-      if (!(await canView(db, g.owner_id, user, guest))) missing();
+      if (!(await seesGift())) missing();
       return {
         photo:
           (
@@ -1310,11 +1312,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         return { invited: await inviteFriends(db, out, user, id, b.friends) };
       }
       if (action || method !== "POST") missing();
-      if (
-        g.archived_at !== null ||
-        !(await canView(db, g.owner_id, user, guest))
-      )
-        missing();
+      if (g.archived_at !== null || !(await seesGift())) missing();
       const b = req.headers.get("content-type")?.startsWith("application/json")
         ? await body(req)
         : {};
@@ -1326,6 +1324,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         SELECT id,?1 FROM gifts WHERE id=?2 AND owner_id<>?1 AND archived_at IS NULL AND (
           ${SEES("gifts.owner_id")}
           OR ${PARTY_PEER("?1", "gifts.owner_id")}
+          OR ${EVENT_GIFT("?1", "gifts.id", "gifts.owner_id")}
           OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=gifts.owner_id AND l.token_hash=?3 AND ${LINK_ACTIVE("l", "?4")})
         ) ON CONFLICT(gift_id) DO NOTHING RETURNING gift_id`,
         uid,
@@ -1433,7 +1432,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
         db,
         `SELECT r.gift_id,
         CASE WHEN r.user_id=?1 THEN 'organizer' ELSE m.status END AS role,
-        CASE WHEN m.user_id IS NOT NULL OR ${SEES("g.owner_id")} OR ${PARTY_PEER("?1", "g.owner_id")} OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=g.owner_id AND ${LINK_ACTIVE("l", "?2")}) THEN 1 ELSE 0 END AS visible,
+        CASE WHEN m.user_id IS NOT NULL OR ${SEES("g.owner_id")} OR ${PARTY_PEER("?1", "g.owner_id")} OR ${EVENT_GIFT("?1", "g.id", "g.owner_id")} OR EXISTS(SELECT 1 FROM guest_links l WHERE l.owner_id=g.owner_id AND ${LINK_ACTIVE("l", "?2")}) THEN 1 ELSE 0 END AS visible,
         g.title,g.price_minor,g.price_max_minor,g.price_range,g.currency,g.shop_url,g.owner_id,org.name AS organizer_name,
         COALESCE(wl.name,ou.name) AS owner_name,
         CASE WHEN ou.photo='' OR wl.id IS NOT NULL THEN NULL ELSE ou.photo_at END AS owner_photo_at,
@@ -1492,7 +1491,7 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
           my_events: visible
             ? mine
                 .filter((e) => e.owner_id === r.owner_id)
-                .map(({ key, date }) => ({ key, date }))
+                .map(({ id, title, date }) => ({ id, title, date }))
             : [],
           // When to buy by: the owner's events, while their list is visible.
           owner_events: visible
@@ -1660,6 +1659,8 @@ async function route(req: Request, env: Env, out: Outbox): Promise<unknown> {
     () => body(req),
     (key, max) => rate(db, key, max),
     (owner) => canView(db, owner, user, guest),
+    (owner, viewer, event) =>
+      list(db, owner, viewer, false, { list: null, event: event || "" }),
   );
   if (events) return events;
   // ---- Fetching from other sites (user-initiated, authenticated, rate-limited) ----
@@ -1858,7 +1859,8 @@ export default {
       ),
       stmt(
         env.DB,
-        "DELETE FROM event_parties WHERE event_on<date('now','-30 days')",
+        // Long past events go; bookings never depended on them.
+        "DELETE FROM events WHERE MAX(actual_on,celebrate_on)<date('now','-30 days')",
       ),
     ]);
   },
