@@ -26,6 +26,7 @@ import {
   RequestError,
   savedGuestName,
   saveGuestName,
+  telegram,
   type ProductLookup,
   type ScreenshotLookup,
 } from "./api";
@@ -36,6 +37,7 @@ import { currencies, formatPrice, isCurrency } from "../shared/price";
 import { LookupState } from "./lookup-state";
 import { currentSite, shareLink, siteProfileLink } from "./share-links";
 import { WishPicker } from "./wish-picker";
+import { Face } from "./avatar";
 import {
   DEFAULT_FRAMING,
   PhotoFrame,
@@ -1116,19 +1118,18 @@ export function GiftForm({
               {photoNote}
             </p>
           )}
-          <details className="more-fields">
-            <summary>Дополнительно: подсказка и сердечки</summary>
-            <div className="field hearts-field">
-              <span>Насколько хочется</span>
-              <Hearts value={priority} onChange={setPriority} size={26} />
-            </div>
-            <label>
+          {/* In the form itself, compact: one line of hearts, a short note. */}
+          <div className="field hearts-field compact">
+            <span>Насколько хочется</span>
+            <Hearts value={priority} onChange={setPriority} size={22} />
+          </div>
+          <label className="hint-field">
               <span>
                 Подсказка <small className="optional">необязательно</small>
               </span>
               <textarea
                 name="description"
-                rows={3}
+                rows={2}
                 maxLength={2000}
                 value={description}
                 onChange={(e) => {
@@ -1138,8 +1139,7 @@ export function GiftForm({
                 }}
                 placeholder="Цвет, размер или другие важные детали"
               />
-            </label>
-          </details>
+          </label>
           {error && (
             <div className="error" role="alert">
               {error}
@@ -1234,6 +1234,14 @@ function CopyLink({ url }: { url: string }) {
     </div>
   );
 }
+/** After copying in a browser: where the link is now. */
+function Copied() {
+  return (
+    <p className="share-copied" role="status">
+      <Check size={15} /> Ссылка скопирована. Вставьте её в сообщение.
+    </p>
+  );
+}
 /**
  * «Поделиться»: «Поделиться» sends the profile link (wishes after signing in),
  * «Поделиться без входа» a guest link to a simplified list: the whole list by
@@ -1269,6 +1277,9 @@ export function Share({
     kind: "profile" | "guest";
     url: string;
   } | null>(null);
+  // In a browser «Поделиться» copies the link; which one was copied last.
+  const [copied, setCopied] = useState<"profile" | "guest" | null>(null);
+  const inBrowser = !telegram?.initData;
   const listQuery = list ? `?list=${encodeURIComponent(list.id)}` : "";
   useEffect(() => {
     if (!own || demo) return;
@@ -1281,6 +1292,7 @@ export function Share({
   async function send(kind: "profile" | "guest") {
     setError("");
     setFallback(null);
+    setCopied(null);
     if (demo) {
       setError("В демо ссылки не создаются.");
       return;
@@ -1315,6 +1327,16 @@ export function Share({
         : whose
           ? `Вишлист: ${whose}`
           : "Мой вишлист: выберите подарок";
+    if (inBrowser) {
+      // The website copies the link: the system menu there is a detour (block 6).
+      try {
+        await navigator.clipboard.writeText(url);
+        setCopied(kind);
+      } catch {
+        setFallback({ kind, url });
+      }
+      return;
+    }
     const result = await shareLink(url, text.trim());
     if (result === "unavailable") setFallback({ kind, url });
   }
@@ -1331,9 +1353,9 @@ export function Share({
         disabled={busy}
         onClick={() => void send("profile")}
       >
-        <Share2 size={20} />
+        {inBrowser ? <Copy size={20} /> : <Share2 size={20} />}
         <span>
-          <strong>Поделиться</strong>
+          <strong>{inBrowser ? "Скопировать ссылку" : "Поделиться"}</strong>
           <small>
             {own
               ? "Ссылка на ваш профиль. Желания откроются после входа; закрытый вишлист — после того, как вы одобрите запрос в друзья."
@@ -1341,6 +1363,7 @@ export function Share({
           </small>
         </span>
       </button>
+      {copied === "profile" && <Copied />}
       {fallback?.kind === "profile" && <CopyLink url={fallback.url} />}
       {own && (
         <>
@@ -1355,13 +1378,19 @@ export function Share({
             <span>
               <strong>Поделиться без входа</strong>
               <small>
-                Упрощённый список: открывается без входа, для брони достаточно
-                имени. Отправляйте тем, кому доверяете.
+                Для тех, кому сложно с Telegram и входом, — например, бабушкам и
+                дедушкам. Откроется простой список: нажать «Подарю» и написать
+                своё имя.
               </small>
             </span>
           </button>
           {guestStep && (
             <div className="guest-set">
+              <p className="share-warning" role="note">
+                По этой ссылке видно, какие подарки уже выбрали. Не открывайте
+                её сами, если хотите сохранить сюрприз. Отправляйте только
+                близким: переслать её может кто угодно.
+              </p>
               <label className="setting-toggle">
                 <input
                   type="radio"
@@ -1402,9 +1431,14 @@ export function Share({
                 disabled={busy}
                 onClick={() => void send("guest")}
               >
-                <Share2 size={17} />
-                {busy ? "Готовим ссылку…" : "Отправить ссылку"}
+                {inBrowser ? <Copy size={17} /> : <Share2 size={17} />}
+                {busy
+                  ? "Готовим ссылку…"
+                  : inBrowser
+                    ? "Скопировать ссылку"
+                    : "Отправить ссылку"}
               </button>
+              {copied === "guest" && <Copied />}
               {fallback?.kind === "guest" && <CopyLink url={fallback.url} />}
             </div>
           )}
@@ -1621,6 +1655,7 @@ export function ReserveDialog({
   gift,
   photo,
   ownerId,
+  ownerName = "",
   friends,
   exclude = [],
   invite = false,
@@ -1632,6 +1667,8 @@ export function ReserveDialog({
   gift: { id: string; title: string } & Partial<Wish>;
   photo?: React.ReactNode;
   ownerId: string;
+  /** For whom: named in the message «Поделиться ссылкой». */
+  ownerName?: string;
   friends: Friend[];
   exclude?: string[];
   invite?: boolean;
@@ -1650,6 +1687,30 @@ export function ReserveDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [invited, setInvited] = useState(0);
+  // «Поделиться ссылкой»: someone not in «Друзья» hears about the gift too.
+  const [linkShared, setLinkShared] = useState<"" | "copied" | "sent">("");
+  const [linkFallback, setLinkFallback] = useState("");
+  async function shareChipIn() {
+    setLinkShared("");
+    setLinkFallback("");
+    const url = siteProfileLink(currentSite(), ownerId);
+    const price = priced
+      ? `, ${formatPrice(gift as Parameters<typeof formatPrice>[0])}`
+      : "";
+    const text = `Давай скинемся на подарок${ownerName ? ` для ${ownerName}` : ""}: «${gift.title}»${price}.${gift.shop_url ? ` ${gift.shop_url}` : ""} Если ты в деле, добавь меня в друзья в вишлисте — я позову тебя в подарок.`;
+    if (!telegram?.initData) {
+      try {
+        await navigator.clipboard.writeText(`${text}\n${url}`);
+        setLinkShared("copied");
+      } catch {
+        setLinkFallback(`${text}\n${url}`);
+      }
+      return;
+    }
+    const r = await shareLink(url, text);
+    if (r === "shared") setLinkShared("sent");
+    else if (r === "unavailable") setLinkFallback(`${text}\n${url}`);
+  }
   const candidates = friends.filter(
     (f) => f.id !== ownerId && !exclude.includes(f.id),
   );
@@ -1784,7 +1845,19 @@ export function ReserveDialog({
               void submit(picked);
             }}
           >
-            {invite && <h3>{gift.title}</h3>}
+            {invite && (
+              <div className="reserve-gift">
+                {photo && <div className="reserve-photo">{photo}</div>}
+                <div>
+                  <h3>{gift.title}</h3>
+                  {priced && (
+                    <p className="reserve-price">
+                      {formatPrice(gift as Parameters<typeof formatPrice>[0])}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
             <p>
               Кого позвать скинуться? Бот пришлёт им приглашение, а они ответят
               «Участвую» или «Не могу».
@@ -1792,7 +1865,7 @@ export function ReserveDialog({
             {candidates.length ? (
               <div className="friend-picker">
                 {candidates.map((f) => (
-                  <label key={f.id} className="setting-toggle">
+                  <label key={f.id} className="setting-toggle friend-pick">
                     <input
                       type="checkbox"
                       checked={picked.includes(f.id)}
@@ -1807,8 +1880,15 @@ export function ReserveDialog({
                         )
                       }
                     />
-                    {f.name}
-                    {f.username ? ` · @${f.username}` : ""}
+                    <span className="avatar tiny">
+                      <Face user={f} />
+                    </span>
+                    <span>
+                      {f.name}
+                      {f.username ? (
+                        <small className="muted"> @{f.username}</small>
+                      ) : null}
+                    </span>
                   </label>
                 ))}
               </div>
@@ -1818,6 +1898,28 @@ export function ReserveDialog({
                 добавил вас в друзья.
               </p>
             )}
+            <button
+              type="button"
+              className="button secondary full-width"
+              disabled={busy}
+              onClick={() => void shareChipIn()}
+            >
+              {telegram?.initData ? <Share2 size={16} /> : <Copy size={16} />}
+              {telegram?.initData
+                ? "Поделиться ссылкой и предложить скинуться"
+                : "Скопировать ссылку и предложить скинуться"}
+            </button>
+            {linkShared === "copied" && (
+              <p className="share-copied" role="status">
+                <Check size={15} /> Скопировано: ссылка и предложение скинуться.
+                Вставьте в сообщение.
+              </p>
+            )}
+            {linkFallback && <CopyLink url={linkFallback} />}
+            <p className="small-text">
+              Кого нет в списке: отправьте ссылку. Когда человек добавит вас в
+              друзья, он появится здесь.
+            </p>
             <button
               className="button primary full-width"
               disabled={busy || !picked.length}

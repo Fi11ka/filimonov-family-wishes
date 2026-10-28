@@ -37,18 +37,26 @@ const CURRENT = `MAX(e.actual_on,e.celebrate_on)>=date('now','-1 day')`;
 /** User `u` takes part in event `e`: its organizer, or a guest who has not declined. */
 const member = (u: string) =>
   `(e.owner_id=${u} OR EXISTS(SELECT 1 FROM event_members x WHERE x.event_id=e.id AND x.user_id=${u} AND x.declined_at IS NULL))`;
+/** Guest `u` of event `e` takes part and shows a picked set (1) or the whole list (0). */
+const guestPicked = (u: string, picked: 0 | 1) =>
+  `EXISTS(SELECT 1 FROM event_members y WHERE y.event_id=e.id AND y.user_id=${u} AND y.declined_at IS NULL AND y.picked=${picked})`;
 /**
  * SQL condition: `viewer` takes part in a current event of `owner` that shows
- * the whole wishlist, or both take part in a «для всех» event, whose other
- * guests' lists open in full. A picked set opens only its wishes: EVENT_GIFT.
+ * the whole wishlist, or both take part in a «для всех» event where `owner`, a
+ * guest, shows their whole list. A picked set opens only its wishes: EVENT_GIFT.
  */
 export const PARTY_PEER = (viewer: string, owner: string) =>
   `EXISTS(SELECT 1 FROM events e WHERE ${CURRENT} AND ${member(viewer)}
-    AND ((e.owner_id=${owner} AND e.picked=0) OR (e.mode='everyone' AND e.owner_id<>${owner} AND ${member(owner)})))`;
-/** SQL condition: `gift` is one of the wishes a current event of its owner shows to `viewer`. */
+    AND ((e.owner_id=${owner} AND e.picked=0) OR (e.mode='everyone' AND e.owner_id<>${owner} AND ${guestPicked(owner, 0)})))`;
+/**
+ * SQL condition: `gift` is one of the picked wishes a current event shows to
+ * `viewer`: the organizer's, or in «для всех» a guest's own picked set.
+ */
 export const EVENT_GIFT = (viewer: string, gift: string, owner: string) =>
   `EXISTS(SELECT 1 FROM events e JOIN event_wishes w ON w.event_id=e.id
-    WHERE w.gift_id=${gift} AND e.owner_id=${owner} AND e.picked=1 AND ${CURRENT} AND ${member(viewer)})`;
+    WHERE w.gift_id=${gift} AND ${CURRENT} AND ${member(viewer)}
+      AND ((e.owner_id=${owner} AND e.picked=1)
+        OR (e.mode='everyone' AND e.owner_id<>${owner} AND ${guestPicked(owner, 1)})))`;
 /** Who may invite whom: anyone in the four groups of «Друзья», either way, approved or not. */
 const PEOPLE = (other: string) =>
   `EXISTS(SELECT 1 FROM follows f WHERE (f.follower_id=?1 AND f.target_id=${other}) OR (f.follower_id=${other} AND f.target_id=?1))`;
@@ -224,6 +232,7 @@ export async function eventRoute(
   rate: (key: string, max: number) => Promise<void>,
   canView: (owner: string) => Promise<boolean>,
   wishes: Wishes,
+  query: URLSearchParams = new URLSearchParams(),
 ) {
   const uid = user.id;
   const load = (id: string) =>
@@ -263,6 +272,14 @@ export async function eventRoute(
         g,
         uid,
       ),
+    );
+  /** Forget which of my wishes an event shows; other participants' choices stay. */
+  const dropWishes = (event: string) =>
+    stmt(
+      db,
+      "DELETE FROM event_wishes WHERE event_id=? AND gift_id IN (SELECT id FROM gifts WHERE owner_id=?)",
+      event,
+      uid,
     );
   if (path === "/api/events" && method === "GET") {
     // «Мероприятия»: the standard occasions to start from, my events and the ones I am invited to.
@@ -343,7 +360,9 @@ export async function eventRoute(
     await out.eventAdded(user, forMessage(e), guests);
     return { event: e };
   }
-  const one = path.match(/^\/api\/events\/([a-f0-9-]{36})(\/decline|\/remind)?$/);
+  const one = path.match(
+    /^\/api\/events\/([a-f0-9-]{36})(\/decline|\/remind|\/wishes)?$/,
+  );
   if (!one) return null;
   const event = await load(one[1]);
   if (!event) missing();
@@ -351,10 +370,50 @@ export async function eventRoute(
   const own = e.owner_id === uid;
   const membership = await stmt(
     db,
-    "SELECT declined_at FROM event_members WHERE event_id=? AND user_id=?",
+    "SELECT declined_at,picked FROM event_members WHERE event_id=? AND user_id=?",
     e.id,
     uid,
-  ).first<{ declined_at: number | null }>();
+  ).first<{ declined_at: number | null; picked: number }>();
+  /** Which of my wishes this event shows: null is the whole list. */
+  const myWishIds = async (picked: boolean) =>
+    picked
+      ? (
+          await stmt(
+            db,
+            "SELECT w.gift_id FROM event_wishes w JOIN gifts g ON g.id=w.gift_id WHERE w.event_id=? AND g.owner_id=?",
+            e.id,
+            uid,
+          ).all<{ gift_id: string }>()
+        ).results.map((r) => r.gift_id)
+      : null;
+  if (one[2] === "/wishes" && method === "PUT") {
+    // «Мои желания для мероприятия»: the organizer, or in «для всех» any guest who
+    // takes part, picks a set of their own wishes or shows the whole list.
+    const guestHere =
+      !!membership && membership.declined_at === null && e.mode === "everyone";
+    if (!own && !guestHere) missing();
+    await rate(`eventwishes:${uid}`, 30);
+    const picked = wishSet((await body()).wishes);
+    await db.batch([
+      own
+        ? stmt(
+            db,
+            "UPDATE events SET picked=?,updated_at=unixepoch() WHERE id=?",
+            picked ? 1 : 0,
+            e.id,
+          )
+        : stmt(
+            db,
+            "UPDATE event_members SET picked=? WHERE event_id=? AND user_id=?",
+            picked ? 1 : 0,
+            e.id,
+            uid,
+          ),
+      dropWishes(e.id),
+      ...putWishes(e.id, picked || []),
+    ]);
+    return { wish_ids: await myWishIds(!!picked) };
+  }
   if (one[2] === "/decline" && (method === "POST" || method === "DELETE")) {
     // «Отказаться от участия» and undoing it. Bookings stay in «Мои брони».
     if (!membership) missing();
@@ -384,16 +443,28 @@ export async function eventRoute(
       own || (membership && current) || (current && (await canView(e.owner_id)));
     if (!visible) missing();
     const taking = own || (!!membership && membership.declined_at === null);
-    const [owner, guests, list] = await Promise.all([
+    const people = (await guestsOf(db, [e.id])).get(e.id) || [];
+    // Whose wishes: the organizer's, or in «для всех» any guest's who takes part.
+    const of = query.get("of") || e.owner_id;
+    const ofGuest =
+      of !== e.owner_id && e.mode === "everyone"
+        ? await stmt(
+            db,
+            "SELECT picked FROM event_members WHERE event_id=? AND user_id=? AND declined_at IS NULL",
+            e.id,
+            of,
+          ).first<{ picked: number }>()
+        : null;
+    if (of !== e.owner_id && !ofGuest) missing();
+    const ofPicked = ofGuest ? !!ofGuest.picked : !!e.picked;
+    const [owner, list] = await Promise.all([
       stmt(
         db,
         "SELECT id,name,username FROM users WHERE id=?",
         e.owner_id,
       ).first<Person>(),
-      guestsOf(db, [e.id]),
-      taking ? wishes(e.owner_id, user, e.picked ? e.id : null) : [],
+      taking ? wishes(of, user, ofPicked ? e.id : null) : [],
     ]);
-    const people = guests.get(e.id) || [];
     return {
       event: shape(e),
       owner,
@@ -402,16 +473,13 @@ export async function eventRoute(
       member: membership ? { declined: membership.declined_at !== null } : null,
       // The organizer sees who declined; guests see who takes part.
       guests: own ? people : taking ? people.filter((g) => !g.declined) : [],
+      of,
       wishes: list,
-      wish_ids: own && e.picked
-        ? (
-            await stmt(
-              db,
-              "SELECT gift_id FROM event_wishes WHERE event_id=?",
-              e.id,
-            ).all<{ gift_id: string }>()
-          ).results.map((r) => r.gift_id)
-        : null,
+      // My own choice for this event: the organizer's, or a «для всех» guest's.
+      wish_ids:
+        own || (taking && e.mode === "everyone")
+          ? await myWishIds(own ? !!e.picked : !!membership?.picked)
+          : null,
     };
   }
   if (!own) missing();
@@ -469,7 +537,7 @@ export async function eventRoute(
     ...(picked === undefined
       ? []
       : [
-          stmt(db, "DELETE FROM event_wishes WHERE event_id=?", e.id),
+          dropWishes(e.id),
           ...putWishes(e.id, picked || []),
         ]),
     // A guest taken off loses access through the event; their bookings stay.

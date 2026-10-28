@@ -326,6 +326,7 @@ before(async () => {
     ),
   ]);
   await migrate("migrations/0024_events.sql");
+  await migrate("migrations/0025_event_member_wishes.sql");
   const moved = await db
     .prepare(
       "SELECT e.title,e.mode,e.place,e.actual_on=e.celebrate_on AS same,(SELECT COUNT(*) FROM event_members m WHERE m.event_id=e.id) AS guests FROM events e WHERE owner_id='fixture-host'",
@@ -3169,4 +3170,47 @@ test("«для всех»: guests see each other's lists and who of them booked,
   // «Мои брони» point to the event.
   const booking = (await call("/reservations", 8502)).body.reservations[0];
   assert.equal(booking.my_events[0].title, "Ёлка");
+});
+test("«для всех»: each guest picks which of their wishes the event shows", async () => {
+  for (const id of [8601, 8602, 8603]) await call("/me", id);
+  await befriend(8601, 8602);
+  await befriend(8601, 8603);
+  const shown = await gift(8602, { title: "Показать" });
+  const hidden = await gift(8602, { title: "Не показывать" });
+  const host = await gift(8601, { title: "Подарок хозяина" });
+  const e = (
+    await call("/events", 8601, "POST", {
+      title: "Ёлка",
+      actual_on: isoIn(9),
+      mode: "everyone",
+      wishes: [host],
+      guests: ["8602", "8603"],
+    })
+  ).body.event;
+  // Before choosing: the guest's whole list opens to the others.
+  assert.equal((await call(`/events/${e.id}?of=8602`, 8603)).body.wishes.length, 2);
+  assert.equal((await call(`/events/${e.id}`, 8602)).body.wish_ids, null);
+  // The guest picks one wish; the organizer's choice stays as it was.
+  const put = await call(`/events/${e.id}/wishes`, 8602, "PUT", { wishes: [shown] });
+  assert.deepEqual(put.body.wish_ids, [shown]);
+  const seen = await call(`/events/${e.id}?of=8602`, 8603);
+  assert.deepEqual(seen.body.wishes.map((g: any) => g.id), [shown]);
+  assert.deepEqual((await call(`/events/${e.id}`, 8601)).body.wish_ids, [host]);
+  // The full list no longer opens through the event, the picked wish still books.
+  assert.equal((await call("/lists/8602", 8603)).status, 404);
+  assert.equal((await call(`/gifts/${hidden}/reservation`, 8603, "POST")).status, 404);
+  assert.equal((await call(`/gifts/${shown}/reservation`, 8603, "POST")).status, 200);
+  // Back to the whole list.
+  await call(`/events/${e.id}/wishes`, 8602, "PUT", { wishes: null });
+  assert.equal((await call("/lists/8602", 8603)).status, 200);
+  // Someone not taking part, or a «для одного» guest, cannot pick.
+  const hero = (
+    await call("/events", 8601, "POST", {
+      title: "ДР",
+      actual_on: isoIn(10),
+      guests: ["8602"],
+    })
+  ).body.event;
+  assert.equal((await call(`/events/${hero.id}/wishes`, 8602, "PUT", { wishes: [] })).status, 404);
+  assert.equal((await call(`/events/${hero.id}?of=8602`, 8601)).status, 404);
 });
