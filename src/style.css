@@ -809,14 +809,6 @@ button.event-chip:hover {
 .names-note svg {
   margin-top: 2px;
 }
-.notify-toggle.on {
-  background: var(--success-soft);
-  border-color: var(--success-line);
-  color: var(--success);
-}
-.notify-toggle.on:hover:not(:disabled) {
-  background: #e2efe3;
-}
 .wishlist-actions {
   display: flex;
   flex-wrap: wrap;

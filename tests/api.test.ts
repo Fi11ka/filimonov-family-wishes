@@ -1332,9 +1332,9 @@ test("guest and Telegram bookings racing for one gift have exactly one winner", 
   assert.deepEqual(results.map((r) => r.status).sort(), [200, 409, 409]);
 });
 
-test("subscription changes are allowed by browser CORS preflight", async () => {
+test("PUT changes are allowed by browser CORS preflight", async () => {
   const result = await call(
-    "/subscriptions/2",
+    "/events/custom",
     undefined,
     "OPTIONS",
     undefined,
@@ -1504,52 +1504,42 @@ test("guest links made by viewers before followers no longer open the list; only
     200,
   );
 });
-test("friends with the bell on hear about added and removed wishes; bookers learn their gift is gone", async () => {
+test("adding or removing wishes tells no friend; bookers learn their gift is gone", async () => {
   await befriend(701, 702);
   await befriend(701, 703);
-  await call("/me", 704);
-  assert.equal((await call("/subscriptions/701", 704, "PUT")).status, 403);
-  const sub = await call("/subscriptions/701", 702, "PUT");
-  assert.equal(sub.status, 200);
-  assert.equal(sub.body.subscribed, true);
+  // The bell is gone along with its endpoint.
+  assert.equal((await call("/subscriptions/701", 702, "PUT")).status, 404);
   assert.equal(
-    (await call("/people", 702)).body.friends.find((f: any) => f.id === "701")
-      .subscribed,
-    true,
+    "subscribed" in
+      (await call("/people", 702)).body.friends.find(
+        (f: any) => f.id === "701",
+      ),
+    false,
   );
+  // Adding by hand, archived-then-restored, or by import: nobody hears about it.
   const g = await gift(701, {
     title: "Велосипед",
     price_minor: 1500000,
     currency: "RUB",
   });
-  const added = await messages(702);
-  assert.match(added[0].text, /добавил\(а\) желание «Велосипед»/);
+  const other = await gift(701, { title: "Книга" });
+  await call(`/gifts/${other}/archive`, 701, "POST", {
+    reason: "changed_mind",
+  });
+  await call(`/gifts/${other}/restore`, 701, "POST");
   assert.equal(
-    added[0].reply_markup.inline_keyboard[0][0].web_app.url,
-    "https://family.example/app/?open=l_701",
+    (await call("/gifts/announce", 701, "POST", { ids: [g] })).status,
+    404,
   );
-  // Not subscribed: no message. The owner gets nothing either.
   await settle();
-  assert.equal((await messages(703, 0)).length, 0);
-  assert.equal((await messages(701, 0)).length, 0);
-  // A quiet import is announced in one message.
-  const quiet = [
-    await gift(701, { title: "Книга", quiet: true }),
-    await gift(701, { title: "Плед", quiet: true }),
-  ];
-  await settle();
-  assert.equal((await messages(702)).length, 1);
-  await call("/gifts/announce", 701, "POST", { ids: quiet });
-  assert.match(
-    (await messages(702, 2))[1].text,
-    /желания \(2\):\n• Плед|желания \(2\):\n• Книга/,
-  );
-  // 703 books it; the owner deletes it: 703 is told, 702 hears it was removed.
+  for (const id of [701, 702, 703])
+    assert.equal((await messages(id, 0)).length, 0);
+  // 703 books it; the owner deletes it: only 703 is told, the same answer either way.
   assert.equal(
     (await call(`/gifts/${g}/reservation`, 703, "POST")).status,
     200,
   );
-  const before = await call(`/gifts/${quiet[0]}`, 701, "DELETE");
+  const before = await call(`/gifts/${other}`, 701, "DELETE");
   const after = await call(`/gifts/${g}`, 701, "DELETE");
   assert.equal(before.raw, after.raw);
   const booker = await messages(703);
@@ -1557,14 +1547,11 @@ test("friends with the bell on hear about added and removed wishes; bookers lear
     booker[0].text,
     /удалил\(а\) из вишлиста «Велосипед» — подарок, который вы забронировали/,
   );
-  const removed = await messages(702, 4);
-  assert.ok(
-    removed.some((m) =>
-      /убрал\(а\) из вишлиста желание «Велосипед»/.test(m.text),
-    ),
-  );
+  await settle();
+  assert.equal((await messages(702, 0)).length, 0);
+  assert.equal((await messages(701, 0)).length, 0);
   assert.equal((await call("/reservations", 703)).body.reservations.length, 0);
-  // Archiving tells the booker too; unfriending ends the subscription.
+  // Archiving tells the booker too.
   const h = await gift(701, { title: "Самокат" });
   await call(`/gifts/${h}/reservation`, 703, "POST");
   await call(`/gifts/${h}/archive`, 701, "POST", { reason: "gifted" });
@@ -1572,19 +1559,8 @@ test("friends with the bell on hear about added and removed wishes; bookers lear
     (await messages(703, 2))[1].text,
     /отметил\(а\) «Самокат» как подаренный/,
   );
-  // Unfollowing turns the bell off too.
-  await call("/follows/701", 702, "DELETE");
-  assert.equal(
-    (
-      await db
-        .prepare(
-          "SELECT COUNT(*) AS n FROM subscriptions WHERE subscriber_id='702'",
-        )
-        .first()
-    )?.n,
-    0,
-  );
-  assert.equal((await call("/subscriptions/701", 702, "DELETE")).status, 200);
+  await settle();
+  assert.equal((await messages(702, 0)).length, 0);
 });
 
 test("friend requests, approvals and new friends of an open profile are announced in the bot", async () => {
@@ -1862,14 +1838,15 @@ test("bot webhook: secret required, menu, adding and editing one's own wishes", 
 test("notifications can be switched off and a blocked chat is not retried", async () => {
   await befriend(741, 742);
   await befriend(741, 403403);
-  await call("/subscriptions/741", 742, "PUT");
-  await call("/subscriptions/741", 403403, "PUT");
   assert.equal(
     (await call("/me", 742, "PATCH", { notify: false })).body.notifications
       .enabled,
     false,
   );
-  await gift(741);
+  await call("/events/custom", 741, "PUT", {
+    title: "Новоселье",
+    date: isoIn(9),
+  });
   await settle();
   assert.equal((await messages(742, 0)).length, 0);
   assert.ok(
@@ -1880,7 +1857,10 @@ test("notifications can be switched off and a blocked chat is not retried", asyn
     )?.bot_blocked_at,
   );
   const tries = telegram.filter((c) => c.body.chat_id === "403403").length;
-  await gift(741);
+  await call("/events/custom", 741, "PUT", {
+    title: "Юбилей",
+    date: isoIn(9),
+  });
   await settle();
   assert.equal(
     telegram.filter((c) => c.body.chat_id === "403403").length,
@@ -1888,13 +1868,25 @@ test("notifications can be switched off and a blocked chat is not retried", asyn
   );
 });
 
-test("birthday reminders reach friends with the bell on a week and a day before, once, with a wishlist link", async () => {
+test("birthday reminders reach everyone who has the person in «Друзья» a week and a day before, once, with a wishlist link", async () => {
   await befriend(751, 752);
   await befriend(753, 752);
-  await befriend(751, 755);
-  await call("/me", 754);
-  // 752 turned the bell on about 751; 755 follows 751 without it.
-  assert.equal((await call("/subscriptions/751", 752, "PUT")).status, 200);
+  for (const id of [751, 754, 755, 756, 757]) await call("/me", id);
+  // 755 added 751 one-way; 751 added 756, so 751 is only in 756's «Добавили вас»;
+  // 757 still waits for approval; 758 took 751 out of friends.
+  for (const [from, to, status] of [
+    ["755", "751", "approved"],
+    ["751", "756", "approved"],
+    ["757", "751", "pending"],
+  ])
+    await db
+      .prepare(
+        "INSERT INTO follows(follower_id,target_id,status) VALUES(?,?,?)",
+      )
+      .bind(from, to, status)
+      .run();
+  await befriend(751, 758);
+  await call("/follows/751", 758, "DELETE");
   await call("/me", 751, "PATCH", { birthday: isoIn(7).slice(5) });
   await call("/me", 753, "PATCH", { birthday: isoIn(3).slice(5) });
   await gift(751, { title: "Плед" });
@@ -1908,6 +1900,11 @@ test("birthday reminders reach friends with the bell on a week and a day before,
     m.text.includes("день рождения"),
   );
   assert.equal(reminders.length, 1, JSON.stringify(sent));
+  assert.equal(
+    (await messages(755, 0)).filter((m) => m.text.includes("день рождения"))
+      .length,
+    1,
+  );
   assert.match(
     reminders[0].text,
     /Через 7 дней.*день рождения у .*User 751.*В вишлисте 1 желание/s,
@@ -1916,8 +1913,8 @@ test("birthday reminders reach friends with the bell on a week and a day before,
     reminders[0].reply_markup.inline_keyboard[0][0].web_app.url,
     "https://family.example/app/?open=l_751",
   );
-  // A follower without the bell, a stranger, and the person themself: nothing.
-  for (const id of [754, 755])
+  // A stranger, «Добавили вас», a pending request, a removed friend and the person themself: nothing.
+  for (const id of [754, 756, 757, 758])
     assert.equal(
       (await messages(id, 0)).filter((m) => m.text.includes("день рождения"))
         .length,
@@ -2005,9 +2002,8 @@ test("priority is 1–5 hearts, kept in sync with the old column; the wishlist h
   );
 });
 
-test("events: gender only for oneself, one own event replaces the last, subscribers hear days left", async () => {
+test("events: gender only for oneself, one own event replaces the last, friends hear days left", async () => {
   await befriend(801, 802);
-  await call("/subscriptions/801", 802, "PUT");
   assert.equal(
     (await call("/me", 801, "PATCH", { gender: "other" })).status,
     400,
@@ -2100,8 +2096,9 @@ test("event guests see each other and who of them booked; the hero never learns 
     inv.body.invitations[0].guests.map((g: any) => g.id),
     ["812", "813"],
   );
+  // 812 heard about the event as a friend first; the invitation is a message of its own.
   assert.match(
-    (await messages(812))[0].text,
+    (await messages(812, 2))[1].text,
     /приглашает вас на «Юбилей»: .*, осталось 12 дней/,
   );
   // Guests see the guest list; a friend who is not invited does not.

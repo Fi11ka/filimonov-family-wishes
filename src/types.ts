@@ -32,8 +32,6 @@ export type Person = User & {
   follow?: "pending" | "approved" | null;
   /** They added me, and my list is open to them. */
   follows_you?: boolean;
-  /** The bell: the bot tells me about their wishlist. */
-  subscribed?: boolean;
 };
 /** My people (my friends and those who added me): whom I can invite to an event or a shared gift. */
 export type Friend = Person;

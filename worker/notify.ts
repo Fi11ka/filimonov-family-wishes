@@ -120,50 +120,31 @@ export class Outbox {
     }
   }
   // ---- Events ----
-  /** People with the bell on who still see the owner's list, minus people excluded. */
-  async subscribers(ownerId: string, exclude: string[] = []) {
+  /**
+   * People who have this person in their own «Друзья»: they added them and the
+   * list is open to them. «Добавили вас» and pending requests do not count.
+   */
+  async friendsOf(personId: string, exclude: string[] = []) {
     const rows = (
       await stmt(
         this.db,
-        `SELECT s.subscriber_id AS id FROM subscriptions s JOIN users t ON t.id=s.target_id
-        WHERE s.target_id=?1 AND (t.is_private=0 OR EXISTS(SELECT 1 FROM follows fl WHERE fl.follower_id=s.subscriber_id AND fl.target_id=?1 AND fl.status='approved'))`,
-        ownerId,
+        "SELECT follower_id AS id FROM follows WHERE target_id=? AND status='approved'",
+        personId,
       ).all<{ id: string }>()
     ).results;
     return rows.map((r) => r.id).filter((id) => !exclude.includes(id));
   }
-  async wishesAdded(owner: Named, gifts: GiftLike[]) {
-    if (!gifts.length) return;
-    const ids = await this.subscribers(owner.id);
-    const shown = gifts.slice(0, 10);
-    const text =
-      gifts.length === 1
-        ? `🎁 ${who(owner)} добавил(а) желание «${esc(gifts[0].title)}»${priced(gifts[0])}`
-        : `🎁 ${who(owner)} добавил(а) желания (${gifts.length}):\n` +
-          shown.map((g) => `• ${esc(g.title)}${priced(g)}`).join("\n") +
-          (gifts.length > shown.length
-            ? `\n…и ещё ${gifts.length - shown.length}`
-            : "");
-    this.send(ids, text, [
-      [openButton(this.env, "Открыть вишлист", `l_${owner.id}`)],
-    ]);
-  }
   /**
    * The owner deleted or archived a wish. `booked` must be read before the
-   * delete (reservations cascade). Booking friends get their own message.
+   * delete (reservations cascade). Only the bookers hear about it: nobody gets
+   * news about other changes to a wishlist.
    */
-  async wishRemoved(
+  wishRemoved(
     owner: Named,
     gift: GiftLike,
     booked: string[],
     how: "deleted" | "changed_mind" | "bought_self" | "gifted",
   ) {
-    const subscribers = await this.subscribers(owner.id, booked);
-    this.send(
-      subscribers,
-      `🗑 ${who(owner)} убрал(а) из вишлиста желание «${esc(gift.title)}»`,
-      [[openButton(this.env, "Открыть вишлист", `l_${owner.id}`)]],
-    );
     const text =
       how === "deleted"
         ? `⚠️ ${who(owner)} удалил(а) из вишлиста «${esc(gift.title)}» — подарок, который вы забронировали. Бронь снята.`
@@ -172,10 +153,10 @@ export class Outbox {
           : `⚠️ ${who(owner)} убрал(а) в архив «${esc(gift.title)}» — подарок, который вы забронировали${how === "bought_self" ? " (купил(а) сам(а))" : ""}. Если вы его ещё не купили, отмените бронь.`;
     this.send(booked, text, [[openButton(this.env, "Мои брони", "b")]]);
   }
-  /** The owner added their own event: subscribers learn how many days are left. */
+  /** The owner added their own event: their friends learn how many days are left. */
   async eventAdded(owner: Named, event: EventLike) {
     this.send(
-      await this.subscribers(owner.id),
+      await this.friendsOf(owner.id),
       `📅 ${who(owner)} добавил(а) мероприятие «${esc(event.title)}»: ${when(event)}.`,
       [[openButton(this.env, "Открыть вишлист", `l_${owner.id}`)]],
     );

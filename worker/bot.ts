@@ -66,7 +66,7 @@ export const BOT_DESCRIPTION =
   "• Собирайте свои желания: пришлите ссылку на товар — название, цену и фото бот подтянет сам\n" +
   "• Смотрите вишлисты друзей и тайно бронируйте подарки — владелец не узнает, кто выбрал\n" +
   "• Скидывайтесь на подарок вместе с друзьями\n" +
-  "• Получайте напоминания о днях рождения и новых желаниях друзей\n\n" +
+  "• Получайте напоминания о днях рождения и мероприятиях друзей\n\n" +
   "Нажмите «Запустить», чтобы начать.";
 export const BOT_SHORT_DESCRIPTION =
   "Вишлист от задротов Насти, Дарины и Димы: желания, тайные брони, совместные подарки, дни рождения.";
@@ -398,7 +398,7 @@ class Chat {
       shop_url: link.slice(0, 2048),
       photo: image.length <= 220000 ? image : "",
     });
-    const id = await createGift(this.db, this.out, this.user, values);
+    const id = await createGift(this.db, this.user, values);
     await this.state(null);
     const g = await ownGift(this.db, this.user.id, id);
     const noPrice = price.min === null && price.max === null;
