@@ -281,6 +281,8 @@ before(async () => {
   await migrate("migrations/0017_welcome.sql");
   await migrate("migrations/0018_followers.sql");
   await migrate("migrations/0019_open_profile_follows.sql");
+  await migrate("migrations/0020_drop_subscriptions.sql");
+  await migrate("migrations/0022_wishlist_checked.sql");
   assert.equal(
     (
       await db
@@ -1002,6 +1004,7 @@ test("website sign-in: Telegram id_token issues a revocable session for the same
     birthday,
     allow_resharing,
     wishlist_updated_at,
+    checked_at,
     about,
     is_private,
     gender: _gender,
@@ -1015,6 +1018,7 @@ test("website sign-in: Telegram id_token issues a revocable session for the same
   assert.equal(allow_resharing, 1);
   assert.equal(is_private, true);
   assert.equal(typeof wishlist_updated_at, "number");
+  assert.equal(checked_at, null);
   assert.deepEqual(identity, {
     id: "1",
     name: "User 1",
@@ -3034,4 +3038,31 @@ test("sign-in: a new name or @username from Telegram is saved, a taken @username
   await db.prepare("UPDATE users SET name='Старое' WHERE id='7902'").run();
   assert.equal((await me(7902, "Петя", "masha_7901")).name, "Петя");
   assert.equal((await stored("7902"))?.name, "Петя");
+});
+test("«Подтвердить актуальность»: only the owner, a date of its own, edits do not extend it, nobody is told", async () => {
+  await befriend(7901, 7902);
+  const g = await gift(7901, { title: "Плед" });
+  // An existing list has no confirmation, whatever its last edit.
+  let list = (await call("/lists/7901", 7902)).body.owner;
+  assert.equal(list.checked_at, null);
+  assert.ok(list.wishlist_updated_at);
+  const r = await call("/me/checked", 7901, "POST");
+  assert.equal(r.status, 200);
+  const at = r.body.checked_at;
+  list = (await call("/lists/7901", 7902)).body.owner;
+  assert.equal(list.checked_at, at);
+  // Editing, archiving and deleting wishes leave it as it was.
+  await db.prepare("UPDATE users SET checked_at=100 WHERE id='7901'").run();
+  await call(`/gifts/${g}`, 7901, "PUT", { ...input, title: "Плед большой" });
+  await gift(7901, { title: "Книга" });
+  await call(`/gifts/${g}/archive`, 7901, "POST", { reason: "changed_mind" });
+  assert.equal((await call("/lists/7901", 7902)).body.owner.checked_at, 100);
+  // A viewer confirms only their own list, never the owner's.
+  await call("/me/checked", 7902, "POST");
+  assert.equal((await call("/lists/7901", 7902)).body.owner.checked_at, 100);
+  // Without access the status is not shown at all: the card has no date.
+  await call("/me", 7903);
+  assert.equal((await call("/profiles/7901", 7903)).body.card.checked_at, undefined);
+  await settle();
+  for (const id of [7901, 7902]) assert.equal((await messages(id, 0)).length, 0);
 });
