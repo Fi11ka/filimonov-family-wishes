@@ -601,7 +601,7 @@ test("a closed profile shows its card, and its list after the owner approves; on
   assert.equal(anon.body.can_view, false);
   assert.equal(anon.body.card.about, undefined);
   assert.equal(anon.body.card.birthday, undefined);
-  assert.equal((await call("/lists/6")).status, 404);
+  assert.equal((await call("/lists/6")).status, 401);
   assert.equal((await call("/lists/6", 5)).status, 404);
   assert.equal((await call("/follows/5", 5, "POST")).status, 400);
   assert.equal((await call("/follows/999999999", 5, "POST")).status, 404);
@@ -639,7 +639,7 @@ test("a closed profile shows its card, and its list after the owner approves; on
   assert.equal((await call("/follows/6", 5, "DELETE")).status, 200);
   assert.equal((await call("/people", 6)).body.requests.length, 0);
 });
-test("an open profile is seen by everyone and followed at once; opening approves waiting requests", async () => {
+test("an open profile is seen by everyone signed in and followed at once; opening approves waiting requests", async () => {
   await call("/me", 8);
   await call("/follows/7", 8, "POST");
   assert.equal((await call("/lists/7", 9)).status, 404);
@@ -647,14 +647,15 @@ test("an open profile is seen by everyone and followed at once; opening approves
   const opened = await call("/me", 7, "PATCH", { is_private: false });
   assert.equal(opened.body.user.is_private, false);
   assert.equal((await call("/profiles/8", 7)).body.card.follows_you, true);
-  // Without signing in: the list with free and booked gifts, no booking.
-  const anon = await call("/lists/7");
-  assert.equal(anon.status, 200);
-  assert.equal(anon.body.can_reserve, false);
-  assert.equal(anon.body.gifts[0].reservation, "available");
+  // Without signing in: only the card, even of an open profile; no wishes, no photos.
+  assert.equal((await call("/lists/7")).status, 401);
+  const card = await call("/profiles/7");
+  assert.equal(card.body.can_view, false);
+  assert.equal(card.body.card.gifts, undefined);
+  assert.equal((await call(`/gifts/${g}/photo`)).status, 404);
   // Signed in, a stranger books without following, and others see it as taken.
   assert.equal((await call(`/gifts/${g}/reservation`, 9, "POST")).status, 200);
-  assert.equal((await call("/lists/7")).body.gifts[0].reservation, "reserved");
+  assert.equal((await call("/lists/7", 10)).body.gifts[0].reservation, "reserved");
   assert.deepEqual((await call("/follows/7", 9, "POST")).body, {
     follow: "approved",
   });
@@ -664,7 +665,7 @@ test("an open profile is seen by everyone and followed at once; opening approves
   );
   // Closing again keeps approved followers and hides the list from others.
   await call("/me", 7, "PATCH", { is_private: true });
-  assert.equal((await call("/lists/7")).status, 404);
+  assert.equal((await call("/lists/7", 10)).status, 404);
   assert.equal((await call("/lists/7", 9)).status, 200);
   assert.equal(
     (await call("/me", 7, "PATCH", { is_private: "yes" })).status,
