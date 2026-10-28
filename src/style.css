@@ -2418,25 +2418,57 @@ button.event-chip:hover {
   font-size: var(--fs-sm);
   white-space: nowrap;
 }
-.copy-value {
+/* «Поделиться»: two big choices, no address on screen. */
+.share-choices {
+  display: grid;
+  gap: 10px;
+}
+.share-choice {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  margin: 10px 0;
-  padding: 2px 2px 2px 4px;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  min-height: 48px;
+  padding: 14px;
   border: 1px solid var(--accent-line);
-  border-radius: var(--r-sm);
-  background: var(--surface-2);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
-.modal .copy-value input {
-  flex: 1;
-  border: 0;
-  background: none;
-  font-size: 14px;
-  padding: 0 8px;
+.share-choice:hover:not(:disabled) {
+  background: var(--accent-soft);
 }
-.copy-value .icon-button {
+.share-choice > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
   color: var(--purple);
+}
+.share-choice span {
+  display: grid;
+  gap: 4px;
+}
+.share-choice small {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.copy-link .full-width {
+  margin-top: 0;
+}
+.link-settings {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.link-settings h3 {
+  font-size: var(--fs-md);
+}
+.link-settings-actions {
+  display: flex;
+  gap: 16px;
+  margin-top: 6px;
 }
 .active-link {
   display: flex;

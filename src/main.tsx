@@ -57,9 +57,9 @@ import {
   openInBrowser,
   openTarget,
   photoFromUrl,
-  profileLink,
   profileTarget,
   redeemHandoff,
+  RequestError,
   setGuestCode,
   setSessionToken,
   signedIn,
@@ -235,6 +235,8 @@ function App() {
     invite?: boolean;
   } | null>(null);
   const [guestName, setGuestName] = useState("");
+  /** A friend's list I was looking at is no longer open to me. */
+  const [lostAccess, setLostAccess] = useState(false);
   /** Whose profile a link opened: the welcome dialog names them. */
   const [sharedOwner, setSharedOwner] = useState("");
   const sharedOpened = useRef(false);
@@ -260,13 +262,22 @@ function App() {
   async function loadList(id: string) {
     setLoading(true);
     setError("");
+    setLostAccess(false);
     try {
       const d = await api(`/api/lists/${id}`);
       setGifts(d.gifts);
       setOwner(d.owner);
       setInvitations(d.invitations || []);
     } catch (e) {
-      setError((e as Error).message);
+      // Someone else's list closed while I was looking: say so plainly, with a way out.
+      if (
+        e instanceof RequestError &&
+        e.status === 404 &&
+        user &&
+        id !== user.id
+      )
+        setLostAccess(true);
+      else setError((e as Error).message);
       setGifts([]);
     } finally {
       setLoading(false);
@@ -294,6 +305,10 @@ function App() {
     setLoading(true);
     try {
       const p: Viewed = await api(`/api/profiles/${id}`);
+      // The list was open a moment ago and is not now: access was taken away.
+      setLostAccess(
+        !p.can_view && viewed?.card.id === id && !!viewed.can_view,
+      );
       setViewed(p);
       if (p.can_view) await loadList(id);
       else {
@@ -450,6 +465,7 @@ function App() {
   }, []);
   async function navigate(next: Tab) {
     setWelcomeLater(false);
+    setLostAccess(false);
     setMenu(false);
     setNamedList(null);
     setFilters(noFilters);
@@ -752,7 +768,7 @@ function App() {
     tab === "mine" ||
     tab === "archive" ||
     guestView() ||
-    (viewingFriend && !closedCard);
+    (viewingFriend && !closedCard && !lostAccess);
   const ownerFirst = owner?.name.split(" ")[0] || "друга";
   // «Поделиться» on someone's profile shares theirs; anywhere else my own.
   const sharingOwn = !(tab === "friends" && owner && !own);
@@ -1116,7 +1132,7 @@ function App() {
                       }}
                     >
                       <UserPlus size={16} />
-                      Поделиться профилем
+                      Поделиться
                     </button>
                   </div>
                   {people.requests.length > 0 && (
@@ -1256,7 +1272,22 @@ function App() {
                   )}
                 </section>
               )}
-              {!error && closedCard && viewed && (
+              {lostAccess && viewingFriend && (
+                <section className="closed-profile">
+                  <Lock size={22} />
+                  <h3>Список больше недоступен</h3>
+                  <p className="muted">
+                    Свою бронь из этого списка можно отменить в «Моих бронях».
+                  </p>
+                  <button
+                    className="button primary"
+                    onClick={() => void navigate("friends")}
+                  >
+                    <ArrowLeft size={16} /> К друзьям
+                  </button>
+                </section>
+              )}
+              {!error && !lostAccess && closedCard && viewed && (
                 <section className="closed-profile">
                   <PersonCard card={viewed.card} />
                   <p className="muted">
@@ -1795,7 +1826,7 @@ function App() {
           title={
             {
               gift: editing ? "Редактировать желание" : "Добавить желание",
-              share: sharingOwn ? "Поделиться профилем" : "Поделиться",
+              share: "Поделиться",
               profile: "Мой профиль",
               import: "Добавить много желаний",
             }[modal]
@@ -1819,6 +1850,7 @@ function App() {
           ) : modal === "share" ? (
             <Share
               ownerId={sharingOwn ? user?.id : owner?.id}
+              ownerName={sharingOwn ? undefined : owner?.name.split(" ")[0]}
               own={sharingOwn}
             />
           ) : modal === "profile" ? (
