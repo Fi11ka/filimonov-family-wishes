@@ -4054,3 +4054,428 @@ button.booking-for:hover {
 .button.secondary.danger {
   color: var(--danger);
 }
+
+/* ==========================================================================
+   «Настройки»: sections on the left, the open one on the right; on phones
+   the list and a section take turns, with «‹ Настройки» to go back.
+   ========================================================================== */
+.sidebar-settings {
+  margin-top: auto;
+}
+.settings {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+  max-width: 980px;
+}
+.settings-nav {
+  display: grid;
+  gap: 2px;
+}
+.settings-nav h3 {
+  margin: 14px 12px 4px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-2);
+}
+.settings-row,
+.settings-me {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  color: var(--text-2);
+  font-size: var(--fs-base);
+  text-align: left;
+}
+.settings-row:hover:not(:disabled),
+.settings-me:hover {
+  background: #efeaf6;
+  color: var(--text);
+}
+.settings-row.active,
+.settings-me.active {
+  background: var(--surface);
+  color: var(--purple-dark);
+  box-shadow: 0 1px 2px #2f2a3a14;
+}
+.settings-row:disabled {
+  opacity: 0.6;
+}
+.settings-row-text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+}
+.settings-row-text strong {
+  font-weight: 600;
+}
+.settings-row-text small {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.settings-nav .settings-row-text small,
+.settings-nav .settings-chevron {
+  display: none;
+}
+.settings-me .avatar {
+  width: 28px;
+  height: 28px;
+  font-size: 12px;
+}
+.settings-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.settings-icon.purple {
+  background: var(--accent-soft);
+  color: var(--purple-dark);
+}
+.settings-icon.orange {
+  background: #fdf0e3;
+  color: #a35a12;
+}
+.settings-icon.blue {
+  background: #e8f0fb;
+  color: #2f5f9e;
+}
+.settings-icon.green {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.settings-icon.grey {
+  background: #f1f0f4;
+  color: #4d4659;
+}
+.settings-chevron {
+  color: var(--text-2);
+}
+.settings-logout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin-top: 18px;
+  padding: 16px 12px 0;
+  border-top: 1px solid var(--line);
+}
+.settings-back {
+  display: none;
+}
+.settings-panel {
+  min-width: 0;
+  display: grid;
+  gap: 16px;
+}
+.settings-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.settings-panel-head h2 {
+  margin: 0;
+  font-size: var(--fs-xl);
+}
+.settings-saved {
+  font-size: var(--fs-sm);
+  color: var(--success);
+}
+.settings-body {
+  display: grid;
+  gap: 14px;
+}
+.settings-body > h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 4px -4px;
+  font-size: var(--fs-md);
+}
+.settings-body > .button {
+  justify-self: start;
+}
+.settings-card {
+  display: grid;
+  gap: 12px;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.settings-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--fs-md);
+}
+.settings-card p {
+  margin: 0;
+}
+.settings-card.danger {
+  border-color: #f0d3da;
+}
+.settings-card > .button {
+  justify-self: start;
+}
+.settings-card fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.settings-card legend {
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.settings-card .segmented {
+  margin: 0;
+}
+.settings-card .link-settings {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.settings-card .link-settings h3 {
+  display: none;
+}
+.settings-card .active-link:first-of-type {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+.settings-group {
+  display: grid;
+}
+.settings-body > .settings-row,
+.settings-body > .settings-group {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+.settings-body > .settings-row,
+.settings-body .settings-group .settings-row {
+  min-height: 56px;
+  padding: 10px 16px;
+  border-radius: 0;
+  color: var(--text);
+}
+.settings-body .settings-group .settings-row + .settings-row {
+  border-top: 1px solid var(--line);
+}
+.settings-identity {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.settings-identity > div {
+  flex: 1;
+  min-width: 200px;
+  display: grid;
+  gap: 4px;
+}
+.settings-identity strong {
+  font-size: var(--fs-lg);
+}
+.settings-note {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid #f0dfb8;
+  border-radius: var(--r);
+  background: #fdf6e9;
+  color: #6b4a0e;
+  font-size: var(--fs-sm);
+}
+.settings-note.ok {
+  border-color: var(--success-line);
+  background: var(--success-soft);
+  color: #2f5536;
+}
+.settings-check::before {
+  content: "✓ ";
+  color: var(--success);
+  font-weight: 700;
+}
+.settings .setting-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+  cursor: pointer;
+}
+.settings .privacy legend {
+  font-size: var(--fs-md);
+  font-weight: 700;
+}
+.settings input[type="radio"],
+.settings input[type="checkbox"]:not([role="switch"]) {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  margin: 1px 0 0;
+  accent-color: var(--purple);
+}
+.settings-switch,
+.settings-radio {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 52px;
+  cursor: pointer;
+}
+.settings-switch + .settings-switch,
+.settings-radio + .settings-radio {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+.settings-switch > span {
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+.settings-switch small {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.settings-switch input {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex-shrink: 0;
+  width: 46px;
+  height: 28px;
+  margin: 0;
+  border-radius: 999px;
+  background: #cfc8da;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.settings-switch input::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px #0003;
+  transition: left 0.15s;
+}
+.settings-switch input:checked {
+  background: var(--purple);
+}
+.settings-switch input:checked::after {
+  left: 21px;
+}
+.settings-switch:has(input:disabled),
+.settings-radio:has(input:disabled) {
+  opacity: 0.6;
+  cursor: default;
+}
+.soon {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f1f0f4;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.settings-faq {
+  gap: 0;
+  padding: 4px 20px;
+}
+.settings-faq details + details {
+  border-top: 1px solid var(--line);
+}
+.settings-faq summary {
+  padding: 14px 0;
+  font-weight: 600;
+  cursor: pointer;
+}
+.settings-faq details p {
+  margin: -4px 0 14px;
+  color: var(--text-2);
+}
+@media (max-width: 740px) {
+  .sidebar-settings {
+    display: none;
+  }
+  .settings {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .settings.has-section .settings-nav {
+    display: none;
+  }
+  .settings-nav {
+    gap: 6px;
+  }
+  .settings-nav h3 {
+    margin: 12px 4px 0;
+  }
+  .settings-me,
+  .settings-nav .settings-group {
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .settings-me {
+    min-height: 76px;
+    padding: 12px 16px;
+    color: var(--text);
+  }
+  .settings-me .avatar {
+    width: 52px;
+    height: 52px;
+    font-size: 20px;
+  }
+  .settings-nav .settings-row {
+    min-height: 58px;
+    padding: 10px 16px;
+    border-radius: 0;
+    color: var(--text);
+  }
+  .settings-nav .settings-row + .settings-row {
+    border-top: 1px solid var(--line);
+  }
+  .settings-nav .settings-row.active,
+  .settings-me.active {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: none;
+  }
+  .settings-nav .settings-row-text small,
+  .settings-nav .settings-chevron {
+    display: block;
+  }
+  .settings-logout {
+    justify-content: center;
+    border-top: 0;
+  }
+  .settings-back {
+    display: inline-flex;
+    align-items: center;
+    justify-self: start;
+    margin: -6px 0 0 -6px;
+  }
+  .settings-panel-head h2 {
+    font-size: var(--fs-lg);
+  }
+  .settings-card {
+    padding: 16px;
+  }
+}

@@ -42,6 +42,7 @@ import {
   Bot,
   Lock,
   SlidersHorizontal,
+  Settings as SettingsIcon,
 } from "lucide-react";
 import { useFullscreen } from "./fullscreen";
 import { Hearts } from "./hearts";
@@ -88,7 +89,7 @@ import {
 } from "./demo";
 import { GiftForm, Share, Modal, Confirm } from "./forms";
 import { AddList, ListSwitcher } from "./lists";
-import { Profile } from "./friends";
+import { Settings, type SettingsSection } from "./settings";
 import { Features, Welcome } from "./welcome";
 import { Freshness } from "./freshness";
 import { telegramAppLink } from "./telegram-links";
@@ -124,10 +125,17 @@ import {
   money,
 } from "./types";
 import "./style.css";
-type Tab = "mine" | "friends" | "bookings" | "events" | "archive" | "event";
+type Tab =
+  | "mine"
+  | "friends"
+  | "bookings"
+  | "events"
+  | "archive"
+  | "event"
+  | "settings";
 /** From this many wishes on a list gets search, sorting and filters (Б3.18). */
 const MANY = 12;
-type ModalKind = "gift" | "share" | "profile" | "import";
+type ModalKind = "gift" | "share" | "import";
 /** «Друзья»: whom I added, requests to me and mine, who added me without me adding back. */
 type People = {
   friends: Person[];
@@ -232,6 +240,13 @@ function App() {
     setTab("event");
     setError("");
     setMenu(false);
+  }
+  /** «Настройки», on a given section (the birthday prompt opens «Профиль»). */
+  const [settingsSection, setSettingsSection] =
+    useState<SettingsSection | null>(null);
+  function openSettings(section: SettingsSection | null = null) {
+    setSettingsSection(section);
+    void navigate("settings");
   }
   /** A participant's wishlist from the event page. */
   async function openList(id: string, named?: string) {
@@ -1090,6 +1105,15 @@ function App() {
             </button>
           ))}
         </nav>
+        {/* On phones settings open from the avatar: the tab bar has no room. */}
+        <button
+          className={`nav-item sidebar-settings ${tab === "settings" ? "active" : ""}`}
+          onClick={() => openSettings()}
+          disabled={!user}
+        >
+          <SettingsIcon size={20} />
+          <span className="nav-label">Настройки</span>
+        </button>
       </aside>
       <div className="workspace">
         <header className="topbar">
@@ -1169,10 +1193,10 @@ function App() {
                 </span>
                 <button
                   className="avatar small profile-button"
-                  onClick={() => setModal("profile")}
+                  onClick={() => openSettings()}
                   disabled={!user}
-                  aria-label="Мой профиль"
-                  title="Мой профиль"
+                  aria-label="Настройки"
+                  title="Настройки"
                 >
                   <Face user={user} />
                 </button>
@@ -1277,7 +1301,9 @@ function App() {
                 <div className="title-main">
                   <div className="title-line">
                   <h1>
-                    {tab === "event"
+                    {tab === "settings"
+                      ? "Настройки"
+                      : tab === "event"
                       ? "Мероприятие"
                       : tab === "events"
                         ? "Мероприятия"
@@ -1341,7 +1367,7 @@ function App() {
                           owner={owner}
                           own={own}
                           today={today}
-                          onProfile={() => setModal("profile")}
+                          onProfile={() => openSettings("profile")}
                           onCreate={(occasion) =>
                             setEventForm({ occasion })
                           }
@@ -1873,6 +1899,26 @@ function App() {
                   }}
                 />
               )}
+              {tab === "settings" && user && (
+                <Settings
+                  key={settingsSection ?? ""}
+                  user={user}
+                  friends={people.friends.length}
+                  webSession={webSession}
+                  initial={settingsSection}
+                  onUpdated={(updated) => {
+                    setUser(updated);
+                    setOwner((current) =>
+                      current?.id === updated.id
+                        ? { ...current, ...updated }
+                        : current,
+                    );
+                  }}
+                  onShare={() => setModal("share")}
+                  onArchive={() => void navigate("archive")}
+                  onLogout={(everywhere) => void logout(everywhere)}
+                />
+              )}
               {tab === "events" && user && (
                 <EventsList
                   key={eventsVersion}
@@ -2395,7 +2441,6 @@ function App() {
             {
               gift: editing ? "Редактировать желание" : "Добавить желание",
               share: "Поделиться",
-              profile: "Мой профиль",
               import: "Добавить много желаний",
             }[modal]
           }
@@ -2439,22 +2484,6 @@ function App() {
               ownerId={sharingOwn ? user?.id : owner?.id}
               ownerName={sharingOwn ? undefined : owner?.name.split(" ")[0]}
               own={sharingOwn}
-            />
-          ) : modal === "profile" ? (
-            <Profile
-              user={user}
-              onUpdated={(updated) => {
-                setUser(updated);
-                setOwner((current) =>
-                  current?.id === updated.id
-                    ? { ...current, ...updated }
-                    : current,
-                );
-              }}
-              friends={people.friends.length}
-              webSession={webSession}
-              onShare={() => setModal("share")}
-              onLogout={(everywhere) => void logout(everywhere)}
             />
           ) : (
             <Suspense
