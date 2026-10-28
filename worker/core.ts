@@ -173,17 +173,20 @@ export async function telegramIdOf(db: D1Database, account: string) {
     )?.subject ?? null
   );
 }
+/** Wishes in one list: the personal one (listId null) or one kept for someone close. */
 export async function activeCount(
   db: D1Database,
   uid: string,
   archived: boolean,
+  listId: string | null = null,
 ) {
   return (
     (
       await stmt(
         db,
-        `SELECT COUNT(*) AS n FROM gifts WHERE owner_id=? AND archived_at IS ${archived ? "NOT " : ""}NULL`,
+        `SELECT COUNT(*) AS n FROM gifts WHERE owner_id=? AND list_id IS ? AND archived_at IS ${archived ? "NOT " : ""}NULL`,
         uid,
+        listId,
       ).first<{ n: number }>()
     )?.n || 0
   );
@@ -192,9 +195,10 @@ export async function checkLimit(
   db: D1Database,
   uid: string,
   archived: boolean,
+  listId: string | null = null,
 ) {
   if (
-    (await activeCount(db, uid, archived)) >=
+    (await activeCount(db, uid, archived, listId)) >=
     (archived ? ARCHIVE_LIMIT : ACTIVE_LIMIT)
   )
     fail(

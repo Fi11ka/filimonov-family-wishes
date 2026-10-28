@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Archive,
@@ -45,10 +45,13 @@ const rowsLabel = (n: number) =>
   `${n} ${n % 10 === 1 && n % 100 !== 11 ? "строка" : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? "строки" : "строк"}`;
 export function ImportDialog({
   activeCount,
+  list = null,
   onClose,
   onImported,
 }: {
   activeCount: number;
+  /** A list kept for someone close: every row goes there, fixed for the whole import. */
+  list?: { id: string; name: string } | null;
   onClose: () => void;
   onImported: (message: string) => void;
 }) {
@@ -344,6 +347,8 @@ export function ImportDialog({
     }
     return photoFromUrl(r.image.url);
   }
+  // The list is fixed when the dialog opens: switching lists meanwhile does not move the import.
+  const target = useRef(list).current;
   async function runImport() {
     if (demo) {
       setError(
@@ -374,7 +379,11 @@ export function ImportDialog({
       }
       if (row.image && !photo) noPhoto++;
       try {
-        await api("/api/gifts", "POST", { ...payloads[i], photo });
+        await api("/api/gifts", "POST", {
+          ...payloads[i],
+          photo,
+          ...(target ? { list_id: target.id } : {}),
+        });
         saved++;
         if (row.archived) archived++;
       } catch (e) {
@@ -627,6 +636,12 @@ export function ImportDialog({
             {included.length - activeNew
               ? ` (в архив: ${included.length - activeNew})`
               : ""}
+            {target ? (
+              <>
+                {" "}
+                · для <strong>{target.name}</strong>
+              </>
+            ) : null}
           </span>
           <button
             className="text-link"

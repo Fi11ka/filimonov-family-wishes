@@ -3870,3 +3870,93 @@ button.event-chip:hover {
 .gift-card.detailed h3 {
   cursor: default;
 }
+
+/* ==========================================================================
+   Lists kept for someone close (П35) and the guest list (П30)
+   ========================================================================== */
+.list-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.list-switcher button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 34px;
+  padding: 4px 14px;
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 14px;
+  font-weight: 500;
+}
+.list-switcher button.selected {
+  border-color: var(--purple);
+  background: var(--accent-soft);
+  color: var(--purple-dark);
+  font-weight: 600;
+}
+.list-switcher .list-add {
+  border-style: dashed;
+  color: var(--purple);
+}
+.list-for {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--purple-dark);
+  font-size: 14px;
+}
+.guest-set {
+  display: grid;
+  gap: 4px;
+  padding: 4px 4px 0 36px;
+}
+.guest-set small {
+  font-size: var(--fs-sm);
+}
+.guest-set .text-link {
+  margin-left: 8px;
+}
+.share-choice.open {
+  border-color: var(--purple);
+}
+.wish-picker-tools {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+/* The guest list: one big column, readable type, big buttons, nothing else. */
+.guest-mode main {
+  max-width: 620px;
+  margin: 0 auto;
+}
+.guest-mode .gift-grid {
+  grid-template-columns: 1fr;
+}
+.guest-mode .gift-card h3,
+.guest-mode .gift-card p,
+.guest-mode .reserve-status,
+.guest-mode .shop-link {
+  font-size: var(--fs-md);
+}
+.guest-mode .reserve-button,
+.guest-mode .card-actions .button,
+.guest-mode .card-actions .text-link {
+  min-height: 48px;
+}
+.guest-mode .photo-wrap {
+  max-height: 260px;
+}
+.guest-hint {
+  margin: 0 0 12px;
+  font-size: var(--fs-md);
+  color: var(--text-2);
+}
+.guest-dead {
+  margin-top: 40px;
+}

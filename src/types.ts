@@ -125,3 +125,5 @@ export type GiverRecord = {
 export type ToastTone = "ok" | "info" | "error";
 /** A button in a toast, e.g. «Вернуть» after cancelling a booking. */
 export type ToastAction = { label: string; run: () => Promise<void> | void };
+/** A list someone keeps for a person close to them (П35); checked_at is its own «актуальность». */
+export type ListRef = { id: string; name: string; checked_at?: number | null };
